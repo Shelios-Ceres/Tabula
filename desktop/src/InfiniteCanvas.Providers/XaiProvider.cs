@@ -46,11 +46,25 @@ public sealed class XaiProvider(ModelChannel channel, HttpClient http) : AiProvi
     }
 
     public override Task<string> GenerateTextAsync(TextRequest request, Action<string>? onDelta, CancellationToken ct) =>
-        ResponsesApi.StreamTextAsync(Http, $"{Base}/responses", Auth, request with { Reasoning = null }, onDelta, ct);
+        ResponsesApi.StreamTextAsync(Http, $"{Base}/responses", Auth, request with { Reasoning = null }, onDelta, ct, Count);
 
     public override async Task<List<string>> ListModelsAsync(CancellationToken ct)
     {
         var payload = await Http.QueryJsonAsync($"{Base}/models", Auth, ct).ConfigureAwait(false);
         return payload["data"].Items().Select(item => Http.Str(item["id"])).OfType<string>().Order().ToList();
+    }
+
+    /// <summary>
+    /// Prepaid credit from the Management API (Management Key, not the API key). The key's own validation names its team, so no team ID is asked for.
+    /// Amounts are USD cents in strings with purchases negative, so the balance is the negated total.
+    /// </summary>
+    public override async Task<Balance> BalanceAsync(CancellationToken ct)
+    {
+        const string management = "https://management-api.x.ai";
+        var auth = Http.Bearer(Channel.BillingKey);
+        var key = await Http.QueryJsonAsync($"{management}/auth/management-keys/validation", auth, ct).ConfigureAwait(false);
+        var team = (Http.Str(key["scope"]) == "SCOPE_TEAM" ? Http.Str(key["scopeId"]) : null) ?? Http.Str(key["teamId"]) ?? throw new ApiException("这个 Management Key 没有关联团队");
+        var payload = await Http.QueryJsonAsync($"{management}/v1/billing/teams/{Uri.EscapeDataString(team)}/prepaid/balance", auth, ct).ConfigureAwait(false);
+        return new("预付余额", -Http.Decimal(payload["total"]?["val"]) / 100, "USD");
     }
 }

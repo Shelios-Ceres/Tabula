@@ -19,6 +19,8 @@ public sealed class ChannelModel
     public Capability Capability { get; set; }
     /// <summary>Ark only: an ep- endpoint ID used instead of the model ID.</summary>
     public string? EndpointId { get; set; }
+    /// <summary>The user's price for local cost estimates; null uses the built-in one (<see cref="Prices"/>).</summary>
+    public TokenPrice? Price { get; set; }
 }
 
 public sealed class ModelChannel
@@ -31,20 +33,34 @@ public sealed class ModelChannel
     public string ApiVersion { get; set; } = "v1beta";
     /// <summary>DPAPI-encrypted for the current Windows user; never written in plain text.</summary>
     public string? ProtectedKey { get; set; }
+    /// <summary>Optional billing credential, separate from the API key (which cannot read billing): OpenAI Admin Key, xAI Management Key, or the secret of a Volcengine / Alibaba Cloud AccessKey pair. Encrypted like the API key.</summary>
+    public string? ProtectedBillingKey { get; set; }
+    /// <summary>The AccessKey ID that goes with <see cref="BillingKey"/> (Volcengine / Alibaba Cloud only); not a secret.</summary>
+    public string? BillingId { get; set; }
     public List<ChannelModel> Models { get; set; } = [];
 
     [JsonIgnore]
-    public string ApiKey
+    public string ApiKey { get => Unprotect(ProtectedKey); set => ProtectedKey = Protect(value); }
+
+    [JsonIgnore]
+    public string BillingKey { get => Unprotect(ProtectedBillingKey); set => ProtectedBillingKey = Protect(value); }
+
+    /// <summary>Volcengine and Alibaba Cloud sign billing requests with an AccessKey pair, so they also need the ID.</summary>
+    public static bool BillingNeedsId(Vendor vendor) => vendor is Vendor.Ark or Vendor.Qwen;
+
+    /// <summary>Whether the vendor's balance can be queried: Google has no billing API reachable with a key.</summary>
+    [JsonIgnore]
+    public bool HasBilling => Vendor != Vendor.Google && BillingKey.Length > 0 && (!BillingNeedsId(Vendor) || !string.IsNullOrWhiteSpace(BillingId));
+
+    // A key encrypted by another Windows user or machine, or a damaged value, cannot be decrypted here: treat it as missing so it is re-entered.
+    private static string Unprotect(string? value)
     {
-        get
-        {
-            if (string.IsNullOrEmpty(ProtectedKey)) return "";
-            // A key encrypted by another Windows user or machine, or a damaged value, cannot be decrypted here: treat it as missing so it is re-entered.
-            try { return Encoding.UTF8.GetString(ProtectedData.Unprotect(Convert.FromBase64String(ProtectedKey), null, DataProtectionScope.CurrentUser)); }
-            catch (Exception ex) when (ex is CryptographicException or FormatException) { return ""; }
-        }
-        set => ProtectedKey = string.IsNullOrEmpty(value) ? null : Convert.ToBase64String(ProtectedData.Protect(Encoding.UTF8.GetBytes(value), null, DataProtectionScope.CurrentUser));
+        if (string.IsNullOrEmpty(value)) return "";
+        try { return Encoding.UTF8.GetString(ProtectedData.Unprotect(Convert.FromBase64String(value), null, DataProtectionScope.CurrentUser)); }
+        catch (Exception ex) when (ex is CryptographicException or FormatException) { return ""; }
     }
+
+    private static string? Protect(string value) => string.IsNullOrEmpty(value) ? null : Convert.ToBase64String(ProtectedData.Protect(Encoding.UTF8.GetBytes(value), null, DataProtectionScope.CurrentUser));
 
     public static string DefaultBaseUrl(Vendor vendor) => vendor switch
     {

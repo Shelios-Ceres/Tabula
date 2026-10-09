@@ -1,4 +1,6 @@
+using System.Globalization;
 using System.Net.Http.Headers;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
 using InfiniteCanvas.Core.Models;
@@ -62,6 +64,7 @@ public sealed class ArkProvider(ModelChannel channel, HttpClient http) : AiProvi
         if (!stream)
         {
             var payload = await Http.PostJsonAsync($"{Base}/images/generations", Auth, body, ct).ConfigureAwait(false);
+            Count(payload["usage"]);
             foreach (var item in payload["data"].Items())
             {
                 if (item["error"] is JsonNode error) errors.Add(Http.Message(error) ?? "单张图片生成失败");
@@ -90,7 +93,11 @@ public sealed class ArkProvider(ModelChannel channel, HttpClient http) : AiProvi
                     images.Add(image);
                     progress?.Report(new ImageEvent(Index: images.Count - 1, Output: image));
                 }
-                else if (type == "image_generation.completed") completed = true;
+                else if (type == "image_generation.completed")
+                {
+                    completed = true;
+                    Count(data["usage"]);
+                }
             }
             if (!completed) throw new ApiException("方舟流式响应未收到结束事件");
         }
@@ -137,7 +144,8 @@ public sealed class ArkProvider(ModelChannel channel, HttpClient http) : AiProvi
             userContent = parts;
         }
         messages.Add(new JsonObject { ["role"] = "user", ["content"] = userContent });
-        var body = new JsonObject { ["model"] = request.Model, ["messages"] = messages, ["stream"] = true };
+        // include_usage adds a last chunk with empty choices that carries the whole request's usage.
+        var body = new JsonObject { ["model"] = request.Model, ["messages"] = messages, ["stream"] = true, ["stream_options"] = new JsonObject { ["include_usage"] = true } };
         using var response = await Http.PostStreamAsync($"{Base}/chat/completions", Auth, Http.Content(body), ct).ConfigureAwait(false);
         var text = new StringBuilder();
         await foreach (var item in Http.ReadSse(response, ct).ConfigureAwait(false))
@@ -145,12 +153,38 @@ public sealed class ArkProvider(ModelChannel channel, HttpClient http) : AiProvi
             if (item.Data == "[DONE]") break;
             var data = JsonNode.Parse(item.Data)!;
             if (data["error"] is not null) throw new ApiException(Http.Message(data) ?? "文本生成失败");
-            if (Http.Str(data["choices"]?[0]?["delta"]?["content"]) is { Length: > 0 } delta)
+            Count(data["usage"]);
+            if (Http.Str(data["choices"].Items().FirstOrDefault()?["delta"]?["content"]) is { Length: > 0 } delta)
             {
                 text.Append(delta);
                 onDelta?.Invoke(text.ToString());
             }
         }
         return text.ToString();
+    }
+
+    /// <summary>
+    /// Account balance from the Volcengine billing OpenAPI (QueryBalanceAcct). The Ark API key cannot read billing, so the request is signed with an
+    /// AccessKey pair: HMAC-SHA256 over the canonical request, with the key derived from the scope's date, region, service and "request".
+    /// </summary>
+    public override async Task<Balance> BalanceAsync(CancellationToken ct)
+    {
+        const string host = "open.volcengineapi.com", query = "Action=QueryBalanceAcct&Version=2022-01-01", signed = "content-type;host;x-content-sha256;x-date";
+        var content = new StringContent("{}", Encoding.UTF8, "application/json");
+        var date = DateTime.UtcNow.ToString("yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture);
+        var hash = Convert.ToHexStringLower(SHA256.HashData("{}"u8));
+        var canonical = $"POST\n/\n{query}\ncontent-type:{content.Headers.ContentType}\nhost:{host}\nx-content-sha256:{hash}\nx-date:{date}\n\n{signed}\n{hash}";
+        var scope = $"{date[..8]}/cn-beijing/billing/request";
+        var key = scope.Split('/').Aggregate(Encoding.UTF8.GetBytes(Channel.BillingKey), (k, part) => HMACSHA256.HashData(k, Encoding.UTF8.GetBytes(part)));
+        var signature = Convert.ToHexStringLower(HMACSHA256.HashData(key, Encoding.UTF8.GetBytes($"HMAC-SHA256\n{date}\n{scope}\n{Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)))}")));
+        var payload = await Http.QueryJsonAsync($"https://{host}/?{query}", headers =>
+        {
+            headers.Add("X-Date", date);
+            headers.Add("X-Content-Sha256", hash);
+            headers.TryAddWithoutValidation("Authorization", $"HMAC-SHA256 Credential={Channel.BillingId?.Trim()}/{scope}, SignedHeaders={signed}, Signature={signature}");
+        }, ct, content).ConfigureAwait(false);
+        if (payload["ResponseMetadata"]?["Error"] is { } error) throw new ApiException(Http.Message(error) ?? "查询余额失败");
+        var result = payload["Result"];
+        return new("可用余额", Http.Decimal(result?["AvailableBalance"]), Http.Str(result?["Currency"]) ?? "CNY");
     }
 }

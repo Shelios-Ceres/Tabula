@@ -383,6 +383,80 @@ public class CoreTests
     }
 
     [Fact]
+    public void Usage_ledger_adds_up_per_day_and_capability()
+    {
+        var channel = "usage-" + Guid.NewGuid().ToString("N");
+        UsageStore.Record(channel, "m1", Capability.Image, 3);
+        UsageStore.Record(channel, "m1", Capability.Image, 2);
+        UsageStore.Record(channel, "m2", Capability.Text, 1);
+        UsageStore.Record(channel, "m2", Capability.Audio, 0);
+        var today = DateOnly.FromDateTime(DateTime.Now);
+        Assert.Equal(new Dictionary<Capability, int> { [Capability.Image] = 5, [Capability.Text] = 1 }, UsageStore.Since(channel, today));
+        Assert.Empty(UsageStore.Since(channel, today.AddDays(1)));
+    }
+
+    [Fact]
+    public void Gemini_prices_match_the_longest_prefix_and_estimate_the_ledger()
+    {
+        Assert.Equal(120m, Prices.Default(Vendor.Google, "gemini-3-pro-image-preview")!.Media);
+        Assert.Equal(6m, Prices.Default(Vendor.Google, "gemini-3.8-flash-lite-tts")!.Media);
+        Assert.Equal(0.30m, Prices.Default(Vendor.Google, "models/gemini-3.5-flash-lite")!.Input);
+        Assert.Equal(20m, Prices.Default(Vendor.Google, "gemini-3.1-flash-tts-preview")!.Media);
+        Assert.Null(Prices.Default(Vendor.Google, "gemma-4"));
+        Assert.Equal(30m, Prices.Default(Vendor.OpenAI, "gpt-image-2.5-flare")!.Output);
+        Assert.Null(Prices.Default(Vendor.Ark, "doubao-seedream-5-0-pro-260628"));
+
+        var channel = new ModelChannel { Vendor = Vendor.Google, Models = [new() { Name = "gemini-3-pro-image-preview" }, new() { Name = "gemini-3.8-flash", Price = new(1, 10, 0) }] };
+        UsageStore.Record(channel.Id, "gemini-3-pro-image-preview", Capability.Image, 1, new TokenUsage(560, 100, 1120));
+        UsageStore.Record(channel.Id, "gemini-3.8-flash", Capability.Text, 1, new TokenUsage(1_000_000, 100_000));
+        UsageStore.Record(channel.Id, "unknown-model", Capability.Text, 1, new TokenUsage(1_000_000, 1_000_000));
+        // 560×2 + 100×12 + 1120×120 per million for the image, the user's 1 + 0.1×10 for text; the unpriced model is left out.
+        Assert.Equal(0.13672m + 2m, Prices.Estimate(channel, DateOnly.FromDateTime(DateTime.Now)));
+        Assert.Equal(new TokenUsage(560, 100, 1120), UsageStore.Tokens(channel.Id, DateOnly.FromDateTime(DateTime.Now))["gemini-3-pro-image-preview"]);
+    }
+
+    [Fact]
+    public void Image_estimates_follow_each_vendors_published_prices()
+    {
+        static ImageEstimate? Estimate(Vendor vendor, string model, int references = 0, string? size = null, string? ratio = null, string? quality = null, int count = 1, string prompt = "") =>
+            Prices.EstimateImage(new ModelChannel { Vendor = vendor }, model, new CanvasNode { Kind = NodeKind.Config, Size = size, Ratio = ratio, Quality = quality, Count = count, Prompt = prompt }, references);
+
+        // Ark bills per picture; Seedream 5.0 pro doubles above 1.5K and charges references after the first, once per request.
+        Assert.Equal((1.24m, "CNY"), Estimate(Vendor.Ark, "doubao-seedream-5-0-pro-260628", references: 2, size: "2K", count: 2) is { } ark ? (ark.Amount, ark.Currency) : default);
+        Assert.Equal(0.22m, Estimate(Vendor.Ark, "doubao-seedream-5-0-260128")!.Amount);
+        Assert.Equal(0.27m, Estimate(Vendor.Qwen, "qwen-image-3.0-pro", references: 1, size: "1K")!.Amount);
+        Assert.Equal(0.50m, Estimate(Vendor.Qwen, "qwen-image-3.0-pro", size: "2K")!.Amount);
+        Assert.Equal((0.12m, "USD"), Estimate(Vendor.XAI, "grok-imagine-image-2.0", count: 3) is { } xai ? (xai.Amount, xai.Currency) : default);
+        // Gemini: per-tier image tokens at the image output price, plus prompt tokens (one per CJK character).
+        Assert.Equal(0.240002m, Estimate(Vendor.Google, "gemini-3-pro-image-preview", size: "4K", prompt: "猫")!.Amount);
+        // OpenAI: the published per-size table at 1024 sizes.
+        Assert.Equal(0.106m, Estimate(Vendor.OpenAI, "gpt-image-2", size: "1K", ratio: "1:1", quality: "medium", count: 2)!.Amount);
+        Assert.Null(Estimate(Vendor.OpenAI, "gpt-image-2", size: "2K", ratio: "1:1", quality: "medium"));
+        Assert.Null(Estimate(Vendor.Ark, "doubao-seedream-9"));
+
+        // No published price for GPT Image 2.5: the last run with the same settings is used once there is one.
+        var ratio = Guid.NewGuid().ToString("N");
+        Assert.Null(Estimate(Vendor.OpenAI, "gpt-image-2.5-flare", size: "1K", ratio: ratio, quality: "medium"));
+        UsageStore.RememberImage(Prices.ImageKey("gpt-image-2.5-flare", new CanvasNode { Size = "1K", Ratio = ratio, Quality = "medium" }), new TokenUsage(40, 439));
+        var learned = Estimate(Vendor.OpenAI, "gpt-image-2.5-flare", size: "1K", ratio: ratio, quality: "medium", count: 2)!;
+        Assert.Equal(0.02674m, learned.Amount);
+        Assert.Contains("上次", learned.Basis);
+    }
+
+    [Fact]
+    public void Billing_credentials_are_encrypted_and_signed_vendors_need_the_id()
+    {
+        var channel = new ModelChannel { Vendor = Vendor.Ark, BillingKey = "secret" };
+        Assert.NotEqual("secret", channel.ProtectedBillingKey);
+        Assert.Equal("secret", channel.BillingKey);
+        Assert.False(channel.HasBilling);
+        channel.BillingId = "AK";
+        Assert.True(channel.HasBilling);
+        Assert.True(new ModelChannel { Vendor = Vendor.OpenAI, BillingKey = "x" }.HasBilling);
+        Assert.False(new ModelChannel { Vendor = Vendor.Google, BillingKey = "x" }.HasBilling);
+    }
+
+    [Fact]
     public void Prune_assets_keeps_referenced_files_only()
     {
         var doc = new CanvasDocument();

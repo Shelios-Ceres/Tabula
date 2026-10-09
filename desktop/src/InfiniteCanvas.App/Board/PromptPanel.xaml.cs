@@ -92,6 +92,7 @@ public sealed partial class PromptPanel : UserControl
         ShowMarks();
         ShowHint();
         ParamsText.Text = ParamsSummary();
+        ShowEstimate();
         var running = _host.Generator.IsRunning(_node.Id);
         GenerateText.Text = running ? "停止" : "生成";
         GenerateIcon.Glyph = running ? "" : "";
@@ -147,6 +148,20 @@ public sealed partial class PromptPanel : UserControl
         GenerateButton.IsEnabled = running || hint is null;
     }
 
+    /// <summary>Expected cost of the next image run from the model, parameters, prompt and connected pictures; image runs only.</summary>
+    private void ShowEstimate()
+    {
+        var node = _node!;
+        var resolved = Settings.Resolve(node.Model);
+        var show = Capability == Capability.Image && resolved is not null;
+        EstimateText.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+        if (!show) return;
+        var references = CanvasGenerator.InputsOf(_host.Doc, node).Count(r => r.Type == NodeKind.Image);
+        EstimateText.Text = Prices.EstimateImage(resolved!.Value.Channel, resolved.Value.Model.Name, node, references) is { } estimate
+            ? $"预计花费 ≈ {estimate.Text}"
+            : "预计花费：这个模型和设置还没有官方单价，生成一次后按实际用量估算";
+    }
+
     private async void OpenSettings_Click(object sender, RoutedEventArgs e)
     {
         if (await _host.ConfirmLeaveAsync()) App.Window.Frame.Navigate(typeof(SettingsPage), null, new Microsoft.UI.Xaml.Media.Animation.DrillInNavigationTransitionInfo());
@@ -196,6 +211,7 @@ public sealed partial class PromptPanel : UserControl
         if (_node is null || PromptBox.Text == NodeView.BoxText(_node.Prompt)) return;
         _host.History.Record($"{_node.Id}/prompt");
         _node.Prompt = PromptBox.Text.Replace('\r', '\n');
+        ShowEstimate();
     }
 
     private void PromptBox_PreviewKeyDown(object sender, KeyRoutedEventArgs e)
@@ -222,6 +238,7 @@ public sealed partial class PromptPanel : UserControl
         ShowMarks();
         ShowHint();
         ParamsText.Text = ParamsSummary();
+        ShowEstimate();
     }
 
     private async void Generate_Click(object sender, RoutedEventArgs e)
@@ -368,14 +385,14 @@ public sealed partial class PromptPanel : UserControl
         var list = items.ToList();
         var box = new ComboBox { Width = 150, ItemsSource = list.Select(i => i.Label).ToList() };
         box.SelectedIndex = Math.Max(0, list.FindIndex(i => i.Value == current));
-        box.SelectionChanged += (_, _) => { if (box.SelectedIndex < 0) return; _host.History.Record(); apply(list[box.SelectedIndex].Value); };
+        box.SelectionChanged += (_, _) => { if (box.SelectedIndex < 0) return; _host.History.Record(); apply(list[box.SelectedIndex].Value); ShowEstimate(); };
         Row(header, box);
     }
 
     private void Toggle(string header, bool value, Action<bool> apply)
     {
         var toggle = new ToggleSwitch { IsOn = value, OnContent = "", OffContent = "", MinWidth = 0 };
-        toggle.Toggled += (_, _) => { _host.History.Record(); apply(toggle.IsOn); };
+        toggle.Toggled += (_, _) => { _host.History.Record(); apply(toggle.IsOn); ShowEstimate(); };
         Row(header, toggle);
     }
 

@@ -26,6 +26,9 @@
                 <ToggleButton x:Name="AgentToggle" Style="{StaticResource ToolbarToggleButton}" Padding="10,7" Click="AgentToggle_Click" ToolTipService.ToolTip="助手：让本机的 Agent 操作画布" AutomationProperties.Name="助手">
                     <StackPanel Orientation="Horizontal" Spacing="7"><FontIcon Glyph="&#xE99A;" FontSize="15" /><TextBlock x:Name="AgentLabel" Text="助手" /></StackPanel>
                 </ToggleButton>
+                <Button x:Name="QuotaButton" Style="{StaticResource ToolbarButton}" Padding="10,7" ToolTipService.ToolTip="额度：各服务商的余额与本机用量" AutomationProperties.Name="额度">
+                    <StackPanel Orientation="Horizontal" Spacing="7"><FontIcon Glyph="&#xE8C7;" FontSize="15" /><TextBlock x:Name="QuotaLabel" Text="额度" /></StackPanel>
+                </Button>
             </StackPanel>
         </Border>
 

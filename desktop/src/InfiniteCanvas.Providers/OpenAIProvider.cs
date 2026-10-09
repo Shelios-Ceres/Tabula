@@ -61,6 +61,7 @@ public sealed class OpenAIProvider(ModelChannel channel, HttpClient http) : AiPr
         {
             using var response = await Http.SendAsync(HttpMethod.Post, url, Auth, content, ct).ConfigureAwait(false);
             var payload = await Http.ReadJsonAsync(response, ct).ConfigureAwait(false);
+            Count(payload["usage"]);
             var images = await ParseImagesAsync(payload["data"], mime, ct).ConfigureAwait(false);
             return images.Count > 0 ? new(images, [], []) : throw new ApiException("接口未返回图片");
         }
@@ -80,6 +81,7 @@ public sealed class OpenAIProvider(ModelChannel channel, HttpClient http) : AiPr
                 if (type == $"{prefix}.partial_image") progress?.Report(new ImageEvent(Preview: image));
                 if (type == $"{prefix}.completed")
                 {
+                    Count(data["usage"]);
                     outputs.Add(image);
                     progress?.Report(new ImageEvent(Index: outputs.Count - 1, Output: image));
                 }
@@ -145,6 +147,8 @@ public sealed class OpenAIProvider(ModelChannel channel, HttpClient http) : AiPr
                 "incomplete" => $"Responses 未完成：{Http.Str(payload["incomplete_details"]?["reason"]) ?? "未知原因"}",
                 _ => Http.Message(payload) ?? $"Responses 状态为 {status}",
             });
+        // Only the mainline model's tokens: the hosted image tool reports none of its own.
+        Count(payload["usage"]);
         var images = new List<GeneratedImage>();
         var texts = new List<string>();
         foreach (var output in payload["output"].Items())
@@ -172,7 +176,7 @@ public sealed class OpenAIProvider(ModelChannel channel, HttpClient http) : AiPr
     }
 
     public override Task<string> GenerateTextAsync(TextRequest request, Action<string>? onDelta, CancellationToken ct) =>
-        ResponsesApi.StreamTextAsync(Http, $"{Base}/responses", Auth, request, onDelta, ct);
+        ResponsesApi.StreamTextAsync(Http, $"{Base}/responses", Auth, request, onDelta, ct, Count);
 
     public override async Task<GeneratedImage> SpeechAsync(SpeechRequest request, CancellationToken ct)
     {
@@ -188,6 +192,16 @@ public sealed class OpenAIProvider(ModelChannel channel, HttpClient http) : AiPr
     {
         var payload = await Http.QueryJsonAsync($"{Base}/models", Auth, ct).ConfigureAwait(false);
         return payload["data"].Items().Select(item => Http.Str(item["id"])).OfType<string>().Order().ToList();
+    }
+
+    /// <summary>OpenAI has no balance API: the Costs API (Admin Key only) gives this month's spend, summed over its daily UTC buckets.</summary>
+    public override async Task<Balance> BalanceAsync(CancellationToken ct)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var start = new DateTimeOffset(now.Year, now.Month, 1, 0, 0, 0, TimeSpan.Zero).ToUnixTimeSeconds();
+        var payload = await Http.QueryJsonAsync($"{Base}/organization/costs?start_time={start}&bucket_width=1d&limit=31", Http.Bearer(Channel.BillingKey), ct).ConfigureAwait(false);
+        var amounts = payload["data"].Items().SelectMany(bucket => bucket["results"].Items()).Select(result => result["amount"]).ToList();
+        return new("本月花费", amounts.Sum(amount => Http.Decimal(amount?["value"])), (Http.Str(amounts.FirstOrDefault()?["currency"]) ?? "usd").ToUpperInvariant());
     }
 
     private async Task<List<GeneratedImage>> ParseImagesAsync(JsonNode? data, string mime, CancellationToken ct)

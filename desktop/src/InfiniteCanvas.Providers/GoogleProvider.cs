@@ -20,6 +20,21 @@ public sealed class GoogleProvider(ModelChannel channel, HttpClient http) : AiPr
 
     private static JsonArray UserInput(string prompt, IEnumerable<MediaInput> images) => new() { new JsonObject { ["type"] = "user_input", ["content"] = Blocks(prompt, images) } };
 
+    /// <summary>
+    /// Interaction usage: thinking is billed as text output, and image / audio output tokens have their own price, so they are split out by modality.
+    /// Without a modality breakdown, an image or speech request's output is taken as media.
+    /// </summary>
+    private void CountUsage(JsonNode? usage, bool media)
+    {
+        if (usage is not JsonObject) return;
+        var output = (long)Http.Decimal(usage["total_output_tokens"]);
+        var byModality = usage["output_tokens_by_modality"].Items().ToList();
+        var mediaTokens = byModality.Count > 0
+            ? byModality.Where(m => Http.Str(m["modality"]) is "image" or "audio" or "video").Sum(m => (long)Http.Decimal(m["tokens"]))
+            : media ? output : 0;
+        Count((long)Http.Decimal(usage["total_input_tokens"]), output - mediaTokens + (long)Http.Decimal(usage["total_thought_tokens"]), mediaTokens);
+    }
+
     public override async Task<ImageResult> GenerateImageAsync(ImageRequest request, IProgress<ImageEvent>? progress, CancellationToken ct)
     {
         var options = request.Options;
@@ -44,6 +59,7 @@ public sealed class GoogleProvider(ModelChannel channel, HttpClient http) : AiPr
         var payload = await Http.PostJsonAsync($"{Base}/interactions", Auth, body, ct).ConfigureAwait(false);
         var interaction = payload["interaction"] as JsonObject ?? payload.AsObject();
         if (Http.Str(interaction["status"]) is { } status && status != "completed") throw new ApiException(Http.Message(interaction) ?? $"Interactions 状态为 {status}");
+        CountUsage(interaction["usage"], media: true);
         var images = new List<GeneratedImage>();
         var texts = new List<string>();
         foreach (var step in interaction["steps"].Items().Where(step => Http.Str(step["type"]) == "model_output"))
@@ -82,6 +98,7 @@ public sealed class GoogleProvider(ModelChannel channel, HttpClient http) : AiPr
             if (type == "step.start" && Http.Str(data["step"]?["type"]) == "model_output")
                 foreach (var content in data["step"]!["content"].Items().Where(c => Http.Str(c["type"]) == "text")) Append(Http.Str(content["text"]));
             if (type == "step.delta" && Http.Str(data["delta"]?["type"]) == "text") Append(Http.Str(data["delta"]!["text"]));
+            if (type == "interaction.completed") CountUsage(data["interaction"]?["usage"], media: false);
             if (type == "interaction.completed" && Http.Str(data["interaction"]?["status"]) is { } status && status != "completed")
                 throw new ApiException(Http.Message(data["interaction"]) ?? $"Interactions 状态为 {status}");
         }
@@ -107,6 +124,7 @@ public sealed class GoogleProvider(ModelChannel channel, HttpClient http) : AiPr
         };
         var payload = await Http.PostJsonAsync($"{Base}/interactions", Auth, body, ct).ConfigureAwait(false);
         var interaction = payload["interaction"] ?? payload;
+        CountUsage(interaction["usage"], media: true);
         var audio = interaction["steps"].Items().Where(s => Http.Str(s["type"]) == "model_output").SelectMany(s => s["content"].Items())
             .FirstOrDefault(c => Http.Str(c["type"]) == "audio" && Http.Str(c["data"]) is not null);
         if (audio is null) throw new ApiException(Http.Message(interaction) ?? "Gemini 未返回音频");

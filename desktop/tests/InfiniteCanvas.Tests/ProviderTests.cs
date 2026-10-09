@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json.Nodes;
+using InfiniteCanvas.Core.Models;
 using InfiniteCanvas.Core.Settings;
 using InfiniteCanvas.Providers;
 
@@ -28,10 +29,11 @@ public class ProviderTests
     private static HttpResponseMessage Sse(params string[] events) => new(HttpStatusCode.OK) { Content = new StringContent(string.Concat(events.Select(e => e + "\n\n")), Encoding.UTF8, "text/event-stream") };
     private static HttpResponseMessage Bytes(string mime) => new(HttpStatusCode.OK) { Content = new ByteArrayContent([9, 9]) { Headers = { ContentType = new(mime) } } };
 
-    private static (AiProvider Provider, FakeHandler Handler) Create(Vendor vendor, Func<HttpRequestMessage, string, HttpResponseMessage> respond, string baseUrl = "")
+    private static (AiProvider Provider, FakeHandler Handler) Create(Vendor vendor, Func<HttpRequestMessage, string, HttpResponseMessage> respond, string baseUrl = "", Action<ModelChannel>? configure = null)
     {
         var handler = new FakeHandler(respond);
         var channel = new ModelChannel { Vendor = vendor, BaseUrl = baseUrl, ApiKey = "test-key" };
+        configure?.Invoke(channel);
         return (AiProvider.For(channel, new HttpClient(handler)), handler);
     }
 
@@ -340,6 +342,142 @@ public class ProviderTests
         var (provider, _) = Create(Vendor.OpenAI, (_, _) => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("<html></html>", Encoding.UTF8, "text/html") });
         var error = await Assert.ThrowsAsync<ApiException>(() => provider.ListModelsAsync(default));
         Assert.Contains("接口地址", error.Message);
+    }
+
+    [Fact]
+    public async Task OpenAI_balance_sums_this_month_costs_with_the_admin_key()
+    {
+        var (provider, handler) = Create(Vendor.OpenAI, (_, _) => Json("""{"object":"page","data":[{"results":[{"amount":{"value":1.25,"currency":"usd"}}]},{"results":[{"amount":{"value":0.5,"currency":"usd"}}]}],"has_more":false}"""),
+            configure: c => c.BillingKey = "admin-key");
+        var balance = await provider.BalanceAsync(default);
+        var request = handler.Calls.Single().Request;
+        Assert.StartsWith("https://api.openai.com/v1/organization/costs?start_time=", request.RequestUri!.ToString());
+        Assert.Contains("bucket_width=1d", request.RequestUri.Query);
+        Assert.Equal("Bearer admin-key", request.Headers.Authorization!.ToString());
+        Assert.Equal(("本月花费", 1.75m, "USD"), (balance.Label, balance.Amount, balance.Currency));
+    }
+
+    [Fact]
+    public async Task Xai_balance_finds_the_team_from_the_management_key()
+    {
+        var (provider, handler) = Create(Vendor.XAI, (request, _) => request.RequestUri!.AbsolutePath.StartsWith("/auth")
+            ? Json("""{"teamId":"old","scope":"SCOPE_TEAM","scopeId":"team-1"}""")
+            : Json("""{"changes":[],"total":{"val":"-1250"}}"""), configure: c => c.BillingKey = "mgmt-key");
+        var balance = await provider.BalanceAsync(default);
+        Assert.Equal("https://management-api.x.ai/auth/management-keys/validation", handler.Calls[0].Request.RequestUri!.ToString());
+        Assert.Equal("https://management-api.x.ai/v1/billing/teams/team-1/prepaid/balance", handler.Calls[1].Request.RequestUri!.ToString());
+        Assert.Equal("Bearer mgmt-key", handler.Calls[1].Request.Headers.Authorization!.ToString());
+        Assert.Equal(("预付余额", 12.5m, "USD"), (balance.Label, balance.Amount, balance.Currency));
+    }
+
+    [Fact]
+    public async Task Ark_balance_signs_a_volcengine_billing_request()
+    {
+        var (provider, handler) = Create(Vendor.Ark, (_, _) => Json("""{"ResponseMetadata":{"Action":"QueryBalanceAcct"},"Result":{"AvailableBalance":"86.68","CashBalance":"86.68","Currency":"CNY"}}"""),
+            configure: c => (c.BillingId, c.BillingKey) = ("AKLTtest", "secret"));
+        var balance = await provider.BalanceAsync(default);
+        var (request, body) = handler.Calls.Single();
+        Assert.Equal((HttpMethod.Post, "https://open.volcengineapi.com/?Action=QueryBalanceAcct&Version=2022-01-01", "{}"), (request.Method, request.RequestUri!.ToString(), body));
+        var date = request.Headers.GetValues("X-Date").Single();
+        Assert.Matches(@"^\d{8}T\d{6}Z$", date);
+        Assert.Matches($@"^HMAC-SHA256 Credential=AKLTtest/{date[..8]}/cn-beijing/billing/request, SignedHeaders=content-type;host;x-content-sha256;x-date, Signature=[0-9a-f]{{64}}$", request.Headers.GetValues("Authorization").Single());
+        Assert.Equal(("可用余额", 86.68m, "CNY"), (balance.Label, balance.Amount, balance.Currency));
+    }
+
+    [Fact]
+    public async Task Volcengine_errors_read_the_response_metadata()
+    {
+        var (provider, _) = Create(Vendor.Ark, (_, _) => new HttpResponseMessage(HttpStatusCode.Unauthorized)
+        {
+            Content = new StringContent("""{"ResponseMetadata":{"RequestId":"r1","Error":{"Code":"SignatureDoesNotMatch","Message":"签名不匹配"}}}""", Encoding.UTF8, "application/json"),
+        }, configure: c => (c.BillingId, c.BillingKey) = ("AK", "SK"));
+        Assert.Equal("签名不匹配", (await Assert.ThrowsAsync<ApiException>(() => provider.BalanceAsync(default))).Message);
+    }
+
+    [Fact]
+    public async Task Qwen_balance_signs_an_acs3_bss_request()
+    {
+        var (provider, handler) = Create(Vendor.Qwen, (_, _) => Json("""{"Code":"200","Success":true,"Data":{"AvailableAmount":"1,234.50","AvailableCashAmount":"1,234.50","Currency":"CNY"}}"""),
+            configure: c => (c.BillingId, c.BillingKey) = ("LTAItest", "secret"));
+        var balance = await provider.BalanceAsync(default);
+        var request = handler.Calls.Single().Request;
+        Assert.Equal((HttpMethod.Get, "https://business.aliyuncs.com/"), (request.Method, request.RequestUri!.ToString()));
+        Assert.Equal(("QueryAccountBalance", "2017-12-14"), (request.Headers.GetValues("x-acs-action").Single(), request.Headers.GetValues("x-acs-version").Single()));
+        Assert.Matches(@"^ACS3-HMAC-SHA256 Credential=LTAItest,SignedHeaders=host;x-acs-action;x-acs-content-sha256;x-acs-date;x-acs-signature-nonce;x-acs-version,Signature=[0-9a-f]{64}$", request.Headers.GetValues("Authorization").Single());
+        Assert.Equal(("可用额度", 1234.50m, "CNY"), (balance.Label, balance.Amount, balance.Currency));
+
+        var (intl, intlHandler) = Create(Vendor.Qwen, (_, _) => Json("""{"Success":false,"Code":"NotAuthorized","Message":"没有权限"}"""), "https://dashscope-intl.aliyuncs.com", c => (c.BillingId, c.BillingKey) = ("LTAI", "s"));
+        Assert.Equal("没有权限", (await Assert.ThrowsAsync<ApiException>(() => intl.BalanceAsync(default))).Message);
+        Assert.Equal("business.ap-southeast-1.aliyuncs.com", intlHandler.Calls.Single().Request.RequestUri!.Host);
+    }
+
+    [Fact]
+    public async Task Google_has_no_balance_api()
+    {
+        var (provider, handler) = Create(Vendor.Google, (_, _) => Json("{}"), configure: c => c.BillingKey = "x");
+        await Assert.ThrowsAsync<NotSupportedException>(() => provider.BalanceAsync(default));
+        Assert.Empty(handler.Calls);
+    }
+
+    [Fact]
+    public async Task OpenAI_images_and_responses_report_tokens()
+    {
+        var (images, _) = Create(Vendor.OpenAI, (_, _) => Json($$$"""{"data":[{"b64_json":"{{{Png}}}"}],"usage":{"input_tokens":50,"output_tokens":1470,"total_tokens":1520}}"""));
+        await images.GenerateImageAsync(Image("gpt-image-2"), null, default);
+        Assert.Equal(new TokenUsage(50, 1470), images.Tokens);
+
+        var (stream, _) = Create(Vendor.OpenAI, (_, _) => Sse(
+            $$$"""data: {"type":"image_generation.completed","b64_json":"{{{Png}}}","usage":{"input_tokens":10,"output_tokens":200}}"""));
+        await stream.GenerateImageAsync(Image("gpt-image-2", options: new() { Stream = true }), null, default);
+        Assert.Equal(new TokenUsage(10, 200), stream.Tokens);
+
+        var (text, _) = Create(Vendor.OpenAI, (_, _) => Sse(
+            """data: {"type":"response.output_text.delta","delta":"好"}""",
+            """data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":12,"output_tokens":30,"output_tokens_details":{"reasoning_tokens":20}}}}"""));
+        await text.GenerateTextAsync(new TextRequest("gpt-5.5", "你好", []), null, default);
+        Assert.Equal(new TokenUsage(12, 30), text.Tokens);
+    }
+
+    [Fact]
+    public async Task Google_splits_image_and_thought_tokens()
+    {
+        var (provider, _) = Create(Vendor.Google, (_, _) => Json($$$"""{"id":"i1","status":"completed","usage":{"total_input_tokens":300,"total_output_tokens":1140,"total_thought_tokens":80,"output_tokens_by_modality":[{"modality":"image","tokens":1120},{"modality":"text","tokens":20}]},"steps":[{"type":"model_output","content":[{"type":"image","mime_type":"image/jpeg","data":"{{{Png}}}"}]}]}"""));
+        await provider.GenerateImageAsync(Image("gemini-3-pro-image-preview"), null, default);
+        Assert.Equal(new TokenUsage(300, 100, 1120), provider.Tokens);
+
+        var (text, _) = Create(Vendor.Google, (_, _) => Sse(
+            """data: {"event_type":"step.delta","delta":{"type":"text","text":"好"}}""",
+            """data: {"event_type":"interaction.completed","interaction":{"status":"completed","usage":{"total_input_tokens":7,"total_output_tokens":20,"total_thought_tokens":22}}}"""));
+        await text.GenerateTextAsync(new TextRequest("gemini-3.8-flash", "你好", []), null, default);
+        Assert.Equal(new TokenUsage(7, 42), text.Tokens);
+    }
+
+    [Fact]
+    public async Task Ark_chat_asks_for_usage_and_reads_the_last_chunk()
+    {
+        var (provider, handler) = Create(Vendor.Ark, (_, _) => Sse(
+            """data: {"choices":[{"delta":{"content":"你好"}}],"usage":null}""",
+            """data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":null}""",
+            """data: {"choices":[],"usage":{"prompt_tokens":15,"completion_tokens":9,"total_tokens":24}}""",
+            "data: [DONE]"));
+        var text = await provider.GenerateTextAsync(new TextRequest("doubao-seed-2-0-pro", "打招呼", []), null, default);
+        Assert.Equal("你好", text);
+        Assert.True((bool?)JsonNode.Parse(handler.Calls.Single().Body)!["stream_options"]!["include_usage"]);
+        Assert.Equal(new TokenUsage(15, 9), provider.Tokens);
+
+        var (images, _) = Create(Vendor.Ark, (_, _) => Json($$$"""{"data":[{"b64_json":"{{{Png}}}"}],"usage":{"generated_images":1,"output_tokens":16384,"total_tokens":16384}}"""));
+        await images.GenerateImageAsync(Image("doubao-seedream-5-0-260128"), null, default);
+        Assert.Equal(new TokenUsage(0, 16384), images.Tokens);
+    }
+
+    [Fact]
+    public async Task Qwen_text_keeps_the_last_cumulative_usage()
+    {
+        var (provider, _) = Create(Vendor.Qwen, (_, _) => Sse(
+            """data: {"output":{"choices":[{"message":{"content":"我爱"}}]},"usage":{"input_tokens":26,"output_tokens":1}}""",
+            """data: {"output":{"choices":[{"message":{"content":"苹果"}}]},"usage":{"input_tokens":26,"output_tokens":4}}"""));
+        await provider.GenerateTextAsync(new TextRequest("qwen3.5-plus", "你好", []), null, default);
+        Assert.Equal(new TokenUsage(26, 4), provider.Tokens);
     }
 
     private sealed class SyncProgress<T>(Action<T> report) : IProgress<T>

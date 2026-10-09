@@ -57,6 +57,10 @@
             </Grid>
             <TextBlock x:Name="ModelText" Visibility="Collapsed" TextWrapping="Wrap" MaxLines="3" TextTrimming="CharacterEllipsis" IsTextSelectionEnabled="True"
                        Style="{StaticResource SecondaryCaption}" />
+            <!-- Expected cost of the next image run, updated as the model, parameters and prompt change. -->
+            <TextBlock x:Name="EstimateText" Visibility="Collapsed" TextWrapping="Wrap" Style="{StaticResource SecondaryCaption}"
+                       ToolTipService.ToolTip="按官方价格或上次同样设置的实际用量估算，仅供参考：不含思考 token、免费额度和优惠" />
+
             <Grid ColumnSpacing="6">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />

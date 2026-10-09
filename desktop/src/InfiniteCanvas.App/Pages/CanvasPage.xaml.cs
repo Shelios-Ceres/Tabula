@@ -44,6 +44,7 @@ public sealed partial class CanvasPage : Page
         Motion.ShowHide(Library, 0, 0.5f, 0.97f);
         Motion.ShowHide(Agent, 1, 0.5f, 0.97f);
         Motion.ShowHide(Map, 0, 1, 0.94f);
+        QuotaButton.Flyout = new QuotaFlyout();
         TitleCapsule.SizeChanged += (_, _) => KeepToolsClear();
         ToolCapsule.SizeChanged += (_, _) => KeepToolsClear();
         ApplySafeArea();
@@ -88,7 +89,7 @@ public sealed partial class CanvasPage : Page
     {
         // Narrow windows collapse the toolbars to icons; every button keeps its tooltip and automation name.
         var compact = e.NewSize.Width < 1440;
-        foreach (var label in new[] { TextLabel, ImageLabel, VideoLabel, AudioLabel, ConfigLabel, LibraryLabel, AgentLabel }) label.Visibility = compact ? Visibility.Collapsed : Visibility.Visible;
+        foreach (var label in new[] { TextLabel, ImageLabel, VideoLabel, AudioLabel, ConfigLabel, LibraryLabel, AgentLabel, QuotaLabel }) label.Visibility = compact ? Visibility.Collapsed : Visibility.Visible;
         TitleText.MaxWidth = compact ? 160 : 200;
         KeepToolsClear();
     }

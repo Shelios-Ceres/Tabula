@@ -41,6 +41,6 @@ dotnet test desktop/tests/InfiniteCanvas.Tests
 - 画布、媒体文件和设置保存在 `%LocalAppData%\InfiniteCanvas`，不会上传到任何服务器；删除的画布进入回收站。
 - API Key 用 Windows DPAPI 按当前用户加密保存，生成请求由客户端直接发往服务商，走系统代理设置。
 - 未处理异常记录在 `%LocalAppData%\InfiniteCanvas\crash.log`。
-- 提示词库保存在 `%LocalAppData%\InfiniteCanvas\prompts.json`，只在本机。这个版本不包含视频生成，视频节点只用来放导入的视频；视频生成保存在 `video-models` 分支。
+- 提示词库保存在 `%LocalAppData%\InfiniteCanvas\prompts.json`，用量统计（生成数量与 token）保存在 `usage.json`，都只在本机。查询余额用的查账凭据（OpenAI Admin Key、xAI Management Key、火山引擎 / 阿里云 AccessKey）和 API Key 一样用 DPAPI 加密，只用来请求各家的账务接口。这个版本不包含视频生成，视频节点只用来放导入的视频；视频生成保存在 `video-models` 分支。
 - 画布右侧的「助手」通过 ACP 启动本机 Agent（默认 Claude Code、Kimi Code、Grok Build、DeepSeek Harness，命令可在设置里改），Agent 的工作目录是 `%LocalAppData%\InfiniteCanvas\agent\<画布 ID>`；画布工具只对这次会话开放，走本机命名管道，不开网络端口。客户端外的 Agent（如 Claude Code）可把 `InfiniteCanvas.exe --mcp-bridge` 登记为 MCP 服务器，操作当前打开的画布（设置里「允许外部 Agent 连接」，默认开启）；所有画布管道只允许当前 Windows 用户连接。Agent 自身的登录、模型与计费由各家 Agent 负责。
 - 本地放大使用 `%LocalAppData%\InfiniteCanvas\tools\realesrgan` 下的 [Real-ESRGAN-ncnn-vulkan](https://github.com/xinntao/Real-ESRGAN/releases)（`realesrgan-ncnn-vulkan.exe` 与 `models` 文件夹），可额外放入 [upscayl](https://github.com/upscayl/upscayl/tree/main/resources/models) 的 `high-fidelity-4x`、`ultrasharp-4x` 模型（社区模型，仅限非商用）。在本机显卡上运行，图片不上传。

@@ -16,7 +16,7 @@ internal static class ResponsesApi
         return new JsonArray { new JsonObject { ["role"] = "user", ["content"] = content } };
     }
 
-    public static async Task<string> StreamTextAsync(Http http, string url, Action<HttpRequestHeaders> auth, TextRequest request, Action<string>? onDelta, CancellationToken ct)
+    public static async Task<string> StreamTextAsync(Http http, string url, Action<HttpRequestHeaders> auth, TextRequest request, Action<string>? onDelta, CancellationToken ct, Action<JsonNode?>? usage = null)
     {
         var body = new JsonObject { ["model"] = request.Model, ["input"] = Input(request.Prompt, request.Images), ["stream"] = true, ["store"] = false }
             .Set("instructions", string.IsNullOrWhiteSpace(request.System) ? null : request.System)
@@ -35,6 +35,7 @@ internal static class ResponsesApi
                 onDelta?.Invoke(text.ToString());
             }
             if (type == "response.output_text.done" && text.Length == 0 && Http.Str(data["text"]) is { } done) text.Append(done);
+            if (type == "response.completed") usage?.Invoke(data["response"]?["usage"]);
         }
         return text.ToString();
     }

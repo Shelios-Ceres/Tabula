@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Reflection;
 using InfiniteCanvas.Core.Canvas;
 using InfiniteCanvas.Core.Models;
@@ -90,8 +91,109 @@ public sealed partial class SettingsPage : Page
             Vendor.OpenAI => "\nOpenAI 的 Sora 视频接口已于 2026-09-24 下线，这里只提供图片、文本和语音。",
             _ => "",
         };
+        ShowBilling(channel);
         _loading = false;
         RenderModels();
+    }
+
+    /// <summary>The 额度 section: the local ledger, then the billing credential this vendor needs (never the API key) and a balance query.</summary>
+    private void ShowBilling(ModelChannel channel)
+    {
+        UsageText.Text = $"本机统计　今天：{Labels.Usage(channel.Id, Labels.Today)}　本月：{Labels.Usage(channel.Id, Labels.MonthStart)}";
+        var month = Labels.Tokens(channel.Id, Labels.MonthStart);
+        TokenText.Text = $"Token　今天：{Labels.Tokens(channel.Id, Labels.Today) ?? "暂无"}　本月：{month}";
+        TokenText.Visibility = month is null ? Visibility.Collapsed : Visibility.Visible;
+        var google = channel.Vendor == Vendor.Google;
+        EstimateText.Visibility = PriceRows.Visibility = google ? Visibility.Visible : Visibility.Collapsed;
+        if (google) ShowEstimate(channel);
+        var (idHeader, keyHeader, hint) = channel.Vendor switch
+        {
+            Vendor.OpenAI => (null, "Admin Key", "OpenAI 没有查询余额的接口，填入 Admin Key 后显示本月花费（Costs API）。Admin Key 只能由组织 Owner 在 OpenAI 平台的 Admin keys 页面创建，建议只开放用量读取权限。"),
+            Vendor.XAI => (null, "Management Key", "填入 Management Key 后显示团队的预付余额。Management Key 在 xAI 控制台的设置里创建，账户需要有 Management Keys 权限。"),
+            Vendor.Ark => ("Access Key ID", "Secret Access Key", "方舟的 API Key 不能查账，这里用火山引擎的访问密钥（AK/SK）查询账户可用余额；建议新建一个只授予费用中心只读权限的子用户来创建密钥。"),
+            Vendor.Qwen => ("AccessKey ID", "AccessKey Secret", "百炼的免费额度没有公开接口，只能在百炼控制台查看；这里用阿里云 AccessKey 查询账户可用额度，建议新建只授予 AliyunBSSReadOnlyAccess 权限的 RAM 用户来创建密钥。"),
+            _ => ((string?)null, (string?)null, "Google Gemini 没有能用 API Key 查询额度或余额的接口，请在 Google AI Studio 查看用量与费用。"),
+        };
+        BillingHint.Text = keyHeader is null ? hint : hint + "凭据用 Windows 数据保护（DPAPI）加密保存在本机，只用来查余额。";
+        BillingFields.Visibility = BalanceRow.Visibility = keyHeader is null ? Visibility.Collapsed : Visibility.Visible;
+        BillingIdBox.Visibility = idHeader is null ? Visibility.Collapsed : Visibility.Visible;
+        BillingIdBox.Header = idHeader;
+        BillingIdBox.Text = channel.BillingId ?? "";
+        BillingKeyBox.Header = keyHeader;
+        BillingKeyBox.Password = channel.BillingKey;
+        Grid.SetColumn(BillingKeyBox, idHeader is null ? 0 : 1);
+        Grid.SetColumnSpan(BillingKeyBox, idHeader is null ? 2 : 1);
+        BalanceText.Text = "";
+    }
+
+    private void ShowEstimate(ModelChannel channel) =>
+        EstimateText.Text = $"估算花费　今天 ≈ ${Prices.Estimate(channel, Labels.Today):N2}　本月 ≈ ${Prices.Estimate(channel, Labels.MonthStart):N2}（按下面的单价和本机 token 估算，不含免费额度）";
+
+    /// <summary>Google's per-model prices for the estimate: an empty box uses the built-in official price shown as its placeholder.</summary>
+    private void RenderPrices(ModelChannel channel)
+    {
+        var caption = (Style)Application.Current.Resources["SecondaryCaption"];
+        PriceRows.Children.Add(new TextBlock { Text = "估算单价（美元 / 百万 token，留空使用内置的官方价格）", Style = caption });
+        foreach (var model in channel.Models)
+        {
+            var builtin = Prices.Default(channel.Vendor, model.Name);
+            TextBox Box(string header, decimal? own, decimal? fallback) => new()
+            {
+                Header = header, Width = 130, Text = own?.ToString(CultureInfo.InvariantCulture) ?? "",
+                PlaceholderText = fallback?.ToString(CultureInfo.InvariantCulture) ?? "未知",
+            };
+            var boxes = new[] { Box("输入", model.Price?.Input, builtin?.Input), Box("输出（含思考）", model.Price?.Output, builtin?.Output), Box("图片 / 音频输出", model.Price?.Media, builtin?.Media) };
+            foreach (var box in boxes)
+            {
+                AutomationProperties.SetName(box, $"{model.Name} {box.Header} 单价");
+                box.TextChanged += (_, _) =>
+                {
+                    var values = boxes.Select(b => decimal.TryParse(b.Text.Trim(), NumberStyles.Number, CultureInfo.InvariantCulture, out var v) && v >= 0 ? v : (decimal?)null).ToArray();
+                    var price = values.All(v => v is null) ? null : new TokenPrice(values[0] ?? builtin?.Input ?? 0, values[1] ?? builtin?.Output ?? 0, values[2] ?? builtin?.Media ?? 0);
+                    if (price == model.Price) return;
+                    model.Price = price;
+                    Save();
+                    ShowEstimate(channel);
+                };
+            }
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+            row.Children.Add(new TextBlock { Text = AppSettings.DisplayName(channel, model), Width = 180, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 0, 0, 6), TextTrimming = TextTrimming.CharacterEllipsis });
+            foreach (var box in boxes) row.Children.Add(box);
+            PriceRows.Children.Add(row);
+        }
+    }
+
+    private void Billing_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_loading || _channel is null) return;
+        var (id, key) = (BillingIdBox.Text.Trim() is { Length: > 0 } text ? text : null, BillingKeyBox.Password.Trim());
+        if (id == _channel.BillingId && key == _channel.BillingKey) return;
+        _channel.BillingId = id;
+        _channel.BillingKey = key;
+        Save();
+        BalanceText.Text = "";
+    }
+
+    private async void Balance_Click(object sender, RoutedEventArgs e)
+    {
+        if (_channel is not { } channel) return;
+        if (!channel.HasBilling)
+        {
+            BalanceText.Text = ModelChannel.BillingNeedsId(channel.Vendor) ? "请先填写上面两项访问密钥" : "请先填写上面的 Key";
+            return;
+        }
+        BalanceButton.IsEnabled = false;
+        BalanceText.Text = "正在查询…";
+        try
+        {
+            var balance = await AiProvider.For(channel, App.Http).BalanceAsync(CancellationToken.None);
+            if (channel == _channel) BalanceText.Text = balance.Text;
+        }
+        catch (Exception ex)
+        {
+            if (channel == _channel) BalanceText.Text = $"查询失败：{ex.Message}";
+        }
+        finally { BalanceButton.IsEnabled = true; }
     }
 
     private void RenderModels()
@@ -144,6 +246,9 @@ public sealed partial class SettingsPage : Page
             row.Children.Add(remove);
             ModelRows.Children.Add(row);
         }
+        // Google prices follow the model list, so they are rebuilt with it.
+        PriceRows.Children.Clear();
+        if (_channel.Vendor == Vendor.Google) RenderPrices(_channel);
         if (_channel.Models.Count == 0)
             ModelRows.Children.Add(new TextBlock { Text = "还没有模型，可以拉取模型列表、添加推荐模型或手动输入。", Style = (Style)Application.Current.Resources["SecondaryCaption"] });
     }
@@ -367,4 +472,25 @@ public static class Labels
         Capability.Audio => "音频",
         _ => "文本",
     };
+
+    /// <summary>A token count as 1.2 万 or 3,456.</summary>
+    public static string TokenCount(long n) => n >= 10_000 ? $"{n / 10_000d:0.#} 万" : $"{n:N0}";
+
+    /// <summary>A channel's reported tokens from a day on, e.g. 输入 1.2 万 · 输出 3.4 万 (image / audio tokens count as output); null when none.</summary>
+    public static string? Tokens(string channelId, DateOnly from)
+    {
+        var total = UsageStore.Tokens(channelId, from).Values.Aggregate(default(TokenUsage), (sum, t) => sum + t);
+        return total.Total == 0 ? null : $"输入 {TokenCount(total.Input)} · 输出 {TokenCount(total.Output + total.Media)}";
+    }
+
+    public static DateOnly Today => DateOnly.FromDateTime(DateTime.Now);
+    public static DateOnly MonthStart => new(Today.Year, Today.Month, 1);
+
+    /// <summary>A channel's local ledger from a day on, e.g. 图片 12 张 · 文本 3 条.</summary>
+    public static string Usage(string channelId, DateOnly from)
+    {
+        var counts = UsageStore.Since(channelId, from);
+        string Unit(Capability c) => c switch { Capability.Image => "张", Capability.Audio => "段", Capability.Text => "条", _ => "个" };
+        return counts.Count == 0 ? "暂无" : string.Join(" · ", Capabilities.Where(counts.ContainsKey).Select(c => $"{Name(c)} {counts[c]} {Unit(c)}"));
+    }
 }

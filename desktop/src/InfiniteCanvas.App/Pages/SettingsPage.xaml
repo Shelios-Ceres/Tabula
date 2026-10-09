@@ -108,6 +108,26 @@
                                      AutomationProperties.Name="推理接入点" Visibility="Collapsed" />
                             <Button Grid.Column="2" Style="{StaticResource ActionButton}" Content="添加" Click="AddModel_Click" />
                         </Grid>
+
+                        <TextBlock Text="额度" Style="{StaticResource BodyStrongTextBlockStyle}" />
+                        <TextBlock x:Name="UsageText" TextWrapping="Wrap" />
+                        <TextBlock x:Name="TokenText" Style="{StaticResource SecondaryCaption}" TextWrapping="Wrap" />
+                        <TextBlock x:Name="EstimateText" TextWrapping="Wrap" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                        <TextBlock x:Name="BillingHint" Style="{StaticResource SecondaryCaption}" TextWrapping="Wrap" />
+                        <StackPanel x:Name="PriceRows" Spacing="8" />
+                        <Grid x:Name="BillingFields" ColumnSpacing="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBox x:Name="BillingIdBox" TextChanged="Billing_Changed" />
+                            <PasswordBox x:Name="BillingKeyBox" Grid.Column="1" PasswordChanged="Billing_Changed" />
+                        </Grid>
+                        <StackPanel x:Name="BalanceRow" Orientation="Horizontal" Spacing="12">
+                            <Button x:Name="BalanceButton" Style="{StaticResource ActionButton}" Content="查询余额" Click="Balance_Click" />
+                            <TextBlock x:Name="BalanceText" VerticalAlignment="Center" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
+                        </StackPanel>
+
                         <Button Click="DeleteChannel_Click" Foreground="{ThemeResource SystemFillColorCriticalBrush}" Style="{StaticResource ToolbarButton}">
                             <StackPanel Orientation="Horizontal" Spacing="6">
                                 <FontIcon Glyph="&#xE74D;" FontSize="13" />

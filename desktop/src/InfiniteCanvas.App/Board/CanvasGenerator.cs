@@ -191,6 +191,12 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
         {
             _running.Remove(source.Id);
             foreach (var target in targets) _running.Remove(target.Id);
+            // The local usage ledger counts only results that arrived (including the finished part of a stopped batch), plus every token the vendor reported.
+            var success = targets.Count(t => t.Status == NodeStatus.Success);
+            UsageStore.Record(channel.Id, model.Name, capability, success, provider.Tokens);
+            // Image runs also tell the pre-generation estimate what one picture with these settings cost; Responses reports only the mainline model's tokens.
+            if (capability == Capability.Image && success > 0 && provider.Tokens.Total > 0 && source.Option("openaiApi", "images") != "responses")
+                UsageStore.RememberImage(Prices.ImageKey(model.Name, source), provider.Tokens.Per(success));
             RunningChanged?.Invoke();
             changed();
         }
@@ -606,7 +612,11 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
             return;
         }
         var provider = AiProvider.For(resolved.Channel, App.Http);
-        await TrackAsync(node, provider, async ct => await FillImageAsync(node, await provider.ResumeImageTaskAsync(node.TaskId!, node.Option("store") == "true", ct), 0, node.TaskModel));
+        await TrackAsync(node, provider, async ct =>
+        {
+            await FillImageAsync(node, await provider.ResumeImageTaskAsync(node.TaskId!, node.Option("store") == "true", ct), 0, node.TaskModel);
+            UsageStore.Record(resolved.Channel.Id, resolved.Model.Name, Capability.Image, 1, provider.Tokens);
+        });
     }
 
     /// <summary>One output node working outside a normal generation (a resumed task), with the same stop and failure handling.</summary>

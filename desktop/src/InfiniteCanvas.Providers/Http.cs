@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net.Http.Headers;
 using System.Runtime.CompilerServices;
 using System.Text;
@@ -50,14 +51,19 @@ public sealed class Http(HttpClient client)
     /// <summary>A dropped connection, a timed-out query or a gateway error says nothing about the vendor task, so polling goes on and its ID is kept.</summary>
     public static bool Transient(Exception ex) => ex is HttpRequestException or IOException or TimeoutException or ApiException { Status: 408 or 429 or >= 500 };
 
-    /// <summary>One status poll or model listing request may take at most this long, so a half-open connection after sleep or a network switch fails instead of hanging. Never used for generation requests or result downloads.</summary>
+    /// <summary>One status poll, model listing or balance query may take at most this long, so a half-open connection after sleep or a network switch fails instead of hanging. Never used for generation requests or result downloads.</summary>
     public static readonly TimeSpan QueryTimeout = TimeSpan.FromSeconds(60);
 
-    public async Task<JsonNode> QueryJsonAsync(string url, Action<HttpRequestHeaders>? headers, CancellationToken ct)
+    /// <summary>GET, or POST when a body is given (signed billing APIs).</summary>
+    public async Task<JsonNode> QueryJsonAsync(string url, Action<HttpRequestHeaders>? headers, CancellationToken ct, HttpContent? post = null)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(QueryTimeout);
-        try { return await GetJsonAsync(url, headers, timeout.Token).ConfigureAwait(false); }
+        try
+        {
+            using var response = await SendAsync(post is null ? HttpMethod.Get : HttpMethod.Post, url, headers, post, timeout.Token).ConfigureAwait(false);
+            return await ReadJsonAsync(response, timeout.Token).ConfigureAwait(false);
+        }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested) { throw new TimeoutException("请求超时（60 秒），请检查网络或接口地址"); }
     }
 
@@ -105,11 +111,15 @@ public sealed class Http(HttpClient client)
 
     public static string? Str(JsonNode? node) => node is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
 
-    /// <summary>Error text across vendors: error.message, message, msg, code, or a plain error string.</summary>
+    /// <summary>A money figure sent as a number or a string (billing APIs often use strings, sometimes with thousands separators).</summary>
+    public static decimal Decimal(JsonNode? node) =>
+        node is JsonValue value && (value.TryGetValue<decimal>(out var number) || decimal.TryParse(Str(value), NumberStyles.Number, CultureInfo.InvariantCulture, out number)) ? number : 0;
+
+    /// <summary>Error text across vendors: error.message, message, msg, code, or a plain error string; Volcengine and Alibaba Cloud OpenAPIs capitalize (ResponseMetadata.Error.Message, Message).</summary>
     public static string? Message(JsonNode? node) => node switch
     {
         JsonValue value => Str(value),
-        JsonObject obj => Message(obj["error"]) ?? Str(obj["message"]) ?? Str(obj["msg"]) ?? Message(obj["errors"]) ?? Str(obj["code"]),
+        JsonObject obj => Message(obj["error"] ?? obj["Error"] ?? obj["ResponseMetadata"]) ?? Str(obj["message"] ?? obj["Message"]) ?? Str(obj["msg"]) ?? Message(obj["errors"]) ?? Str(obj["code"]),
         JsonArray array => array.Select(Message).FirstOrDefault(text => text is not null),
         _ => null,
     };
