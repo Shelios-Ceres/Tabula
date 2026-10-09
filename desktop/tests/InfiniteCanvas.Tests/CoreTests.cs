@@ -29,11 +29,9 @@ public class CoreTests
         {
             var capability = ModelFamilies.GuessCapability(model);
             if (capability == Capability.Image) Assert.True(ModelFamilies.FindImage(vendor, model) is not null, model);
-            if (capability == Capability.Video) Assert.True(ModelFamilies.FindVideo(vendor, model) is not null, model);
         }
         Assert.Equal("seedream-5-flash", ModelFamilies.FindImage(Vendor.Ark, "doubao-seedream-5-0-flash-260901")!.Id);
         Assert.Equal("seedream-5-lite", ModelFamilies.FindImage(Vendor.Ark, "doubao-seedream-5-0-260128")!.Id);
-        Assert.Equal("seedance-2.0-fast", ModelFamilies.FindVideo(Vendor.Ark, "doubao-seedance-2-0-mini-260801")!.Id);
     }
 
     [Fact]
@@ -102,9 +100,6 @@ public class CoreTests
         Assert.Equal("qwen-image", ModelFamilies.FindImage(Vendor.Qwen, "qwen-image-2.1-pro")!.Id);
         Assert.Contains("8:1", ModelFamilies.FindImage(Vendor.Google, "gemini-nano-banana-2.1")!.Ratios);
         Assert.Equal(["1k", "1.5k", "2k"], ModelFamilies.FindImage(Vendor.XAI, "grok-imagine-image-2.0")!.Tiers);
-        var veo3 = ModelFamilies.FindVideo(Vendor.Google, "veo-3.0-generate-001")!;
-        Assert.Equal(("veo-3", "2160", "9:16"), (veo3.Id, veo3.Resolutions[^1], veo3.Ratios[^1]));
-        Assert.Equal("veo-3.1-fast", ModelFamilies.FindVideo(Vendor.Google, "veo-3.1-fast-generate-preview")!.Id);
     }
 
     [Fact]
@@ -117,72 +112,6 @@ public class CoreTests
             Assert.InRange((double)(parts[0] * parts[1]) / family.MaxPixels, 0.97, 1);
             Assert.InRange(Math.Abs((double)parts[0] / parts[1] - ModelFamilies.AspectOf(ratio)), 0, 0.03);
         }
-    }
-
-    [Fact]
-    public void Video_values_snap_to_family_limits()
-    {
-        var veo = ModelFamilies.FindVideo(Vendor.Google, "veo-3.1-lite-generate-preview")!;
-        Assert.Equal(6, ModelFamilies.SnapSeconds(veo, 6));
-        Assert.Equal(8, ModelFamilies.SnapSeconds(veo, 12));
-        Assert.Equal("1080", ModelFamilies.SnapResolution(veo, "2160"));
-        var seedance = ModelFamilies.FindVideo(Vendor.Ark, "doubao-seedance-2-5-260628")!;
-        Assert.Equal(30, ModelFamilies.SnapSeconds(seedance, 45));
-        Assert.Equal("adaptive", ModelFamilies.SnapRatio(seedance, "5:4"));
-        Assert.Equal(-1, ModelFamilies.SnapSeconds(seedance, -1));
-    }
-
-    [Fact]
-    public void Assets_are_numbered_per_kind_after_the_highest_in_use()
-    {
-        var dir = Path.Combine(Path.GetTempPath(), "ic-assets-" + Guid.NewGuid().ToString("N"));
-        try
-        {
-            string Save(string prefix, string extension) => ProjectStore.Numbered(dir, prefix, extension, path => File.WriteAllBytes(path, [1]));
-            Assert.Equal("图片-001.png", Save("图片", ".png"));
-            Assert.Equal("图片-002.jpg", Save("图片", ".jpg"));
-            Assert.Equal("视频-001.mp4", Save("视频", ".mp4"));
-            File.Delete(Path.Combine(dir, "图片-001.png"));
-            Assert.Equal("图片-003.png", Save("图片", ".png"));
-            Assert.Equal("图片", Media.Label("image/webp"));
-            Assert.Equal("音频", Media.Label("audio/wav"));
-        }
-        finally { Directory.Delete(dir, true); }
-    }
-
-    [Fact]
-    public void Media_titles_follow_their_numbered_file_until_renamed()
-    {
-        var node = CanvasNode.Create(NodeKind.Image, 0, 0);
-        node.Content = "图片-004.png";
-        ProjectStore.TitleFromAsset(node, null);
-        Assert.Equal("图片-004", node.Title);
-        node.Content = "图片-009.png";
-        ProjectStore.TitleFromAsset(node, "图片-004.png");
-        Assert.Equal("图片-009", node.Title);
-        node.Title = "主角";
-        node.Content = "图片-010.png";
-        ProjectStore.TitleFromAsset(node, "图片-009.png");
-        Assert.Equal("主角", node.Title);
-    }
-
-    [Fact]
-    public void Batch_stacks_hide_all_but_the_lead_until_opened()
-    {
-        var doc = new CanvasDocument();
-        var members = Enumerable.Range(0, 4).Select(i => CanvasNode.Create(NodeKind.Image, i * 400, 0)).ToList();
-        foreach (var member in members) doc.Nodes.Add(member);
-        Stacks.Form(members);
-        Assert.All(members, m => Assert.Equal((members[0].X, members[0].Y), (m.X, m.Y)));
-        Assert.Equal(members.Skip(1).ToHashSet(), Stacks.Hidden(doc));
-        // Outputs of a stacked card never join its stack.
-        Assert.Contains(NodeKeys.Stack, NodeKeys.PerImage);
-        foreach (var member in members) member.SetOption(NodeKeys.StackOpen, "true");
-        Assert.Empty(Stacks.Hidden(doc));
-        var grid = Stacks.Grid(members);
-        Assert.Equal((members[0].X, members[0].Y), grid[0]);
-        Assert.Equal(members[0].X + members[0].Width + Stacks.Gap, grid[1].X);
-        Assert.Equal(members[0].Y + members[0].Height + Stacks.Gap, grid[2].Y);
     }
 
     [Theory]
@@ -212,26 +141,6 @@ public class CoreTests
     [Fact]
     public void Prompt_tags_split_on_common_separators() =>
         Assert.Equal(["人物", "产品图", "cyber"], InfiniteCanvas.Core.Storage.PromptEntry.ParseTags(" 人物，产品图; cyber  人物 "));
-
-    [Fact]
-    public void Video_families_declare_edit_extend_and_extras()
-    {
-        var omni = ModelFamilies.FindVideo(Vendor.Google, "gemini-omni-1.1-flash")!;
-        Assert.Equal("gemini-omni", omni.Id);
-        Assert.False(ModelFamilies.HasDuration(omni));
-        Assert.True(omni.Conversational);
-        Assert.Equal(Capability.Video, ModelFamilies.GuessCapability("gemini-omni-1.1-flash"));
-        Assert.Equal(["extend"], ModelFamilies.FindVideo(Vendor.Google, "veo-3.1-fast-generate-preview")!.Tasks);
-        Assert.Empty(ModelFamilies.FindVideo(Vendor.Google, "veo-3.1-lite-generate-preview")!.Tasks);
-        var grok15 = ModelFamilies.FindVideo(Vendor.XAI, "grok-imagine-video-1.5")!;
-        Assert.Equal((3, 4), (grok15.MaxVoices, grok15.MaxKeyframes));
-        Assert.Equal(0, ModelFamilies.FindVideo(Vendor.XAI, "grok-imagine-video")!.MaxKeyframes);
-        var seedance = ModelFamilies.FindVideo(Vendor.Ark, "doubao-seedance-2-5-260628")!;
-        Assert.True(seedance.Draft && seedance.LastFrame && seedance.SmartDuration);
-        Assert.Equal((10, 10), (seedance.MaxVideos, seedance.MaxAudios));
-        Assert.False(ModelFamilies.FindVideo(Vendor.Ark, "doubao-seedance-2-0-260128")!.Draft);
-        Assert.False(ModelFamilies.FindVideo(Vendor.Ark, "doubao-seedance-1-0-pro-250528")!.SmartDuration);
-    }
 
     [Theory]
     [InlineData(Vendor.OpenAI, "https://api.openai.com/", "https://api.openai.com/v1")]

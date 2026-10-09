@@ -39,7 +39,9 @@ desktop/
 | xAI | `/v1/images/generations` 与 `/v1/images/edits`（`aspect_ratio`、`resolution`、`quality`，多图用 `images`） | `/v1/videos/generations` + 轮询 | Responses API 流式 | — | `/v1/models` |
 | 千问（百炼） | DashScope `multimodal-generation` 同步接口（qwen-image-3.0 / 3.0-pro / 2.1-pro，`W*H` 尺寸、反向提示词、提示词改写） | 暂未接入 | DashScope `text-generation` / `multimodal-generation` SSE | — | 推荐列表 |
 
-模型能力（尺寸档位、比例、参考图上限、单次张数、视频时长 / 分辨率 / 比例）统一在 `desktop/src/InfiniteCanvas.Core/Models/ModelFamilies.cs` 按模型家族声明，取值来自各家最新官方 API 参考。
+视频一列目前不在 main：视频生成（含千问万相 2.7）整体保存在 `video-models` 分支，main 上视频节点只用来放导入的视频，需要时再合并回来。
+
+模型能力（尺寸档位、比例、参考图上限、单次张数）统一在 `desktop/src/InfiniteCanvas.Core/Models/ModelFamilies.cs` 按模型家族声明，取值来自各家最新官方 API 参考。
 
 ## 阶段进度
 
@@ -47,15 +49,15 @@ desktop/
 | --- | --- | --- |
 | 0 | 亚克力窗口、画布列表、设置页（渠道、加密 Key、默认模型） | 已完成，待验收 |
 | 1 | 画布引擎：平移缩放、框选、拖动、缩放、连线、分组、撤销重做、复制、导入 / 粘贴 / 拖入、自动保存 | 已完成，待验收 |
-| 2 | 五家服务商图片 / 视频 / 文本 / 语音生成，生成配置节点，视频任务续查 | 已完成，待真实账号验收 |
+| 2 | 五家服务商图片 / 文本 / 语音生成，生成配置节点（视频生成与任务续查在 `video-models` 分支） | 已完成，待真实账号验收 |
 | 3 | 图片工具：裁剪、拆分、角度、放大、遮罩编辑、节点悬浮工具条 | 已完成，待验收 |
-| 4 | 小地图、视频新能力（样片、尾帧、参考视频音频、编辑 / 延长、关键帧、Gemini Omni）、千问万相 2.7 视频、Gemini TTS | 已完成，待验收 |
+| 4 | 小地图、Gemini TTS；视频新能力（样片、尾帧、参考视频音频、编辑 / 延长、关键帧、Gemini Omni）与千问万相 2.7 视频在 `video-models` 分支 | 已完成，待验收 |
 | 5 | 资料库、本地提示词库已完成待验收；WebDAV 同步暂不做 | 已完成，待验收 |
 | 6 | Agent 助手（ACP 接入本机 Agent + 画布 MCP 工具）已完成待测；插件节点暂不做 | 已完成，待验收 |
 
 ## 与网页版的差异
 
 - 撤销重做为新增能力，按快照记录，最多保留 100 步；生成中的节点不受撤销影响。
-- 生成请求不设客户端超时，与浏览器 fetch 一致；视频轮询沿用网页版的 2.5 秒 × 360 次，超时后保留任务 ID，重新打开画布继续查询。
+- 生成请求不设客户端超时，与浏览器 fetch 一致；`video-models` 分支的视频轮询沿用网页版的 2.5 秒 × 360 次，超时后保留任务 ID，重新打开画布继续查询。
 - 图片节点直接显示原图，不按屏幕尺寸解码缩略图。
 - 不再需要 `canvas-proxy`：客户端没有跨域限制。

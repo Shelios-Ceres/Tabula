@@ -16,7 +16,6 @@
             <Grid x:Name="HeaderRow">
                 <SelectorBar x:Name="ModeBar" SelectionChanged="ModeBar_SelectionChanged" Padding="0" Margin="-4,-4,0,0">
                     <SelectorBarItem Text="图片" Tag="Image"><SelectorBarItem.Icon><FontIcon Glyph="&#xEB9F;" Foreground="{ThemeResource KindImageBrush}" /></SelectorBarItem.Icon></SelectorBarItem>
-                    <SelectorBarItem Text="视频" Tag="Video"><SelectorBarItem.Icon><FontIcon Glyph="&#xE714;" Foreground="{ThemeResource KindVideoBrush}" /></SelectorBarItem.Icon></SelectorBarItem>
                     <SelectorBarItem Text="文本" Tag="Text"><SelectorBarItem.Icon><FontIcon Glyph="&#xE8D2;" Foreground="{ThemeResource KindTextBrush}" /></SelectorBarItem.Icon></SelectorBarItem>
                     <SelectorBarItem Text="音频" Tag="Audio"><SelectorBarItem.Icon><FontIcon Glyph="&#xE8D6;" Foreground="{ThemeResource KindAudioBrush}" /></SelectorBarItem.Icon></SelectorBarItem>
                 </SelectorBar>

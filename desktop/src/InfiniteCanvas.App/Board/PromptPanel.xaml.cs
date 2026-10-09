@@ -152,7 +152,7 @@ public sealed partial class PromptPanel : UserControl
         if (await _host.ConfirmLeaveAsync()) App.Window.Frame.Navigate(typeof(SettingsPage), null, new Microsoft.UI.Xaml.Media.Animation.DrillInNavigationTransitionInfo());
     }
 
-    /// <summary>Count, size and ratio (image) or duration and resolution (video) on the parameters button, defaulted the way the flyout shows them.</summary>
+    /// <summary>Count, size and ratio of an image on the parameters button, defaulted the way the flyout shows them.</summary>
     private string ParamsSummary()
     {
         var node = _node!;
@@ -164,13 +164,6 @@ public sealed partial class PromptPanel : UserControl
             if (resolved is { } ri && ModelFamilies.FindImage(ri.Channel.Vendor, ri.Model.Name) is { } image)
                 foreach (var value in new[] { image.Tiers.Contains(node.Size) ? node.Size : image.Tiers.FirstOrDefault(), image.Ratios.Contains(node.Ratio) ? node.Ratio : image.Ratios.FirstOrDefault() })
                     if (value is { Length: > 0 } && value != "auto") parts.Add(value);
-        }
-        else if (Capability == Capability.Video && resolved is { } rv && ModelFamilies.FindVideo(rv.Channel.Vendor, rv.Model.Name) is { } video)
-        {
-            var resolution = ModelFamilies.SnapResolution(video, node.Resolution);
-            if (video.SmartDuration && node.Option("smartDuration") == "true") parts.Add("智能时长");
-            else if (ModelFamilies.HasDuration(video)) parts.Add($"{ModelFamilies.SnapSeconds(video, node.Seconds == 0 ? 6 : node.Seconds)} 秒");
-            parts.Add(resolution == "2160" ? "4K" : $"{resolution}p");
         }
         return parts.Count > 0 ? string.Join(" · ", parts) : "参数";
     }
@@ -341,59 +334,6 @@ public sealed partial class PromptPanel : UserControl
                 }
                 if (image.NegativePrompt) Text("反向提示词", node.Option("negativePrompt"), value => node.SetOption("negativePrompt", value));
                 if (vendor is Vendor.Ark or Vendor.Qwen) Toggle("添加水印", node.Option("watermark") == "true", value => node.SetOption("watermark", value ? "true" : null));
-                break;
-            case Capability.Video:
-                var video = vendor is { } vv ? ModelFamilies.FindVideo(vv, name) : null;
-                if (video is null) { Note("当前模型没有已知的视频能力配置。"); break; }
-                if (video.Tasks.Length > 0)
-                {
-                    var task = node.Option("videoTask") is { Length: > 0 } chosen && video.Tasks.Contains(chosen) ? chosen : "";
-                    Combo("任务", video.Tasks.Select(t => (t, t == "edit" ? "编辑输入视频" : "延长输入视频")).Prepend(("", "生成视频")), task, value => node.SetOption("videoTask", value.Length > 0 ? value : null));
-                    Note("编辑 / 延长：在已有视频的节点上生成，或连接一个视频节点作为输入。" + (video.Vendor, video.Conversational) switch
-                    {
-                        (Vendor.Ark, _) => "方舟只接受 24 小时内由 Seedance 生成的视频。",
-                        (Vendor.Google, true) => "在 Omni 生成的视频上继续编辑会接着上一轮对话，不必重新上传；上传的视频不超过 10 秒。",
-                        (Vendor.Google, false) => "Veo 只能延长 2 天内由 Veo 生成的视频，每次加 7 秒，固定 720p。",
-                        (Vendor.Qwen, _) => "源视频 2–10 秒；续写时「时长」是续写后的总长度。本地视频会先上传到百炼临时存储（48 小时内有效）。",
-                        _ => "编辑的源视频不超过 8.7 秒、输出最高 720p；延长时「时长」是新增部分的长度（2–10 秒）。",
-                    });
-                }
-                if (ModelFamilies.HasDuration(video))
-                {
-                    var seconds = video.Seconds.Length > 0 ? video.Seconds : Enumerable.Range(video.SecondRange!.Value.Min, video.SecondRange.Value.Max - video.SecondRange.Value.Min + 1).ToArray();
-                    Combo("时长", seconds.Select(s => (s.ToString(), $"{s} 秒")), ModelFamilies.SnapSeconds(video, node.Seconds == 0 ? 6 : node.Seconds).ToString(), value => node.Seconds = int.Parse(value));
-                }
-                if (video.SmartDuration) Toggle("智能时长（由模型决定长度）", node.Option("smartDuration") == "true", value => node.SetOption("smartDuration", value ? "true" : null));
-                Combo("分辨率", video.Resolutions.Select(r => (r, r == "2160" ? "4K" : $"{r}p")), ModelFamilies.SnapResolution(video, node.Resolution), value => node.Resolution = value);
-                Combo("比例", video.Ratios.Select(r => (r, r == "adaptive" ? "自适应" : r)), ModelFamilies.SnapRatio(video, node.Ratio), value => node.Ratio = value);
-                // Wan models fix how images are used (first / last frame for i2v, references for r2v and edit).
-                if (video.Vendor != Vendor.Qwen) Combo("参考图用法", [("frames", video.MaxKeyframes > 0 ? "首帧 / 尾帧 / 关键帧" : "首帧 / 首尾帧"), ("reference", "参考图（主体、风格）")], node.Option("videoMode", "frames"), value => node.SetOption("videoMode", value));
-                if (video.MaxKeyframes > 0) Note($"首帧 / 尾帧模式下连接 3–{video.MaxKeyframes + 2} 张图：第一张是首帧、最后一张是尾帧，中间的作为关键帧均匀分布在视频中。");
-                if (video.MaxVoices > 0)
-                {
-                    Text($"预设音色（voice_id，最多 {video.MaxVoices} 个，用逗号分隔）", node.Option("voices"), value => node.SetOption("voices", value.Trim().Length > 0 ? value.Trim() : null));
-                    Note("例如 eve, leo；在提示词里用 <AUDIO_0>、<AUDIO_1> 指代对应音色。");
-                }
-                if (video.MaxVideos > 0 || video.MaxAudios > 0)
-                {
-                    var kinds = new[] { video.MaxVideos > 0 ? $"参考视频（最多 {video.MaxVideos} 个，提示词里用「视频1」指代）" : null, video.MaxAudios > 0 ? $"参考音频（最多 {video.MaxAudios} 个）" : null }.OfType<string>();
-                    Note($"可连接{string.Join("和", kinds)}。" + video.Vendor switch
-                    {
-                        Vendor.Ark => "参考视频只能是 24 小时内由 Seedance 生成的视频。",
-                        Vendor.Qwen => "本地音视频会先上传到百炼临时存储（48 小时内有效）。",
-                        _ => "",
-                    });
-                }
-                if (video.Audio) Toggle("生成声音", node.GenerateAudio, value => node.GenerateAudio = value);
-                if (video.Draft)
-                {
-                    Toggle("样片模式（先出 480p 预览）", node.Option("draft") == "true", value => node.SetOption("draft", value ? "true" : null));
-                    Note("满意后在样片上右键「生成正式视频」，沿用样片的内容生成 1080p；样片 7 天内有效。");
-                }
-                if (video.LastFrame) Toggle("返回尾帧（用于接续下一段）", node.Option("lastFrame") == "true", value => node.SetOption("lastFrame", value ? "true" : null));
-                if (video.Watermark) Toggle("添加水印", node.Option("watermark") == "true", value => node.SetOption("watermark", value ? "true" : null));
-                if (video.Vendor == Vendor.Google && !video.Conversational) Note("Veo 在 1080p、4K 或使用参考图时固定为 8 秒。");
-                if (video.FramesAdaptiveOnly) Note("Seedance 2.5 首帧 / 首尾帧模式会自动沿用首帧比例。");
                 break;
             case Capability.Text:
                 Combo("推理强度", [("auto", "自动"), ("low", "低"), ("medium", "中"), ("high", "高"), ("xhigh", "极高")], node.Option("reasoning", "auto"), value => node.SetOption("reasoning", value));

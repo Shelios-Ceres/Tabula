@@ -133,9 +133,8 @@
                                 <RowDefinition />
                             </Grid.RowDefinitions>
                             <ComboBox x:Name="ImageDefault" Header="图片" HorizontalAlignment="Stretch" SelectionChanged="Default_Changed" Tag="Image" />
-                            <ComboBox x:Name="VideoDefault" Grid.Column="1" Header="视频" HorizontalAlignment="Stretch" SelectionChanged="Default_Changed" Tag="Video" />
-                            <ComboBox x:Name="TextDefault" Grid.Row="1" Header="文本" HorizontalAlignment="Stretch" SelectionChanged="Default_Changed" Tag="Text" />
-                            <ComboBox x:Name="AudioDefault" Grid.Row="1" Grid.Column="1" Header="音频" HorizontalAlignment="Stretch" SelectionChanged="Default_Changed" Tag="Audio" />
+                            <ComboBox x:Name="TextDefault" Grid.Column="1" Header="文本" HorizontalAlignment="Stretch" SelectionChanged="Default_Changed" Tag="Text" />
+                            <ComboBox x:Name="AudioDefault" Grid.Row="1" Header="音频" HorizontalAlignment="Stretch" SelectionChanged="Default_Changed" Tag="Audio" />
                         </Grid>
                         <TextBox x:Name="SystemPromptBox" Header="文本模型系统提示词（可选）" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="80" TextChanged="SystemPrompt_Changed" />
                     </StackPanel>

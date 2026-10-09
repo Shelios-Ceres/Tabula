@@ -54,7 +54,7 @@ public sealed class CanvasOp
     public List<string>? Ids { get; set; }
     [Description("add_node 的类型：text、image、video、audio、config")]
     public string? Kind { get; set; }
-    [Description("config 节点的生成类型：image、video、text、audio")]
+    [Description("config 节点的生成类型：image、text、audio")]
     public string? Mode { get; set; }
     public string? Title { get; set; }
     [Description("左上角世界坐标；add_node 省略时放在可视区域中央附近的空位")]
@@ -68,18 +68,14 @@ public sealed class CanvasOp
     public string? Prompt { get; set; }
     [Description("模型 ID，取自 canvas_get_state 的 models")]
     public string? Model { get; set; }
-    [Description("图片 / 视频比例，如 1:1、16:9")]
+    [Description("图片比例，如 1:1、16:9")]
     public string? Ratio { get; set; }
     [Description("图片分辨率档位，如 1K、2K、4K")]
     public string? Size { get; set; }
     public string? Quality { get; set; }
     [Description("一次生成的张数")]
     public int? Count { get; set; }
-    [Description("视频时长（秒）")]
-    public int? Seconds { get; set; }
-    [Description("视频分辨率，如 720、1080")]
-    public string? Resolution { get; set; }
-    [Description("其他生成参数，键值与 canvas_get_state 节点的 options 相同：videoTask=edit / extend，videoMode=frames / reference，voices=eve,leo；draft、lastFrame、smartDuration、watermark 等开关取 \"true\"；值为 null 时清除")]
+    [Description("其他生成参数，键值与 canvas_get_state 节点的 options 相同，例如 background=transparent、outputFormat=webp、voice=Kore；watermark、layers、store 等开关取 \"true\"；值为 null 时清除")]
     public Dictionary<string, string?>? Options { get; set; }
     [Description("connect / disconnect 的上游节点")]
     public string? From { get; set; }
@@ -95,10 +91,9 @@ public static class CanvasTools
     public const string Instructions = """
         你正在操作用户在「无限画布」桌面客户端里当前打开的画布。
         - 先用 canvas_get_state 了解节点、连线、选区和可用模型；用户说「这张图」「选中的」时指的是 selection 里的节点。
-        - 生成图片、视频、文本或语音用 canvas_generate：它会新建节点、连上参考节点并立刻开始生成。生成是异步的，用 generation_get_status 查看结果，不要在没有结果时声称已经完成。
+        - 生成图片、文本或语音用 canvas_generate（这个版本不支持生成视频，视频节点只用来放导入的视频）：它会新建节点、连上参考节点并立刻开始生成。生成是异步的，用 generation_get_status 查看结果，不要在没有结果时声称已经完成。
         - 增删改节点、连线、选择和视口用 canvas_apply_ops，一次调用就是一步撤销。
         - 需要看图片内容时用 canvas_get_image；资料库（所有画布共用的素材）用 library_list / library_place / library_add；编组用 canvas_apply_ops 的 group / ungroup。
-        - 视频的编辑 / 延长、样片、尾帧、智能时长等参数：先用 canvas_apply_ops 的 update_node 设置 options，再 run_generation。
         - 节点 ID 只用工具返回的值，不要编造；模型 ID 只用 canvas_get_state.models 里列出的。
         """;
 
@@ -118,7 +113,7 @@ public static class CanvasTools
             Description = "批量修改画布，整批算一步撤销。type 支持 add_node、update_node、delete_nodes、connect、disconnect、select、set_viewport、run_generation；add_node 可用 ref 给新节点起名，供本批后续操作引用。",
         }),
         McpServerTool.Create((
-            [Description("image、video、text、audio")] string mode,
+            [Description("image、text、audio")] string mode,
             [Description("提示词")] string prompt,
             [Description("作为输入的已有节点 ID（参考图、文本等）")] List<string>? referenceNodeIds = null,
             [Description("模型 ID，省略时用默认模型")] string? model = null,
@@ -126,12 +121,11 @@ public static class CanvasTools
             [Description("分辨率档位，如 1K、2K、4K")] string? size = null,
             string? quality = null,
             [Description("张数")] int? count = null,
-            [Description("视频时长（秒）")] int? seconds = null,
             [Description("新节点左上角世界坐标，省略时自动放置")] double? x = null,
-            double? y = null) => host.OnUiAsync(() => Generate(host, mode, prompt, referenceNodeIds, model, ratio, size, quality, count, seconds, x, y)), new()
+            double? y = null) => host.OnUiAsync(() => Generate(host, mode, prompt, referenceNodeIds, model, ratio, size, quality, count, x, y)), new()
         {
             Name = "canvas_generate",
-            Description = "新建一个生成节点（图片 / 视频 / 文本 / 语音），连上参考节点并立刻开始生成，返回节点 ID。多张图会在旁边追加节点。",
+            Description = "新建一个生成节点（图片 / 文本 / 语音），连上参考节点并立刻开始生成，返回节点 ID。多张图会在旁边追加节点。",
         }),
         McpServerTool.Create(([Description("要生成的节点 ID")] string nodeId) => host.OnUiAsync(() => Run(host, Find(host, nodeId))), new()
         {
@@ -217,7 +211,6 @@ public static class CanvasTools
         Mode = n.Kind == NodeKind.Config ? n.Mode.ToString().ToLowerInvariant() : null,
         n.Model, n.Ratio, n.Size, n.Quality,
         Count = n.Count > 1 ? n.Count : (int?)null,
-        Seconds = n.Kind == NodeKind.Video || n.Kind == NodeKind.Config && n.Mode == Capability.Video ? n.Seconds : (int?)null,
         Options = n.Options.Count > 0 ? n.Options : null,
         n.GroupId,
     };
@@ -234,7 +227,7 @@ public static class CanvasTools
             Selection = host.Selection,
             Nodes = doc.Nodes.Select(n => Summary(host, n)),
             Connections = doc.Connections.Select(c => new { c.From, c.To }),
-            Models = new { Image = Models(Capability.Image), Video = Models(Capability.Video), Text = Models(Capability.Text), Audio = Models(Capability.Audio) },
+            Models = new { Image = Models(Capability.Image), Text = Models(Capability.Text), Audio = Models(Capability.Audio) },
         });
     }
 
@@ -242,10 +235,10 @@ public static class CanvasTools
         Enum.TryParse<NodeKind>(kind, true, out var parsed) && parsed != NodeKind.Group ? parsed : throw new McpException($"不支持的节点类型「{kind}」，可用 text、image、video、audio、config");
 
     private static Capability ParseMode(string? mode) =>
-        Enum.TryParse<Capability>(mode, true, out var parsed) ? parsed : throw new McpException($"不支持的生成类型「{mode}」，可用 image、video、text、audio");
+        Enum.TryParse<Capability>(mode, true, out var parsed) && parsed != Capability.Video ? parsed : throw new McpException($"不支持的生成类型「{mode}」，可用 image、text、audio（这个版本不支持生成视频）");
 
     /// <summary>Copy the generation fields an op or tool call sets; unknown model IDs are rejected instead of silently falling back.</summary>
-    private static void SetParams(CanvasNode node, string? prompt, string? model, string? ratio, string? size, string? quality, int? count, int? seconds, string? resolution)
+    private static void SetParams(CanvasNode node, string? prompt, string? model, string? ratio, string? size, string? quality, int? count)
     {
         if (model is not null && SettingsStore.Current.Resolve(model) is null) throw new McpException($"未知模型「{model}」，请使用 canvas_get_state.models 里的 ID");
         if (prompt is not null) node.Prompt = prompt;
@@ -254,8 +247,6 @@ public static class CanvasTools
         if (size is not null) node.Size = size;
         if (quality is not null) node.Quality = quality;
         if (count is not null) node.Count = Math.Clamp(count.Value, 1, 15);
-        if (seconds is not null) node.Seconds = seconds.Value;
-        if (resolution is not null) node.Resolution = resolution;
     }
 
     private static CanvasNode Place(ICanvasHost host, NodeKind kind, double? x, double? y)
@@ -298,7 +289,7 @@ public static class CanvasTools
                         if (op.Title is not null) node.Title = op.Title;
                         if (kind == NodeKind.Config) node.Mode = ParseMode(op.Mode ?? "image");
                         if (kind == NodeKind.Text && op.Text is not null) node.Content = op.Text;
-                        SetParams(node, op.Prompt, op.Model, op.Ratio, op.Size, op.Quality, op.Count, op.Seconds, op.Resolution);
+                        SetParams(node, op.Prompt, op.Model, op.Ratio, op.Size, op.Quality, op.Count);
                         foreach (var (key, value) in op.Options ?? []) node.SetOption(key, value);
                         if (op.Ref is not null) refs[op.Ref] = node.Id;
                         touched.Add(node);
@@ -314,7 +305,7 @@ public static class CanvasTools
                         if (op.Text is not null)
                             target.Content = target.Kind == NodeKind.Text ? op.Text : throw new McpException("只有文本节点可以设置 text");
                         if (op.Mode is not null) target.Mode = ParseMode(op.Mode);
-                        SetParams(target, op.Prompt, op.Model, op.Ratio, op.Size, op.Quality, op.Count, op.Seconds, op.Resolution);
+                        SetParams(target, op.Prompt, op.Model, op.Ratio, op.Size, op.Quality, op.Count);
                         foreach (var (key, value) in op.Options ?? []) target.SetOption(key, value);
                         touched.Add(target);
                         results.Add(new { Index = index, target.Id });
@@ -371,7 +362,7 @@ public static class CanvasTools
         return Json(new { Results = results });
     }
 
-    private static string Generate(ICanvasHost host, string mode, string prompt, List<string>? references, string? model, string? ratio, string? size, string? quality, int? count, int? seconds, double? x, double? y)
+    private static string Generate(ICanvasHost host, string mode, string prompt, List<string>? references, string? model, string? ratio, string? size, string? quality, int? count, double? x, double? y)
     {
         var capability = ParseMode(mode);
         var inputs = (references ?? []).Select(id => Find(host, id)).ToList();
@@ -384,7 +375,7 @@ public static class CanvasTools
             node.Y = inputs.Min(i => i.Y);
             node.X = CanvasGraph.FreeX(node, host.Document.Nodes.Where(n => n != node));
         }
-        try { SetParams(node, prompt, model, ratio, size, quality, count, seconds, null); }
+        try { SetParams(node, prompt, model, ratio, size, quality, count); }
         catch
         {
             host.Document.Nodes.Remove(node);

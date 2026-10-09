@@ -151,7 +151,7 @@ public sealed partial class SettingsPage : Page
     private void RefreshDefaults()
     {
         _loading = true;
-        foreach (var box in new[] { ImageDefault, VideoDefault, TextDefault, AudioDefault })
+        foreach (var box in new[] { ImageDefault, TextDefault, AudioDefault })
         {
             var capability = Enum.Parse<Capability>((string)box.Tag);
             var values = Settings.ModelsFor(capability).ToList();

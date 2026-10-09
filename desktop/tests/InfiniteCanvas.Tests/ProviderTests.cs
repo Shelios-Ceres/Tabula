@@ -112,24 +112,6 @@ public class ProviderTests
     }
 
     [Fact]
-    public async Task Google_veo_polls_operation_and_downloads_with_key()
-    {
-        var (provider, handler) = Create(Vendor.Google, (request, _) => request.RequestUri!.AbsolutePath switch
-        {
-            var path when path.EndsWith(":predictLongRunning") => Json("""{"name":"models/veo-3.1-generate-preview/operations/op1"}"""),
-            var path when path.Contains("/operations/") => Json("""{"done":true,"response":{"generateVideoResponse":{"generatedSamples":[{"video":{"uri":"https://files.example/v.mp4"}}]}}}"""),
-            _ => Bytes("video/mp4"),
-        });
-        var id = await provider.CreateVideoTaskAsync(new VideoRequest("veo-3.1-generate-preview", "海浪", [Reference], VideoMode.Frames, 6, "1080p", "16:9", true, false), default);
-        var body = JsonNode.Parse(handler.Calls[0].Body)!;
-        Assert.Equal(8, (int?)body["parameters"]!["durationSeconds"]);
-        Assert.NotNull(body["instances"]![0]!["image"]!["bytesBase64Encoded"]);
-        var state = await provider.PollVideoTaskAsync(id, default);
-        Assert.Equal(VideoTaskStatus.Completed, state.Status);
-        Assert.Equal("test-key", handler.Calls.Last().Request.Headers.GetValues("x-goog-api-key").Single());
-    }
-
-    [Fact]
     public async Task Ark_seedream_maps_size_and_sequential_generation()
     {
         var (provider, handler) = Create(Vendor.Ark, (_, _) => Json($$$"""{"data":[{"b64_json":"{{{Png}}}","size":"2848x1600"},{"error":{"code":"OutputImageSensitiveContentDetected","message":"敏感"}}]}"""));
@@ -158,18 +140,6 @@ public class ProviderTests
     }
 
     [Fact]
-    public async Task Ark_seedance_frames_on_2_5_force_adaptive_ratio()
-    {
-        var (provider, handler) = Create(Vendor.Ark, (_, _) => Json("""{"id":"cgt-1"}"""));
-        await provider.CreateVideoTaskAsync(new VideoRequest("doubao-seedance-2-5-260628", "飞鸟", [Reference], VideoMode.Frames, 10, "1080p", "16:9", true, false, "ep-123"), default);
-        var json = JsonNode.Parse(handler.Calls.Single().Body)!;
-        Assert.Equal("ep-123", (string?)json["model"]);
-        Assert.Equal("adaptive", (string?)json["ratio"]);
-        Assert.Equal("first_frame", (string?)json["content"]![1]!["role"]);
-        Assert.Equal(true, (bool?)json["generate_audio"]);
-    }
-
-    [Fact]
     public async Task Xai_edits_send_images_array_with_type()
     {
         var (provider, handler) = Create(Vendor.XAI, (_, _) => Json($$"""{"data":[{"b64_json":"{{Png}}","mime_type":"image/png"}]}"""));
@@ -194,186 +164,6 @@ public class ProviderTests
     }
 
     [Fact]
-    public async Task Xai_video_frames_send_first_and_last_frame()
-    {
-        var (provider, handler) = Create(Vendor.XAI, (_, _) => Json("""{"request_id":"r-1"}"""));
-        await provider.CreateVideoTaskAsync(new VideoRequest("grok-imagine-video-1.5", "开门", [Reference, Reference], VideoMode.Frames, 8, "720p", "16:9", false, false), default);
-        var json = JsonNode.Parse(handler.Calls.Single().Body)!;
-        Assert.NotNull(json["image"]!["url"]);
-        Assert.NotNull(json["last_frame"]!["url"]);
-        Assert.Null(json["reference_images"]);
-    }
-
-    [Fact]
-    public async Task Xai_reference_video_is_capped_at_720p()
-    {
-        var (provider, handler) = Create(Vendor.XAI, (_, _) => Json("""{"request_id":"r-2"}"""));
-        await provider.CreateVideoTaskAsync(new VideoRequest("grok-imagine-video-1.5", "跳舞", [Reference], VideoMode.Reference, 8, "1080p", "16:9", false, false), default);
-        Assert.Equal("720p", (string?)JsonNode.Parse(handler.Calls.Single().Body)!["resolution"]);
-    }
-
-    private static readonly MediaInput Clip = new([7, 7], "video/mp4");
-    private static readonly MediaInput Voice = new([5, 5], "audio/wav");
-
-    [Fact]
-    public async Task Xai_video_keyframes_and_voices_on_1_5()
-    {
-        var (provider, handler) = Create(Vendor.XAI, (_, _) => Json("""{"request_id":"r-3"}"""));
-        var request = new VideoRequest("grok-imagine-video-1.5", "<AUDIO_0> 说你好", [Reference, Reference], VideoMode.Frames, 6, "1080p", "16:9", false, false)
-        {
-            Voices = ["eve", "leo", "ara", "rex"],
-            Keyframes = [(Reference, 2.1), (Reference, 5.9)],
-        };
-        await provider.CreateVideoTaskAsync(request, default);
-        var json = JsonNode.Parse(handler.Calls.Single().Body)!;
-        Assert.Equal(3, json["reference_audios"]!.AsArray().Count);
-        Assert.Equal("eve", (string?)json["reference_audios"]![0]!["voice_id"]);
-        // Snapped to the 1/3 s grid and kept strictly inside the 6 s clip.
-        Assert.Equal(2.0, (double)json["keyframes"]![0]!["timestamp_s"]!, 3);
-        Assert.Equal(17 / 3.0, (double)json["keyframes"]![1]!["timestamp_s"]!, 3);
-        Assert.NotNull(json["last_frame"]);
-        Assert.Equal("720p", (string?)json["resolution"]);
-    }
-
-    [Fact]
-    public async Task Xai_video_edit_and_extend_use_their_endpoints()
-    {
-        var (provider, handler) = Create(Vendor.XAI, (_, _) => Json("""{"request_id":"r-4"}"""));
-        await provider.CreateVideoTaskAsync(new VideoRequest("grok-imagine-video-1.5", "换成雪天", [], VideoMode.Frames, 8, "720p", "16:9", false, false) { Videos = [Clip], Task = "edit" }, default);
-        await provider.CreateVideoTaskAsync(new VideoRequest("grok-imagine-video-1.5", "继续走", [], VideoMode.Frames, 15, "720p", "16:9", false, false) { Videos = [Clip], Task = "extend" }, default);
-        Assert.Equal("https://api.x.ai/v1/videos/edits", handler.Calls[0].Request.RequestUri!.ToString());
-        var edit = JsonNode.Parse(handler.Calls[0].Body)!;
-        Assert.StartsWith("data:video/mp4;base64,", (string?)edit["video"]!["url"]);
-        Assert.Null(edit["duration"]);
-        Assert.Equal("https://api.x.ai/v1/videos/extensions", handler.Calls[1].Request.RequestUri!.ToString());
-        Assert.Equal(10, (int?)JsonNode.Parse(handler.Calls[1].Body)!["duration"]);
-    }
-
-    [Fact]
-    public async Task Ark_seedance_reference_media_draft_and_last_frame()
-    {
-        var (provider, handler) = Create(Vendor.Ark, (_, _) => Json("""{"id":"cgt-2"}"""));
-        var request = new VideoRequest("doubao-seedance-2-5-260628", "跟随视频1的运镜", [Reference], VideoMode.Frames, -1, "1080p", "16:9", true, false)
-        {
-            Videos = [Clip with { Url = "https://ark.example/v.mp4" }],
-            Audios = [Voice],
-            Draft = true,
-            ReturnLastFrame = true,
-        };
-        await provider.CreateVideoTaskAsync(request, default);
-        var json = JsonNode.Parse(handler.Calls.Single().Body)!;
-        var content = json["content"]!.AsArray();
-        Assert.Equal("reference_image", (string?)content[1]!["role"]);
-        Assert.Equal("https://ark.example/v.mp4", (string?)content[2]!["video_url"]!["url"]);
-        Assert.Equal("reference_video", (string?)content[2]!["role"]);
-        Assert.StartsWith("data:audio/wav;base64,", (string?)content[3]!["audio_url"]!["url"]);
-        Assert.Equal("reference_audio", (string?)content[3]!["role"]);
-        Assert.Equal(-1, (int?)json["duration"]);
-        Assert.Equal("480p", (string?)json["resolution"]);
-        Assert.Equal(true, (bool?)json["draft"]);
-        Assert.Equal(true, (bool?)json["return_last_frame"]);
-        Assert.Null(json["omni_reference_task_type"]);
-    }
-
-    [Fact]
-    public async Task Ark_seedance_rejects_local_reference_video_and_edits_by_url()
-    {
-        var (provider, handler) = Create(Vendor.Ark, (_, _) => Json("""{"id":"cgt-3"}"""));
-        await Assert.ThrowsAsync<ApiException>(() => provider.CreateVideoTaskAsync(new VideoRequest("doubao-seedance-2-5-260628", "改成夜景", [], VideoMode.Frames, 8, "720p", "16:9", false, false) { Videos = [Clip], Task = "edit" }, default));
-        Assert.Empty(handler.Calls);
-        await provider.CreateVideoTaskAsync(new VideoRequest("doubao-seedance-2-5-260628", "改成夜景", [], VideoMode.Frames, 8, "720p", "16:9", false, false) { Videos = [Clip with { Url = "https://ark.example/v.mp4" }], Task = "edit" }, default);
-        var json = JsonNode.Parse(handler.Calls.Single().Body)!;
-        Assert.Equal("edit", (string?)json["omni_reference_task_type"]);
-        Assert.Equal("adaptive", (string?)json["ratio"]);
-        Assert.Equal(-1, (int?)json["duration"]);
-    }
-
-    [Fact]
-    public async Task Ark_seedance_draft_final_sends_only_allowed_fields()
-    {
-        var (provider, handler) = Create(Vendor.Ark, (_, _) => Json("""{"id":"cgt-4"}"""));
-        await provider.CreateVideoTaskAsync(new VideoRequest("doubao-seedance-2-5-260628", "", [], VideoMode.Frames, 0, "1080p", "adaptive", false, true) { DraftTaskId = "cgt-draft", ReturnLastFrame = true }, default);
-        var json = JsonNode.Parse(handler.Calls.Single().Body)!.AsObject();
-        Assert.Equal(["model", "content", "resolution", "watermark", "return_last_frame"], json.Select(p => p.Key));
-        Assert.Equal("draft_task", (string?)json["content"]![0]!["type"]);
-        Assert.Equal("cgt-draft", (string?)json["content"]![0]!["draft_task"]!["id"]);
-    }
-
-    [Fact]
-    public async Task Ark_seedance_poll_returns_url_and_last_frame()
-    {
-        var (provider, handler) = Create(Vendor.Ark, (request, _) => request.RequestUri!.Host == "ark.cn-beijing.volces.com"
-            ? Json("""{"id":"cgt-5","status":"succeeded","content":{"video_url":"https://tos.example/v.mp4","last_frame_url":"https://tos.example/f.jpeg"}}""")
-            : Bytes(request.RequestUri.AbsolutePath.EndsWith(".mp4") ? "video/mp4" : "image/jpeg"));
-        var state = await provider.PollVideoTaskAsync("cgt-5", default);
-        Assert.Equal(VideoTaskStatus.Completed, state.Status);
-        Assert.Equal("https://tos.example/v.mp4", state.RemoteUrl);
-        Assert.True(state.RemoteUntil > DateTime.UtcNow.AddHours(20));
-        Assert.NotNull(state.LastFrame);
-        Assert.Equal(3, handler.Calls.Count);
-    }
-
-    [Fact]
-    public async Task Wan_t2v_uploads_local_audio_and_sends_async_headers()
-    {
-        var (provider, handler) = Create(Vendor.Qwen, (request, _) => request.RequestUri!.AbsolutePath switch
-        {
-            "/api/v1/uploads" => Json("""{"data":{"policy":"p","signature":"s","upload_dir":"dashscope-instant/abc","upload_host":"https://oss.example","oss_access_key_id":"ak","x_oss_object_acl":"private","x_oss_forbid_overwrite":"true"}}"""),
-            "/" => new HttpResponseMessage(HttpStatusCode.OK),
-            _ => Json("""{"output":{"task_id":"t-1","task_status":"PENDING"},"request_id":"r"}"""),
-        });
-        var id = await provider.CreateVideoTaskAsync(new VideoRequest("wan2.7-t2v-2026-06-12", "月光下奔跑", [], VideoMode.Frames, 8, "1080p", "9:16", false, true) { Audios = [Voice] }, default);
-        Assert.Equal("t-1", id);
-        Assert.Contains("model=wan2.7-t2v-2026-06-12", handler.Calls[0].Request.RequestUri!.Query);
-        Assert.Contains("name=key", handler.Calls[1].Body);
-        Assert.True(handler.Calls[1].Body.IndexOf("name=file", StringComparison.Ordinal) > handler.Calls[1].Body.IndexOf("name=key", StringComparison.Ordinal));
-        var (request, body) = handler.Calls[2];
-        Assert.Equal("https://dashscope.aliyuncs.com/api/v1/services/aigc/video-generation/video-synthesis", request.RequestUri!.ToString());
-        Assert.Equal("enable", request.Headers.GetValues("X-DashScope-Async").Single());
-        Assert.Equal("enable", request.Headers.GetValues("X-DashScope-OssResourceResolve").Single());
-        var json = JsonNode.Parse(body)!;
-        Assert.StartsWith("oss://dashscope-instant/abc/", (string?)json["input"]!["audio_url"]);
-        Assert.EndsWith(".wav", (string?)json["input"]!["audio_url"]);
-        Assert.Equal("1080P", (string?)json["parameters"]!["resolution"]);
-        Assert.Equal("9:16", (string?)json["parameters"]!["ratio"]);
-        Assert.Equal(8, (int?)json["parameters"]!["duration"]);
-        Assert.Equal(true, (bool?)json["parameters"]!["watermark"]);
-    }
-
-    [Fact]
-    public async Task Wan_i2v_frames_and_continuation_by_result_url()
-    {
-        var (provider, handler) = Create(Vendor.Qwen, (_, _) => Json("""{"output":{"task_id":"t-2"}}"""));
-        await provider.CreateVideoTaskAsync(new VideoRequest("wan2.7-i2v", "转身", [Reference, Reference], VideoMode.Frames, 5, "720p", "adaptive", false, false), default);
-        var frames = JsonNode.Parse(handler.Calls[0].Body)!;
-        Assert.Equal(["first_frame", "last_frame"], frames["input"]!["media"]!.AsArray().Select(m => (string?)m!["type"]));
-        Assert.Null(frames["parameters"]!["ratio"]);
-        await provider.CreateVideoTaskAsync(new VideoRequest("wan2.7-i2v", "继续", [], VideoMode.Frames, 15, "720p", "adaptive", false, false) { Videos = [Clip with { Url = "https://dashscope-result.example/v.mp4" }], Task = "extend" }, default);
-        var (request, body) = handler.Calls[1];
-        var media = JsonNode.Parse(body)!["input"]!["media"]![0]!;
-        Assert.Equal(("first_clip", "https://dashscope-result.example/v.mp4"), ((string?)media["type"], (string?)media["url"]));
-        Assert.False(request.Headers.Contains("X-DashScope-OssResourceResolve"));
-    }
-
-    [Fact]
-    public async Task Wan_videoedit_keeps_source_length_and_polls_result()
-    {
-        var (provider, handler) = Create(Vendor.Qwen, (request, _) => request.Method == HttpMethod.Post
-            ? Json("""{"output":{"task_id":"t-3"}}""")
-            : request.RequestUri!.AbsolutePath.StartsWith("/api/v1/tasks/")
-                ? Json("""{"output":{"task_id":"t-3","task_status":"SUCCEEDED","video_url":"https://dashscope-result.example/out.mp4"}}""")
-                : Bytes("video/mp4"));
-        await provider.CreateVideoTaskAsync(new VideoRequest("wan2.7-videoedit", "黏土风格", [Reference], VideoMode.Frames, 5, "720p", "adaptive", false, false) { Videos = [Clip with { Url = "https://x.example/in.mp4" }], Task = "edit" }, default);
-        var json = JsonNode.Parse(handler.Calls[0].Body)!;
-        Assert.Equal(["video", "reference_image"], json["input"]!["media"]!.AsArray().Select(m => (string?)m!["type"]));
-        Assert.Null(json["parameters"]!["duration"]);
-        Assert.Null(json["parameters"]!["ratio"]);
-        var state = await provider.PollVideoTaskAsync("t-3", default);
-        Assert.Equal(VideoTaskStatus.Completed, state.Status);
-        Assert.Equal("https://dashscope-result.example/out.mp4", state.RemoteUrl);
-    }
-
-    [Fact]
     public async Task Google_tts_sends_voice_and_style_and_reads_wav()
     {
         var wav = Convert.ToBase64String([0x52, 0x49, 0x46, 0x46]);
@@ -385,46 +175,6 @@ public class ProviderTests
         Assert.Equal("Kore", (string?)json["generation_config"]!["speech_config"]![0]!["voice"]);
         Assert.Equal("开心地", (string?)json["input"]![0]!["content"]![0]!["annotations"]![0]!["style"]);
         Assert.Equal(("audio/wav", 4), (audio.MimeType, audio.Bytes.Length));
-    }
-
-    [Fact]
-    public async Task Google_veo_extend_sends_the_video_uri_at_720p()
-    {
-        var (provider, handler) = Create(Vendor.Google, (_, _) => Json("""{"name":"models/veo-3.1-generate-preview/operations/op2"}"""));
-        var uri = "https://generativelanguage.googleapis.com/v1beta/files/abc:download?alt=media";
-        await provider.CreateVideoTaskAsync(new VideoRequest("veo-3.1-generate-preview", "继续向前", [], VideoMode.Frames, 4, "1080p", "9:16", false, false) { Videos = [Clip with { Url = uri }], Task = "extend" }, default);
-        var json = JsonNode.Parse(handler.Calls.Single().Body)!;
-        Assert.Equal(uri, (string?)json["instances"]![0]!["video"]!["uri"]);
-        Assert.Equal("720p", (string?)json["parameters"]!["resolution"]);
-        Assert.Equal(8, (int?)json["parameters"]!["durationSeconds"]);
-        Assert.Equal("9:16", (string?)json["parameters"]!["aspectRatio"]);
-    }
-
-    [Fact]
-    public async Task Google_omni_runs_in_background_and_downloads_the_file()
-    {
-        var (provider, handler) = Create(Vendor.Google, (request, _) => (request.Method.Method, request.RequestUri!.AbsolutePath) switch
-        {
-            ("POST", "/v1beta/interactions") => Json("""{"id":"v1_abc","status":"in_progress"}"""),
-            ("GET", "/v1beta/interactions/v1_abc") => Json("""{"id":"v1_abc","status":"completed","steps":[{"type":"model_output","content":[{"type":"video","mime_type":"video/mp4","uri":"https://generativelanguage.googleapis.com/v1beta/files/f1:download?alt=media"}]}]}"""),
-            ("GET", "/v1beta/files/f1") => Json("""{"name":"files/f1","state":"ACTIVE"}"""),
-            _ => Bytes("video/mp4"),
-        });
-        var id = await provider.CreateVideoTaskAsync(new VideoRequest("gemini-omni-1.1-flash", "让小提琴隐形", [], VideoMode.Frames, 0, "1080p", "9:16", false, false) { Videos = [Clip], Task = "edit", PreviousId = "v1_prev" }, default);
-        Assert.Equal("v1_abc", id);
-        var json = JsonNode.Parse(handler.Calls[0].Body)!;
-        Assert.Equal(true, (bool?)json["background"]);
-        Assert.Equal(true, (bool?)json["store"]);
-        Assert.Equal("v1_prev", (string?)json["previous_interaction_id"]);
-        Assert.Equal("edit", (string?)json["generation_config"]!["video_config"]!["task"]);
-        Assert.Equal("1080p", (string?)json["response_format"]!["resolution"]);
-        Assert.Equal("9:16", (string?)json["response_format"]!["aspect_ratio"]);
-        // Continuing the stored interaction never uploads the video again.
-        Assert.Single(json["input"]![0]!["content"]!.AsArray());
-        var state = await provider.PollVideoTaskAsync(id, default);
-        Assert.Equal(VideoTaskStatus.Completed, state.Status);
-        Assert.Equal("v1_abc", state.ConversationId);
-        Assert.EndsWith("/v1beta/files/f1:download", handler.Calls.Last().Request.RequestUri!.AbsolutePath);
     }
 
     [Fact]

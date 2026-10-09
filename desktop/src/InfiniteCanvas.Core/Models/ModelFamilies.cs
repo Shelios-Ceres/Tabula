@@ -36,47 +36,12 @@ public sealed record ImageFamily(string Id, Vendor Vendor, string Pattern)
     public long MaxPixels { get; init; }
 }
 
-public sealed record VideoFamily(string Id, Vendor Vendor, string Pattern)
-{
-    public Regex Match { get; } = new(Pattern, RegexOptions.IgnoreCase | RegexOptions.Compiled);
-    public int[] Seconds { get; init; } = [];
-    public (int Min, int Max)? SecondRange { get; init; }
-    /// <summary>Vertical pixel tiers; "2160" is sent as 4k.</summary>
-    public string[] Resolutions { get; init; } = [];
-    public string[] Ratios { get; init; } = [];
-    public int MaxReferences { get; init; }
-    public bool Audio { get; init; }
-    public bool Watermark { get; init; }
-    /// <summary>Seedance 2.5 keeps the first frame's aspect ratio, so frame tasks only accept adaptive.</summary>
-    public bool FramesAdaptiveOnly { get; init; }
-    /// <summary>Seedance 2.5: a 480p draft first, then the 1080p final from its task ID.</summary>
-    public bool Draft { get; init; }
-    /// <summary>Seedance: the task can return its final frame, to start the next clip from.</summary>
-    public bool LastFrame { get; init; }
-    /// <summary>Seedance 2.0 / 2.5: duration -1 lets the model choose the length.</summary>
-    public bool SmartDuration { get; init; }
-    /// <summary>Reference clips the model accepts (Seedance only by public URL, i.e. its own recent results).</summary>
-    public int MaxVideos { get; init; }
-    public int MaxAudios { get; init; }
-    /// <summary>Operations on an input video besides generating: "edit" and / or "extend".</summary>
-    public string[] Tasks { get; init; } = [];
-    /// <summary>Grok Imagine Video 1.5: preset voices and keyframes pinned inside the clip.</summary>
-    public int MaxVoices { get; init; }
-    public int MaxKeyframes { get; init; }
-    /// <summary>Gemini Omni: a stored interaction can be refined turn by turn.</summary>
-    public bool Conversational { get; init; }
-}
-
 public static class ModelFamilies
 {
     private static readonly string[] StandardRatios = ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"];
     private static readonly string[] TableRatios = ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "16:9", "9:16", "21:9", "9:21"];
     private static readonly string[] ArkRatios = ["auto", "1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3", "21:9"];
     private static readonly string[] XaiRatios = ["auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "2:1", "1:2", "19.5:9", "9:19.5", "20:9", "9:20", "21:9", "5:2"];
-    private static readonly string[] SeedanceRatios = ["adaptive", "16:9", "4:3", "1:1", "3:4", "9:16", "21:9"];
-    private static readonly string[] GrokVideoRatios = ["16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3"];
-    private static readonly string[] WanRatios = ["16:9", "9:16", "1:1", "4:3", "3:4"];
-
     // Order matters: more specific patterns first.
     public static readonly ImageFamily[] Image =
     [
@@ -102,30 +67,6 @@ public static class ModelFamilies
         new("qwen-image", Vendor.Qwen, "^qwen-image") { Tiers = ["auto", "1K", "2K"], Ratios = TableRatios, MaxReferences = 10, MaxImages = 6 },
     ];
 
-    public static readonly VideoFamily[] Video =
-    [
-        // Omni has no duration setting; it also edits and extends videos and refines a stored interaction turn by turn.
-        new("gemini-omni", Vendor.Google, "^gemini-omni") { Resolutions = ["360", "720", "1080", "2160"], Ratios = ["16:9", "9:16"], MaxReferences = 3, MaxVideos = 3, Tasks = ["edit", "extend"], Conversational = true },
-        new("veo-3.1", Vendor.Google, "^veo-3\\.1-generate") { Seconds = [4, 6, 8], Resolutions = ["720", "1080", "2160"], Ratios = ["16:9", "9:16"], MaxReferences = 3, Tasks = ["extend"] },
-        new("veo-3.1-fast", Vendor.Google, "^veo-3\\.1-fast") { Seconds = [4, 6, 8], Resolutions = ["720", "1080", "2160"], Ratios = ["16:9", "9:16"], MaxReferences = 3, Tasks = ["extend"] },
-        new("veo-3.1-lite", Vendor.Google, "^veo-3\\.1-lite") { Seconds = [4, 6, 8], Resolutions = ["720", "1080"], Ratios = ["16:9", "9:16"] },
-        new("veo-3", Vendor.Google, "^veo-3") { Seconds = [4, 6, 8], Resolutions = ["720", "1080", "2160"], Ratios = ["16:9", "9:16"] },
-        new("veo", Vendor.Google, "^veo-") { Seconds = [8], Resolutions = ["720", "1080"], Ratios = ["16:9"] },
-        new("seedance-2.5", Vendor.Ark, "seedance-2-5") { SecondRange = (4, 30), Resolutions = ["480", "720", "1080"], Ratios = SeedanceRatios, MaxReferences = 30, Audio = true, Watermark = true, FramesAdaptiveOnly = true,
-            Draft = true, LastFrame = true, SmartDuration = true, MaxVideos = 10, MaxAudios = 10, Tasks = ["edit", "extend"] },
-        new("seedance-2.0-fast", Vendor.Ark, "seedance-2-0-(fast|mini)") { SecondRange = (4, 15), Resolutions = ["480", "720"], Ratios = SeedanceRatios, MaxReferences = 9, Audio = true, Watermark = true, LastFrame = true, SmartDuration = true, MaxVideos = 3, MaxAudios = 3 },
-        new("seedance-2.0", Vendor.Ark, "seedance-2-0") { SecondRange = (4, 15), Resolutions = ["480", "720", "1080", "2160"], Ratios = SeedanceRatios, MaxReferences = 9, Audio = true, Watermark = true, LastFrame = true, SmartDuration = true, MaxVideos = 3, MaxAudios = 3 },
-        new("seedance-1.0", Vendor.Ark, "seedance") { SecondRange = (2, 12), Resolutions = ["480", "720", "1080"], Ratios = SeedanceRatios, Watermark = true, LastFrame = true },
-        new("grok-imagine-video-1.5", Vendor.XAI, "^grok-imagine-video-1\\.5") { SecondRange = (1, 15), Resolutions = ["480", "720", "1080"], Ratios = GrokVideoRatios, MaxReferences = 7, Audio = true, Tasks = ["edit", "extend"], MaxVoices = 3, MaxKeyframes = 4 },
-        new("grok-imagine-video", Vendor.XAI, "^grok-imagine-video") { SecondRange = (1, 15), Resolutions = ["480", "720", "1080"], Ratios = GrokVideoRatios, MaxReferences = 7, Audio = true, Tasks = ["edit", "extend"] },
-        // Wan 2.7 (new video-synthesis protocol): i2v takes first / last frame, a driving audio or a clip to continue (duration is the total);
-        // r2v takes up to 5 reference images and videos together; videoedit always edits one input video (2–10 s) with up to 4 reference images.
-        new("wan-2.7-t2v", Vendor.Qwen, "^wan2\\.7-t2v") { SecondRange = (2, 15), Resolutions = ["720", "1080"], Ratios = WanRatios, MaxAudios = 1, Watermark = true },
-        new("wan-2.7-i2v", Vendor.Qwen, "^wan2\\.7-i2v") { SecondRange = (2, 15), Resolutions = ["720", "1080"], Ratios = ["adaptive"], MaxReferences = 2, MaxAudios = 1, Tasks = ["extend"], Watermark = true },
-        new("wan-2.7-r2v", Vendor.Qwen, "^wan2\\.7-r2v") { SecondRange = (2, 15), Resolutions = ["720", "1080"], Ratios = WanRatios, MaxReferences = 5, MaxVideos = 5, Watermark = true },
-        new("wan-2.7-videoedit", Vendor.Qwen, "^wan2\\.7-videoedit") { SecondRange = (2, 10), Resolutions = ["720", "1080"], Ratios = ["adaptive", .. WanRatios], MaxReferences = 4, MaxVideos = 1, Tasks = ["edit"], Watermark = true },
-    ];
-
     /// <summary>Strip the channel prefix, "models/", a vendor prefix and trailing snapshot/preview suffixes.</summary>
     public static string Normalize(string model)
     {
@@ -144,12 +85,6 @@ public static class ModelFamilies
     {
         var name = Normalize(model);
         return Image.FirstOrDefault(family => family.Vendor == vendor && family.Match.IsMatch(name));
-    }
-
-    public static VideoFamily? FindVideo(Vendor vendor, string model)
-    {
-        var name = Normalize(model);
-        return Video.FirstOrDefault(family => family.Vendor == vendor && family.Match.IsMatch(name));
     }
 
     /// <summary>
@@ -191,10 +126,10 @@ public static class ModelFamilies
     public static IReadOnlyList<string> Recommended(Vendor vendor) => vendor switch
     {
         Vendor.OpenAI => ["gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2", "gpt-5.5", "gpt-4o-mini-tts"],
-        Vendor.Google => ["gemini-nano-banana-2.1", "gemini-3-pro-image", "gemini-3.1-flash-image", "gemini-3.1-flash-lite-image", "gemini-omni-1.1-flash", "gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts", "veo-3.1-generate-preview", "veo-3.1-fast-generate-preview", "veo-3.1-lite-generate-preview"],
-        Vendor.Ark => ["doubao-seedream-5-0-pro-260628", "doubao-seedream-5-0-flash-260915", "doubao-seedream-5-0-260128", "doubao-seedream-4-5-251128", "doubao-seedream-4-0-250828", "doubao-seedance-2-5-260628", "doubao-seedance-2-0-260128", "doubao-seedance-2-0-fast-260128", "doubao-seedance-2-0-mini-260615"],
-        Vendor.XAI => ["grok-imagine-image-2.0", "grok-imagine-video-1.5"],
-        _ => ["qwen-image-3.0-pro", "qwen-image-3.0", "qwen-image-2.1-pro", "wan2.7-t2v", "wan2.7-i2v", "wan2.7-r2v", "wan2.7-videoedit", "qwen3.8-max", "qwen-plus"],
+        Vendor.Google => ["gemini-nano-banana-2.1", "gemini-3-pro-image", "gemini-3.1-flash-image", "gemini-3.1-flash-lite-image", "gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts"],
+        Vendor.Ark => ["doubao-seedream-5-0-pro-260628", "doubao-seedream-5-0-flash-260915", "doubao-seedream-5-0-260128", "doubao-seedream-4-5-251128", "doubao-seedream-4-0-250828"],
+        Vendor.XAI => ["grok-imagine-image-2.0"],
+        _ => ["qwen-image-3.0-pro", "qwen-image-3.0", "qwen-image-2.1-pro", "qwen3.8-max", "qwen-plus"],
     };
 
     /// <summary>Gemini TTS prebuilt voices, in the order of the speech-generation guide; the first is the fallback.</summary>
@@ -204,6 +139,7 @@ public static class ModelFamilies
         "Erinome", "Algenib", "Rasalgethi", "Laomedeia", "Achernar", "Alnilam", "Schedar", "Gacrux", "Pulcherrima", "Achird", "Zubenelgenubi", "Vindemiatrix", "Sadachbia", "Sadaltager", "Sulafat",
     ];
 
+    // Video models are recognised (and kept out of the text pickers) although video generation is not available in this version.
     private static readonly string[] VideoKeywords = ["video", "sora", "veo", "seedance", "kling", "wan", "hailuo"];
     private static readonly string[] AudioKeywords = ["audio", "tts", "speech", "voice", "music", "sound"];
     private static readonly string[] ImageKeywords = ["seedream", "gpt-image", "image", "banana", "dall-e", "imagen", "flux", "sdxl", "stable-diffusion", "midjourney"];
@@ -213,31 +149,11 @@ public static class ModelFamilies
     {
         var normalized = Normalize(name);
         if (Image.Any(family => family.Match.IsMatch(normalized))) return Capability.Image;
-        if (Video.Any(family => family.Match.IsMatch(normalized))) return Capability.Video;
         if (VideoKeywords.Any(normalized.Contains)) return Capability.Video;
         if (AudioKeywords.Any(normalized.Contains) && !normalized.Contains("qwen")) return Capability.Audio;
         if (ImageKeywords.Any(normalized.Contains)) return Capability.Image;
         return Capability.Text;
     }
-
-    /// <summary>Families without any duration setting (Gemini Omni) have no length to choose.</summary>
-    public static bool HasDuration(VideoFamily family) => family.Seconds.Length > 0 || family.SecondRange is not null;
-
-    public static int SnapSeconds(VideoFamily family, int value)
-    {
-        if (family.Seconds.Length > 0) return family.Seconds.MinBy(item => Math.Abs(item - value));
-        if (value == -1 && family.SmartDuration) return -1;
-        var (min, max) = family.SecondRange ?? (4, 15);
-        return Math.Clamp(value <= 0 ? 6 : value, min, max);
-    }
-
-    public static string SnapResolution(VideoFamily family, string? value)
-    {
-        var pixels = int.TryParse(value?.TrimEnd('p'), out var parsed) ? parsed : 720;
-        return family.Resolutions.MinBy(item => Math.Abs(int.Parse(item) - pixels)) ?? "720";
-    }
-
-    public static string SnapRatio(VideoFamily family, string? ratio) => ratio is not null && family.Ratios.Contains(ratio) ? ratio : family.Ratios[0];
 
     // GPT Image fixed size table by tier and ratio; also used for DashScope (sent as W*H).
     private static readonly Dictionary<string, Dictionary<string, string>> TierTable = new()

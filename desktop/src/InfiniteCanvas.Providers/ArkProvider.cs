@@ -6,7 +6,7 @@ using InfiniteCanvas.Core.Settings;
 
 namespace InfiniteCanvas.Providers;
 
-/// <summary>Volcengine Ark: Seedream image generation, Seedance video tasks and the Chat API.</summary>
+/// <summary>Volcengine Ark: Seedream image generation and the Chat API.</summary>
 public sealed class ArkProvider(ModelChannel channel, HttpClient http) : AiProvider(channel, http)
 {
     private Action<HttpRequestHeaders> Auth => Http.Bearer(Key);
@@ -122,80 +122,6 @@ public sealed class ArkProvider(ModelChannel channel, HttpClient http) : AiProvi
         if (Http.Str(item["url"]) is not { } url) return null;
         var (bytes, type) = await Http.DownloadAsync(url, null, ct).ConfigureAwait(false);
         return new(bytes, type);
-    }
-
-    public override async Task<string> CreateVideoTaskAsync(VideoRequest request, CancellationToken ct)
-    {
-        var family = ModelFamilies.FindVideo(Vendor.Ark, request.Model);
-        var model = ModelOrEndpoint(request.Model, request.EndpointId);
-        // The final video of a draft reuses the draft's prompt, inputs and settings; only these fields are allowed.
-        if (request.DraftTaskId is { } draftId)
-            return await CreateTaskAsync(new JsonObject
-            {
-                ["model"] = model,
-                ["content"] = new JsonArray { new JsonObject { ["type"] = "draft_task", ["draft_task"] = new JsonObject { ["id"] = draftId } } },
-                ["resolution"] = "1080p",
-                ["watermark"] = request.Watermark,
-            }.Set("return_last_frame", request.ReturnLastFrame ? true : null), ct).ConfigureAwait(false);
-
-        // Reference clips make it a multimodal reference task, where images are references rather than frames.
-        var reference = request.Mode == VideoMode.Reference || request.Videos.Count > 0 || request.Audios.Count > 0;
-        var content = new JsonArray();
-        if (!string.IsNullOrWhiteSpace(request.Prompt)) content.Add(new JsonObject { ["type"] = "text", ["text"] = request.Prompt });
-        for (var i = 0; i < request.Images.Count; i++)
-        {
-            var role = reference ? "reference_image" : i == 0 ? "first_frame" : "last_frame";
-            content.Add(new JsonObject { ["type"] = "image_url", ["image_url"] = new JsonObject { ["url"] = request.Images[i].DataUrl }, ["role"] = role });
-        }
-        // Reference videos are taken by public URL or asset ID only, never as uploaded bytes.
-        foreach (var video in request.Videos)
-            content.Add(new JsonObject
-            {
-                ["type"] = "video_url",
-                ["video_url"] = new JsonObject { ["url"] = video.Url ?? throw new ApiException("方舟只接受公网地址的参考视频，不能上传本地视频文件；可以使用 24 小时内由 Seedance 生成的视频作为参考") },
-                ["role"] = "reference_video",
-            });
-        foreach (var audio in request.Audios)
-            content.Add(new JsonObject { ["type"] = "audio_url", ["audio_url"] = new JsonObject { ["url"] = audio.DataUrl }, ["role"] = "reference_audio" });
-        var task = request.Task is { } value && family?.Tasks.Contains(value) == true ? value : null;
-        // Seedance 2.5 keeps the first frame's aspect ratio in frame tasks, and edit / extend keep the source video's, so only adaptive is accepted there.
-        var adaptive = request.Ratio is "auto" or "adaptive" || task is not null || (family?.FramesAdaptiveOnly == true && !reference && request.Images.Count > 0);
-        var draft = request.Draft && family?.Draft == true;
-        var body = new JsonObject
-        {
-            ["model"] = model,
-            ["content"] = content,
-            ["ratio"] = adaptive ? "adaptive" : request.Ratio,
-            // An edit keeps the source's length.
-            ["duration"] = task == "edit" ? -1 : request.Seconds,
-            // Drafts are always 480p previews.
-            ["resolution"] = draft ? "480p" : request.Resolution,
-            ["watermark"] = request.Watermark,
-        }
-        .Set("generate_audio", family?.Audio == true ? request.GenerateAudio : null)
-        .Set("draft", draft ? true : null)
-        .Set("return_last_frame", request.ReturnLastFrame && family?.LastFrame == true ? true : null)
-        .Set("omni_reference_task_type", task);
-        return await CreateTaskAsync(body, ct).ConfigureAwait(false);
-    }
-
-    private async Task<string> CreateTaskAsync(JsonObject body, CancellationToken ct)
-    {
-        var created = await Http.PostJsonAsync($"{Base}/contents/generations/tasks", Auth, body, ct).ConfigureAwait(false);
-        return Http.Str(created["id"]) ?? throw new ApiException("接口未返回视频任务 ID");
-    }
-
-    public override async Task<VideoTaskState> PollVideoTaskAsync(string taskId, CancellationToken ct)
-    {
-        var state = await Http.QueryJsonAsync($"{Base}/contents/generations/tasks/{Uri.EscapeDataString(taskId)}", Auth, ct).ConfigureAwait(false);
-        var status = Http.Str(state["status"]);
-        if (status is "failed" or "expired" or "cancelled") return new(VideoTaskStatus.Failed, Error: Http.Message(state["error"]) ?? "视频生成失败");
-        if (status != "succeeded") return new(VideoTaskStatus.Pending);
-        if (Http.Str(state["content"]?["video_url"]) is not { } url) return new(VideoTaskStatus.Failed, Error: "未返回可播放的视频");
-        var (bytes, mime) = await Http.DownloadAsync(url, null, ct).ConfigureAwait(false);
-        var lastFrame = Http.Str(state["content"]?["last_frame_url"]) is { } frameUrl ? (await Http.DownloadAsync(frameUrl, null, ct).ConfigureAwait(false)).Bytes : null;
-        // The result URL stays valid for 24 hours, long enough to reference the video in a follow-up edit or extension.
-        return new(VideoTaskStatus.Completed, bytes, mime.StartsWith("video/") ? mime : "video/mp4") { RemoteUrl = url, RemoteUntil = DateTime.UtcNow.AddHours(23), LastFrame = lastFrame };
     }
 
     /// <summary>Ark Chat API with streamed deltas.</summary>

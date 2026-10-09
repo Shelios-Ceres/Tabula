@@ -6,8 +6,6 @@ public sealed record MediaInput(byte[] Bytes, string MimeType)
 {
     public string Base64 => Convert.ToBase64String(Bytes);
     public string DataUrl => $"data:{MimeType.ToLowerInvariant()};base64,{Base64}";
-    /// <summary>A vendor-side address for the same media (a Seedance result URL, a Veo video URI), when it is still valid.</summary>
-    public string? Url { get; init; }
 }
 
 /// <summary>Image settings resolved from the node; adapters read only what their vendor supports.</summary>
@@ -63,43 +61,6 @@ public sealed record ImageResult(List<GeneratedImage> Images, List<string> Texts
 /// <summary>Live progress: a preview frame, a finished image at an index, streamed text, or the ID of a background task the vendor accepted (kept so polling can resume later).</summary>
 public sealed record ImageEvent(GeneratedImage? Preview = null, int Index = -1, GeneratedImage? Output = null, string? Text = null, string? TaskId = null);
 
-public enum VideoMode { Frames, Reference }
-
-/// <summary>
-/// One video task. Seconds of -1 lets the model pick the length (Seedance). Videos / Audios are reference clips;
-/// Task is "edit" or "extend" when the first reference video is the one to change, otherwise a plain generation.
-/// </summary>
-public sealed record VideoRequest(string Model, string Prompt, IReadOnlyList<MediaInput> Images, VideoMode Mode, int Seconds, string Resolution, string Ratio, bool GenerateAudio, bool Watermark, string? EndpointId = null)
-{
-    public IReadOnlyList<MediaInput> Videos { get; init; } = [];
-    public IReadOnlyList<MediaInput> Audios { get; init; } = [];
-    public string? Task { get; init; }
-    /// <summary>Seedance 2.5 draft (样片): a 480p preview whose task ID later yields the final video.</summary>
-    public bool Draft { get; init; }
-    public string? DraftTaskId { get; init; }
-    public bool ReturnLastFrame { get; init; }
-    /// <summary>Grok Imagine Video 1.5 preset voices (voice_id), referenced in the prompt as &lt;AUDIO_0&gt;…</summary>
-    public IReadOnlyList<string> Voices { get; init; } = [];
-    /// <summary>Grok Imagine Video 1.5 images pinned inside the clip at the given second.</summary>
-    public IReadOnlyList<(MediaInput Image, double Seconds)> Keyframes { get; init; } = [];
-    /// <summary>Gemini Omni: continue a stored interaction instead of resending the video.</summary>
-    public string? PreviousId { get; init; }
-}
-
-public enum VideoTaskStatus { Pending, Completed, Failed }
-
-/// <summary>
-/// RemoteUrl is the vendor's address of the result, usable as a later reference until RemoteUntil; LastFrame is the final frame
-/// when it was requested; ConversationId continues a conversational model (Gemini Omni).
-/// </summary>
-public sealed record VideoTaskState(VideoTaskStatus Status, byte[]? Video = null, string? MimeType = null, string? Error = null, int Progress = -1)
-{
-    public string? RemoteUrl { get; init; }
-    public DateTime RemoteUntil { get; init; }
-    public byte[]? LastFrame { get; init; }
-    public string? ConversationId { get; init; }
-}
-
 public sealed record TextRequest(string Model, string Prompt, IReadOnlyList<MediaInput> Images, string? System = null, string? Reasoning = null);
 
 public sealed record SpeechRequest(string Model, string Input, string Voice, string Format, double Speed, string? Instructions);
@@ -126,8 +87,6 @@ public abstract class AiProvider(ModelChannel channel, HttpClient http)
     public virtual Task<ImageResult> ResumeImageTaskAsync(string taskId, bool store, CancellationToken ct) => throw Unsupported("续取图片任务");
     /// <summary>Best-effort cancel of a background task the user stopped; vendors without a cancel endpoint simply let it finish.</summary>
     public virtual Task CancelTaskAsync(string taskId) => Task.CompletedTask;
-    public virtual Task<string> CreateVideoTaskAsync(VideoRequest request, CancellationToken ct) => throw Unsupported("生成视频");
-    public virtual Task<VideoTaskState> PollVideoTaskAsync(string taskId, CancellationToken ct) => throw Unsupported("生成视频");
     public virtual Task<string> GenerateTextAsync(TextRequest request, Action<string>? onDelta, CancellationToken ct) => throw Unsupported("生成文本");
     public virtual Task<GeneratedImage> SpeechAsync(SpeechRequest request, CancellationToken ct) => throw Unsupported("生成音频");
     public virtual Task<List<string>> ListModelsAsync(CancellationToken ct) => Task.FromResult(Core.Models.ModelFamilies.Recommended(Channel.Vendor).ToList());

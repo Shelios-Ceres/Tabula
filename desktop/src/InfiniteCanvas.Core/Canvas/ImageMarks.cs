@@ -24,17 +24,11 @@ public static class NodeKeys
     /// <summary>The node whose run produced this output; retries go through it.</summary>
     public const string SourceId = "sourceId";
 
-    /// <summary>The vendor's address of a generated video and when it expires (ISO 8601), for edits and extensions that need it by URL.</summary>
-    public const string RemoteUrl = "remoteUrl";
-    public const string RemoteUntil = "remoteUntil";
-    /// <summary>Seedance draft (样片) task ID, valid for 7 days, from which the 1080p final video is made.</summary>
-    public const string DraftTaskId = "draftTaskId";
-
     /// <summary>Batch outputs shown as one stack (see <see cref="Stacks"/>); the ID is shared by all members, open marks a spread-out stack.</summary>
     public const string Stack = "stack";
     public const string StackOpen = "stackOpen";
 
-    public static readonly string[] PerImage = [Mask, Selections, ConversationId, ConversationModel, ModelText, InputNote, SourceId, RemoteUrl, RemoteUntil, DraftTaskId, Stack, StackOpen];
+    public static readonly string[] PerImage = [Mask, Selections, ConversationId, ConversationModel, ModelText, InputNote, SourceId, Stack, StackOpen];
 
     public static List<ImageSelection> SelectionsOf(CanvasNode node) =>
         node.Option(Selections) is { Length: > 0 } json ? Json.Deserialize<List<ImageSelection>>(json) ?? [] : [];

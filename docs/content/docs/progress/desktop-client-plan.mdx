@@ -27,6 +27,8 @@ Each channel has a single vendor and uses only that vendor's official protocol:
 - **xAI**: Grok Imagine images and video tasks, Responses API text.
 - **Qwen (Model Studio)**: DashScope `multimodal-generation` for Qwen-Image 3.0 / 3.0-pro / 2.1-pro and DashScope SSE text.
 
+Video generation (Veo, Seedance, Grok video and Wan 2.7) is not on main for now: it lives on the `video-models` branch, and on main video nodes only hold imported clips. It will be merged back when needed.
+
 Model capabilities are declared per model family in `desktop/src/InfiniteCanvas.Core/Models/ModelFamilies.cs`.
 
 ## Phases
@@ -35,8 +37,8 @@ Model capabilities are declared per model family in `desktop/src/InfiniteCanvas.
 | --- | --- | --- |
 | 0 | Acrylic shell, canvas list, settings | Done, pending review |
 | 1 | Canvas engine: pan/zoom, box select, drag, resize, connections, groups, undo/redo, import/paste/drop, autosave | Done, pending review |
-| 2 | Image / video / text / speech generation for all five vendors, config nodes, video task resume | Done, pending real-account tests |
+| 2 | Image / text / speech generation for all five vendors, config nodes (video generation and task resume on the `video-models` branch) | Done, pending real-account tests |
 | 3 | Image tools: crop, split, angle, upscale, mask editing, hover toolbar | Done, pending review |
-| 4 | Minimap and new video features (drafts, last frame, reference video/audio, edit/extend, keyframes, Gemini Omni), Wan 2.7 video, Gemini TTS | Done, pending review |
+| 4 | Minimap and Gemini TTS; new video features (drafts, last frame, reference video/audio, edit/extend, keyframes, Gemini Omni) and Wan 2.7 video on the `video-models` branch | Done, pending review |
 | 5 | Media library and local prompt library done, pending review; WebDAV sync on hold | Done, pending review |
 | 6 | Agent assistant (local agents over ACP + canvas MCP tools) done, pending tests; plugin nodes on hold | Done, pending review |

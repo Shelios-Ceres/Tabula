@@ -145,9 +145,9 @@ public sealed partial class CanvasView : UserControl
         Generator.ResumeTasks();
     }
 
-    /// <summary>Leaving stops running generations, so ask first; video tasks resume on the next open.</summary>
+    /// <summary>Leaving stops running generations, so ask first; OpenAI Responses image tasks resume on the next open.</summary>
     public async Task<bool> ConfirmLeaveAsync() => Generator.RunningCount == 0
-        || await Dialogs.ConfirmAsync("离开画布？", $"有 {Generator.RunningCount} 个生成任务仍在进行，离开会中断它们（视频和 OpenAI Responses 生图任务下次打开画布会继续查询）。", "离开", destructive: true);
+        || await Dialogs.ConfirmAsync("离开画布？", $"有 {Generator.RunningCount} 个生成任务仍在进行，离开会中断它们（OpenAI Responses 生图任务下次打开画布会继续查询）。", "离开", destructive: true);
 
     private void RaiseChanged() => Changed?.Invoke();
 
@@ -1279,8 +1279,6 @@ public sealed partial class CanvasView : UserControl
         var menu = new MenuFlyout();
         if (CanvasGenerator.CanGenerate(node))
             menu.Items.Add(Generator.IsRunning(node.Id) ? Item("停止生成", "", () => Generator.Cancel(node.Id)) : Item(node.Status == NodeStatus.Error && !node.HasContent ? "重试" : "生成", "", () => Generator.GenerateAsync(node)));
-        if (node.Kind == NodeKind.Video && node.HasContent && node.Option(NodeKeys.DraftTaskId).Length > 0)
-            menu.Items.Add(Item("生成正式视频（1080p）", "\uE714", () => Generator.FinalizeDraftAsync(node)));
         if (Stacks.Of(node) is { } stack && Stacks.Members(Doc, stack).Count > 1)
             menu.Items.Add(Item(Stacks.IsOpen(node) ? "收起这一批" : "展开这一批", Stacks.IsOpen(node) ? "\uE73F" : "\uE740", () => ToggleStack(node)));
         menu.Items.Add(Item("重命名", "", () => RenameAsync(node)));

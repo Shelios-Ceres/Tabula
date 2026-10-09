@@ -151,7 +151,7 @@ public sealed partial class NodeView : UserControl
                 KindTile.Visibility = Visibility.Collapsed;
                 TitleText.Visibility = Visibility.Collapsed;
                 StatusChip.Style = (Style)Application.Current.Resources["GlassChip"];
-                _placeholder = Placeholder(Node.Kind == NodeKind.Image ? "双击导入图片\n或选中后输入提示词生成" : "双击导入视频\n或选中后输入提示词生成");
+                _placeholder = Placeholder(Node.Kind == NodeKind.Image ? "双击导入图片\n或选中后输入提示词生成" : "双击导入视频");
                 if (Node.Kind == NodeKind.Image)
                 {
                     _image = new Image { Stretch = Stretch.UniformToFill, OpacityTransition = new ScalarTransition { Duration = Motion.Normal } };
@@ -262,8 +262,7 @@ public sealed partial class NodeView : UserControl
     {
         var loading = Node.Status == NodeStatus.Loading;
         var failed = Node.Status == NodeStatus.Error && !string.IsNullOrEmpty(Node.Error);
-        var waiting = Node.Error == CanvasGenerator.StillRunning;
-        var paused = waiting || Node.Error is CanvasGenerator.Stopped or CanvasGenerator.Interrupted;
+        var paused = Node.Error is CanvasGenerator.Stopped or CanvasGenerator.Interrupted;
         // Empty cards explain the state in the middle; cards with content or a preview keep only the small corner chip.
         var center = (loading || failed) && !Node.HasContent && Node.Preview is null;
         StatusView.Visibility = center ? Visibility.Visible : Visibility.Collapsed;
@@ -271,11 +270,11 @@ public sealed partial class NodeView : UserControl
         BigBusy.Visibility = center && loading ? Visibility.Visible : Visibility.Collapsed;
         FailIcon.Visibility = center && failed && !paused ? Visibility.Visible : Visibility.Collapsed;
         InfoIcon.Visibility = center && failed && paused ? Visibility.Visible : Visibility.Collapsed;
-        // A video still running resumes on its own; every other failed or stopped empty node can be retried in place.
-        RetryButton.Visibility = center && failed && !waiting && CanvasGenerator.CanGenerate(Node) ? Visibility.Visible : Visibility.Collapsed;
-        InfoIcon.Glyph = waiting ? "" : "";
-        StatusTitle.Text = loading ? "正在生成…" : waiting ? "视频仍在生成" : paused ? Node.Error! : "生成失败";
-        StatusDetail.Text = loading ? (Node.Kind == NodeKind.Video ? "视频通常需要几分钟" : "") : waiting ? "重新打开画布会继续查询结果" : paused ? "" : Node.Error ?? "";
+        // A failed or stopped empty node can be retried in place.
+        RetryButton.Visibility = center && failed && CanvasGenerator.CanGenerate(Node) ? Visibility.Visible : Visibility.Collapsed;
+        InfoIcon.Glyph = "";
+        StatusTitle.Text = loading ? "正在生成…" : paused ? Node.Error! : "生成失败";
+        StatusDetail.Text = loading || paused ? "" : Node.Error ?? "";
         StatusDetail.Visibility = StatusDetail.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
         ToolTipService.SetToolTip(StatusDetail, failed && !paused ? Node.Error : null);
         Busy.IsActive = loading && !center;

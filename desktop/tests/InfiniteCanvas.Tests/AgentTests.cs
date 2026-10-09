@@ -68,15 +68,15 @@ public class AgentTests
             new CanvasOp { Type = "add_node", Kind = "text", Ref = "a", Text = "一只猫" },
             new CanvasOp { Type = "add_node", Kind = "image", Ref = "b", Prompt = "画出来", X = 600, Y = 0 },
             new CanvasOp { Type = "connect", From = "a", To = "b" },
-            new CanvasOp { Type = "update_node", Id = "b", Title = "猫图", Ratio = "16:9", Options = new() { ["lastFrame"] = "true", ["videoMode"] = null } },
+            new CanvasOp { Type = "update_node", Id = "b", Title = "猫图", Ratio = "16:9", Options = new() { ["watermark"] = "true", ["background"] = null } },
             new CanvasOp { Type = "select", Ids = ["b"] },
             new CanvasOp { Type = "add_node", Kind = "group" },
         ]));
         Assert.Equal(1, host.Records);
         var (text, image) = (host.Document.Nodes[0], host.Document.Nodes[1]);
         Assert.Equal(("一只猫", "猫图", "16:9", 600d), (text.Content, image.Title, image.Ratio, image.X));
-        Assert.Equal("true", image.Option("lastFrame"));
-        Assert.False(image.Options.ContainsKey("videoMode"));
+        Assert.Equal("true", image.Option("watermark"));
+        Assert.False(image.Options.ContainsKey("background"));
         Assert.Equal((text.Id, image.Id), (host.Document.Connections.Single().From, host.Document.Connections.Single().To));
         Assert.Equal([image.Id], host.Selected);
         var errors = result.GetProperty("results").EnumerateArray().Where(r => r.TryGetProperty("error", out _)).ToList();

@@ -17,11 +17,8 @@ namespace InfiniteCanvas.App.Board;
 /// </summary>
 public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Action recordHistory, Action changed)
 {
-    /// <summary>Video polling, same cadence as the web client: 2.5 s × 360 ≈ 15 minutes; a timed-out task keeps its ID and resumes on next open.</summary>
-    private const int PollAttempts = 360;
-
-    /// <summary>Node.Error values for a user stop, an interrupted run and a video still running after polling ended; shown as paused, not failed.</summary>
-    public const string Stopped = "已停止生成", Interrupted = "生成已中断", StillRunning = "视频仍在生成中，重新打开画布会继续查询结果";
+    /// <summary>Node.Error values for a user stop and an interrupted run; shown as paused, not failed.</summary>
+    public const string Stopped = "已停止生成", Interrupted = "生成已中断";
 
     private readonly Dictionary<string, CancellationTokenSource> _running = [];
     private readonly HashSet<string> _starting = [];
@@ -51,13 +48,14 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
         _ => Capability.Text,
     };
 
-    public static bool CanGenerate(CanvasNode node) => node.Kind != NodeKind.Group;
+    /// <summary>Video generation is not part of this version (it lives on the video-models branch): video nodes only hold imported clips.</summary>
+    public static bool CanGenerate(CanvasNode node) => node.Kind != NodeKind.Group && CapabilityOf(node) != Capability.Video;
 
     /// <summary>Why a generation cannot start, for callers without dialogs such as agent tools; null when it can. Mirrors the checks in GenerateAsync.</summary>
     public static string? CannotGenerate(CanvasDocument doc, CanvasNode node)
     {
         if (RetrySource(doc, node) is { } origin) node = origin;
-        if (!CanGenerate(node)) return "分组节点不能生成";
+        if (!CanGenerate(node)) return node.Kind == NodeKind.Group ? "分组节点不能生成" : "这个版本不支持生成视频";
         var capability = CapabilityOf(node);
         var settings = SettingsStore.Current;
         if (settings.Resolve(settings.ModelFor(capability, node.Model)) is not { } resolved) return $"还没有可用的{Labels.Name(capability)}模型，请让用户先在设置里添加";
@@ -78,8 +76,6 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
                 resources.RemoveAll(r => r.Type == NodeKind.Image && r.Node != node);
         }
         if (node.HasContent && node.Kind is NodeKind.Text) resources.Insert(0, new(node, NodeKind.Text, node.Content));
-        // Editing or extending a video node works on the node itself, ahead of any connected videos.
-        if (node.HasContent && node.Kind is NodeKind.Video && node.Option("videoTask") is "edit" or "extend") resources.Insert(0, new(node, NodeKind.Video, null));
         return resources;
     }
 
@@ -174,7 +170,6 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
             switch (capability)
             {
                 case Capability.Image: await RunImageAsync(provider, channel, model, source, prompt, images, targets, cts.Token); break;
-                case Capability.Video: await RunVideoAsync(provider, channel, model, source, prompt, images, targets[0], cts.Token); break;
                 case Capability.Audio: await RunAudioAsync(provider, model, source, prompt, targets[0], cts.Token); break;
                 default: await RunTextAsync(provider, channel, model, source, prompt, images, targets[0], cts.Token); break;
             }
@@ -220,9 +215,9 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
             var node = CanvasNode.Create(kind, 0, 0);
             CopySettings(source, node);
             if (sibling) node.Prompt = source.Prompt;
-            if (kind is NodeKind.Image or NodeKind.Video)
+            if (kind == NodeKind.Image)
             {
-                var aspect = ModelFamilies.AspectOf(source.Ratio is null or "auto" or "adaptive" ? (kind == NodeKind.Video ? "16:9" : "1:1") : source.Ratio);
+                var aspect = ModelFamilies.AspectOf(source.Ratio is null or "auto" ? "1:1" : source.Ratio);
                 node.Height = Math.Clamp(node.Width / aspect, 120, 640);
             }
             node.Y = y;
@@ -556,153 +551,6 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
         if (result.Errors.Count > 0) target.Error = string.Join("\n", result.Errors);
     }
 
-    private async Task RunVideoAsync(AiProvider provider, ModelChannel channel, ChannelModel model, CanvasNode source, string prompt, List<MediaInput> images, CanvasNode target, CancellationToken ct)
-    {
-        var family = ModelFamilies.FindVideo(channel.Vendor, model.Name);
-        // Switches stay on the node after a model change; only the families that show them may send them.
-        var task = source.Option("videoTask") is { Length: > 0 } value && family?.Tasks.Contains(value) == true ? value : null;
-        var resources = InputsOf(doc, source);
-        var videoNodes = resources.Where(r => r.Type == NodeKind.Video).Select(r => r.Node).Take(Math.Max(family?.MaxVideos ?? 0, task is null ? 0 : 1)).ToList();
-        if (task is not null && videoNodes.Count == 0) throw new ApiException("编辑或延长视频需要输入视频：在已有视频的节点上生成，或连接一个视频节点");
-        // Gemini Omni refines the video of a stored interaction by its ID instead of uploading it again.
-        var previousId = task is not null && family?.Conversational == true && videoNodes[0].Option(NodeKeys.ConversationModel) == source.Model ? videoNodes[0].Option(NodeKeys.ConversationId) : "";
-        List<MediaInput> videos, audios;
-        try
-        {
-            videos = videoNodes.Select(LoadMedia).ToList();
-            audios = resources.Where(r => r.Type == NodeKind.Audio).Take(family?.MaxAudios ?? 0).Select(r => LoadMedia(r.Node)).ToList();
-        }
-        catch (IOException ex) { throw new ApiException($"读取参考视频或音频失败：{ex.Message}"); }
-        // Media beyond images are numbered in the prompt like images are.
-        if (audios.Count > 0) prompt = $"参考音频编号：{string.Join("、", audios.Select((_, i) => $"音频{i + 1}"))}。\n\n{prompt}";
-        if (videos.Count > 0 && previousId.Length == 0) prompt = $"参考视频编号：{string.Join("、", videos.Select((_, i) => $"视频{i + 1}"))}。\n\n{prompt}";
-
-        var smart = family?.SmartDuration == true && source.Option("smartDuration") == "true";
-        var seconds = smart ? -1 : family is null ? Math.Max(1, source.Seconds == 0 ? 6 : source.Seconds) : ModelFamilies.SnapSeconds(family, source.Seconds == 0 ? 6 : source.Seconds);
-        // Grok Imagine 1.5 pins images between the first and last frame as keyframes, evenly spread over the clip.
-        var pinned = family is { MaxKeyframes: > 0 } && source.Option("videoMode") != "reference" && images.Count > 2 && images.Count <= family.MaxKeyframes + 2;
-        var mode = !pinned && (source.Option("videoMode") == "reference" || images.Count > 2) ? VideoMode.Reference : VideoMode.Frames;
-        List<(MediaInput, double)> keyframes = pinned ? images.Skip(1).SkipLast(1).Select((image, i) => (image, seconds * (i + 1.0) / (images.Count - 1))).ToList() : [];
-        List<MediaInput> frames = pinned ? [images[0], images[^1]] : images;
-        var tier = family is null ? source.Resolution ?? "720" : ModelFamilies.SnapResolution(family, source.Resolution);
-        var resolution = tier == "2160" ? "4k" : $"{tier}p";
-        var ratio = family is null ? source.Ratio ?? "16:9" : ModelFamilies.SnapRatio(family, source.Ratio);
-        var draft = family?.Draft == true && source.Option("draft") == "true";
-        var request = new VideoRequest(model.Name, prompt, frames, mode, seconds, resolution, ratio, source.GenerateAudio, source.Option("watermark") == "true", model.EndpointId)
-        {
-            Videos = videos,
-            Audios = audios,
-            Task = task,
-            Draft = draft,
-            ReturnLastFrame = family?.LastFrame == true && source.Option("lastFrame") == "true",
-            Voices = family is { MaxVoices: > 0 } ? source.Option("voices").Split([',', '，', ' ', ';', '；'], StringSplitOptions.RemoveEmptyEntries).Take(family.MaxVoices).ToList() : [],
-            Keyframes = keyframes,
-            PreviousId = previousId.Length > 0 ? previousId : null,
-        };
-        target.TaskId = await provider.CreateVideoTaskAsync(request, ct);
-        target.TaskModel = source.Model;
-        // A draft's task ID later yields its 1080p final video.
-        target.SetOption(NodeKeys.DraftTaskId, draft ? target.TaskId : null);
-        changed();
-        await PollVideoAsync(provider, target, ct);
-    }
-
-    /// <summary>A video or audio input as bytes, with the vendor's address of a generated video while it is still valid.</summary>
-    private MediaInput LoadMedia(CanvasNode node)
-    {
-        var input = new MediaInput(File.ReadAllBytes(ProjectStore.AssetPath(doc.Id, node.Content!)), node.MimeType ?? Media.MimeOf(node.Content!));
-        var live = DateTime.TryParse(node.Option(NodeKeys.RemoteUntil), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var until) && until > DateTime.UtcNow;
-        return live ? input with { Url = node.Option(NodeKeys.RemoteUrl) } : input;
-    }
-
-    private async Task PollVideoAsync(AiProvider provider, CanvasNode target, CancellationToken ct)
-    {
-        for (var attempt = 0; attempt < PollAttempts; attempt++)
-        {
-            VideoTaskState state;
-            // Sleep, wake-up, a network switch or a gateway error only skips this round; the task keeps its ID.
-            try { state = await provider.PollVideoTaskAsync(target.TaskId!, ct); }
-            catch (Exception ex) when (Http.Transient(ex) && !ct.IsCancellationRequested)
-            {
-                await Task.Delay(Http.PollInterval, ct);
-                continue;
-            }
-            if (state.Status == VideoTaskStatus.Failed) throw new ApiException(state.Error ?? "视频生成失败");
-            if (state.Status == VideoTaskStatus.Completed)
-            {
-                // The ID is cleared only once the file is safely written.
-                await FillAsync(target, state.Video!, state.MimeType ?? "video/mp4");
-                target.TaskId = null;
-                target.SetOption(NodeKeys.RemoteUrl, state.RemoteUrl);
-                target.SetOption(NodeKeys.RemoteUntil, state.RemoteUrl is null ? null : state.RemoteUntil.ToString("o", CultureInfo.InvariantCulture));
-                target.SetOption(NodeKeys.ConversationId, state.ConversationId);
-                target.SetOption(NodeKeys.ConversationModel, state.ConversationId is null ? null : target.TaskModel);
-                if (state.LastFrame is { } frame) await AddLastFrameAsync(target, frame);
-                return;
-            }
-            await Task.Delay(Http.PollInterval, ct);
-        }
-        // Keep the task ID: reopening the canvas continues polling.
-        target.Status = NodeStatus.Error;
-        target.Error = StillRunning;
-    }
-
-    /// <summary>The returned final frame becomes an image node right of the video, connected from it, ready to start the next clip.</summary>
-    private async Task AddLastFrameAsync(CanvasNode video, byte[] frame)
-    {
-        var node = CanvasNode.Create(NodeKind.Image, 0, 0);
-        node.Title = "尾帧";
-        node.Width = video.Width;
-        node.Height = video.Height;
-        node.Y = video.Y;
-        node.X = video.Right + 80;
-        node.X = CanvasGraph.FreeX(node, doc.Nodes);
-        node.GroupId = CanvasGraph.ContainingGroup(doc, node)?.Id;
-        doc.Nodes.Add(node);
-        doc.Connections.Add(CanvasConnection.Create(video.Id, node.Id));
-        await FillAsync(node, frame, "image/jpeg");
-    }
-
-    /// <summary>Seedance 2.5: the 1080p final video of a draft, into a new node right of it, connected from it. The vendor reuses the draft's prompt, inputs and settings.</summary>
-    public async Task FinalizeDraftAsync(CanvasNode draft)
-    {
-        if (draft.Option(NodeKeys.DraftTaskId) is not { Length: > 0 } draftId || IsRunning(draft.Id)) return;
-        var modelId = draft.TaskModel ?? draft.Model;
-        if (SettingsStore.Current.Resolve(modelId) is not { } resolved || string.IsNullOrWhiteSpace(resolved.Channel.ApiKey))
-        {
-            await Dialogs.MessageAsync("无法生成正式视频", "找不到生成该样片的服务商、模型或 API Key，请先在设置里恢复。");
-            return;
-        }
-        recordHistory();
-        var target = CanvasNode.Create(NodeKind.Video, 0, 0);
-        CopySettings(draft, target);
-        // The final video is not a draft itself.
-        target.SetOption("draft", null);
-        target.Title = "正式视频";
-        target.Width = draft.Width;
-        target.Height = draft.Height;
-        target.Y = draft.Y;
-        target.X = draft.Right + 80;
-        target.X = CanvasGraph.FreeX(target, doc.Nodes);
-        target.GroupId = CanvasGraph.ContainingGroup(doc, target)?.Id;
-        doc.Nodes.Add(target);
-        doc.Connections.Add(CanvasConnection.Create(draft.Id, target.Id));
-        var provider = AiProvider.For(resolved.Channel, App.Http);
-        await TrackAsync(target, provider, async ct =>
-        {
-            TargetsPrepared?.Invoke([target]);
-            var request = new VideoRequest(resolved.Model.Name, "", [], VideoMode.Frames, 0, "1080p", "adaptive", false, draft.Option("watermark") == "true", resolved.Model.EndpointId)
-            {
-                DraftTaskId = draftId,
-                ReturnLastFrame = draft.Option("lastFrame") == "true",
-            };
-            target.TaskId = await provider.CreateVideoTaskAsync(request, ct);
-            target.TaskModel = modelId;
-            changed();
-            await PollVideoAsync(provider, target, ct);
-        });
-    }
-
     /// <summary>
     /// Local upscale into a new image node to the right of the source, connected from it.
     /// Registered like a generation, so 停止, deleting the node and the leave confirmation all apply (stopping kills the tool).
@@ -738,11 +586,14 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
         }
     }
 
-    /// <summary>Resume video and background image tasks left running when the canvas was last closed.</summary>
+    /// <summary>Resume background image tasks left running when the canvas was last closed; a video task from an earlier version is no longer polled.</summary>
     public void ResumeTasks()
     {
         foreach (var node in doc.Nodes.Where(n => n.TaskId is not null && !n.HasContent).ToList())
-            _ = ResumeAsync(node);
+        {
+            if (node.Kind == NodeKind.Image) _ = ResumeAsync(node);
+            else (node.TaskId, node.Status, node.Error) = (null, NodeStatus.Error, "这个版本不支持生成视频，未完成的视频任务已停止查询");
+        }
     }
 
     private async Task ResumeAsync(CanvasNode node)
@@ -755,14 +606,10 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
             return;
         }
         var provider = AiProvider.For(resolved.Channel, App.Http);
-        await TrackAsync(node, provider, async ct =>
-        {
-            if (node.Kind == NodeKind.Image) await FillImageAsync(node, await provider.ResumeImageTaskAsync(node.TaskId!, node.Option("store") == "true", ct), 0, node.TaskModel);
-            else await PollVideoAsync(provider, node, ct);
-        });
+        await TrackAsync(node, provider, async ct => await FillImageAsync(node, await provider.ResumeImageTaskAsync(node.TaskId!, node.Option("store") == "true", ct), 0, node.TaskModel));
     }
 
-    /// <summary>One output node working outside a normal generation (a resumed task, a draft's final video), with the same stop and failure handling.</summary>
+    /// <summary>One output node working outside a normal generation (a resumed task), with the same stop and failure handling.</summary>
     private async Task TrackAsync(CanvasNode node, AiProvider provider, Func<CancellationToken, Task> work)
     {
         var cts = new CancellationTokenSource();
