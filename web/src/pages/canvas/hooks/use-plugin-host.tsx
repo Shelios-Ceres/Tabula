@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import { useTranslation } from "react-i18next";
 
-import { requestEdit, requestGeneration, requestImageQuestion, type AiTextMessage } from "@/services/api/image";
+import { requestImageQuestion, type AiTextMessage } from "@/services/api/image";
+import { runImageJob } from "@/services/api/image-jobs";
 import { imageToDataUrl } from "@/services/image-storage";
 import { requestVideoGeneration, storeGeneratedVideo } from "@/services/api/video";
-import { decodeChannelModel, selectableModelsByCapability, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
+import { decodeChannelModel, resolveImageProvider, selectableModelsByCapability, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
+import { resolveNativeImageCount } from "@/lib/image-model-capabilities";
 import { buildGenerationConfig } from "@/lib/canvas/canvas-generation-helpers";
 import { buildNodeContext } from "@/lib/canvas/plugin-node-context";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
@@ -51,11 +53,30 @@ export function usePluginHost(params: PluginHostParams) {
         };
         return {
             generateImage: async (prompt, options) => {
-                const config = { ...buildGenerationConfig(effectiveConfig, undefined, "image"), count: String(options?.count || 1), ...(options?.model ? { model: options.model } : {}), ...(options?.size ? { size: options.size } : {}) };
+                const baseConfig = buildGenerationConfig({ ...effectiveConfig, imageModel: options?.model || effectiveConfig.imageModel }, undefined, "image");
+                const config = {
+                    ...baseConfig,
+                    count: String(options?.count || 1),
+                    ...(options?.size ? { size: options.size } : {}),
+                    ...(options?.quality ? { quality: options.quality } : {}),
+                    ...(options?.background ? { background: options.background } : {}),
+                    ...(options?.outputFormat ? { outputFormat: options.outputFormat } : {}),
+                    ...(options?.outputCompression !== undefined ? { outputCompression: options.outputCompression } : {}),
+                    ...(options?.moderation ? { moderation: options.moderation } : {}),
+                    imageNative: {
+                        ...baseConfig.imageNative,
+                        ...options?.imageNative,
+                        openai: { ...baseConfig.imageNative.openai, ...options?.imageNative?.openai, store: effectiveConfig.imageNative.openai?.store === true },
+                        google: { ...baseConfig.imageNative.google, ...options?.imageNative?.google, store: effectiveConfig.imageNative.google?.store === true, webSearch: baseConfig.imageNative.google?.webSearch === true, imageSearch: baseConfig.imageNative.google?.imageSearch === true },
+                        ark: { ...baseConfig.imageNative.ark, ...options?.imageNative?.ark, webSearch: baseConfig.imageNative.ark?.webSearch === true },
+                    },
+                };
                 ensureReady(config);
                 const references = toReferences(options?.references);
-                const items = references.length ? await requestEdit(config, prompt, references, { signal: options?.signal }) : await requestGeneration(config, prompt, { signal: options?.signal });
-                const images = await Promise.all(items.map(async (item) => {
+                config.count = String(resolveNativeImageCount(resolveImageProvider(config, config.model), config.model, config.imageNative, Number(config.count), references.length));
+                const mask = options?.mask ? toReferences([options.mask])[0] : undefined;
+                const result = await runImageJob(config, prompt, references, { signal: options?.signal, mask, selections: options?.selections, conversation: options?.conversation, onEvent: options?.onEvent });
+                const images = await Promise.all(result.images.map(async (item) => {
                     try {
                         return await imageToDataUrl({ dataUrl: item.dataUrl }, { signal: options?.signal });
                     } catch (error) {
@@ -63,11 +84,12 @@ export function usePluginHost(params: PluginHostParams) {
                         return item.dataUrl;
                     }
                 }));
-                return { images };
+                return { images, resources: result.images, texts: result.texts, errors: result.errors, outputOrder: result.outputOrder, conversation: result.conversation, providerMetadata: result.providerMetadata };
             },
             generateVideo: async (prompt, options) => {
                 const config = {
                     ...buildGenerationConfig(effectiveConfig, undefined, "video"),
+                    size: options?.size || effectiveConfig.videoSize,
                     ...(options?.model ? { model: options.model } : {}),
                     ...(options?.size ? { size: options.size } : {}),
                     ...(options?.seconds ? { videoSeconds: options.seconds } : {}),

@@ -10,6 +10,7 @@ import "dayjs/locale/zh-cn";
 import { useTranslation } from "react-i18next";
 
 import { ClientRootInit } from "@/components/layout/client-root-init";
+import { useLiquidGlass } from "@/hooks/use-liquid-glass";
 import type { AppLocale } from "@/i18n";
 import { getAntThemeConfig } from "@/lib/app-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
@@ -29,6 +30,7 @@ export function AppProviders({ children }: { children: ReactNode }) {
     const theme = useThemeStore((state) => state.theme);
     const dark = theme === "dark";
     const locale = i18n.resolvedLanguage as AppLocale;
+    useLiquidGlass();
 
     useEffect(() => {
         document.documentElement.classList.toggle("dark", dark);

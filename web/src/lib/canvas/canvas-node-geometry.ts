@@ -12,6 +12,14 @@ export function nodeBounds(nodes: CanvasNodeData[]) {
     );
 }
 
+/** Shift a new node right in node-width steps until it no longer overlaps existing top-level nodes. */
+export function findFreeNodePosition(node: CanvasNodeData, nodes: CanvasNodeData[], gap = 40) {
+    const overlaps = (x: number) => nodes.some((item) => item.type !== CanvasNodeType.Group && x < item.position.x + item.width + gap && x + node.width + gap > item.position.x && node.position.y < item.position.y + item.height + gap && node.position.y + node.height + gap > item.position.y);
+    let x = node.position.x;
+    for (let step = 0; step < 50 && overlaps(x); step += 1) x += node.width + gap;
+    return { x, y: node.position.y };
+}
+
 export function findGroupDropTarget(movedIds: Set<string>, nodes: CanvasNodeData[]) {
     if (nodes.some((node) => movedIds.has(node.id) && node.type === CanvasNodeType.Group)) return null;
     const movingNodes = nodes.filter((node) => movedIds.has(node.id) && node.type !== CanvasNodeType.Group);

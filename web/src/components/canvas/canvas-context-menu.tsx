@@ -24,8 +24,8 @@ export function CanvasNodeContextMenu({ menu, canCaptureVideoFrame, canGroup, ca
 
     return (
         <div
-            className="fixed z-[80] min-w-44 overflow-hidden rounded-xl border py-1 shadow-2xl"
-            style={{ left: menu.x, top: menu.y, background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }}
+            className="liquid-glass liquid-glass-regular fixed z-[80] min-w-44 overflow-hidden rounded-2xl border py-1"
+            style={{ left: menu.x, top: menu.y, color: theme.node.text }}
             onPointerDown={(event) => event.stopPropagation()}
         >
             {canCaptureVideoFrame ? (

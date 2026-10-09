@@ -4,6 +4,9 @@ import { persist } from "zustand/middleware";
 import { nanoid } from "nanoid";
 
 import i18n from "@/i18n";
+import type { ImageOutputFormat } from "@/types/image";
+import type { ImageProvider, NativeImageOptions } from "@/types/image-generation";
+import { getVideoFamily, imageFamilies, normalizeModelId } from "@/lib/model-families";
 
 export type ApiCallFormat = "openai" | "gemini";
 export type ModelCapability = "image" | "video" | "text" | "audio";
@@ -12,16 +15,31 @@ export type ReasoningEffort = "auto" | "low" | "medium" | "high" | "xhigh";
 export type ChannelModel = {
     name: string;
     capability: ModelCapability;
+    endpointId?: string;
     script?: string;
 };
 
+/** A channel's vendor decides every protocol it uses: image, video, text, audio and model listing. */
+export type ChannelVendor = ImageProvider;
+export type GoogleApiVersion = "v1" | "v1beta";
+
 export type ModelChannel = {
+    vendor: ChannelVendor;
     id: string;
     name: string;
+    /** Host only; the version (Google) or /api/v3 (Ark) suffix is added by channelApiBaseUrl. */
     baseUrl: string;
     apiKey: string;
-    apiFormat: ApiCallFormat;
+    /** Google only. New models (e.g. Nano Banana 2.1) are released on v1beta first. */
+    apiVersion?: GoogleApiVersion;
     models: ChannelModel[];
+};
+
+export const vendorBaseUrls: Record<ChannelVendor, string> = {
+    openai: "https://api.openai.com",
+    google: "https://generativelanguage.googleapis.com",
+    ark: "https://ark.cn-beijing.volces.com",
+    xai: "https://api.x.ai",
 };
 
 export type AiConfig = {
@@ -40,6 +58,7 @@ export type AiConfig = {
     audioSpeed: string;
     audioInstructions: string;
     videoSeconds: string;
+    videoSize: string;
     vquality: string;
     videoGenerateAudio: string;
     videoWatermark: string;
@@ -50,6 +69,10 @@ export type AiConfig = {
     quality: string;
     size: string;
     background: string;
+    outputFormat: ImageOutputFormat;
+    outputCompression: number;
+    moderation: "auto" | "low";
+    imageNative: NativeImageOptions;
     count: string;
     canvasImageCount: string;
     proxyEnabled: boolean;
@@ -73,7 +96,6 @@ export type ChannelCredentialsImportResult = {
 export const CONFIG_STORE_KEY = "infinite-canvas:ai_config_store";
 const CHANNEL_MODEL_SEPARATOR = "::";
 const OPENAI_BASE_URL = "https://api.openai.com";
-const GEMINI_BASE_URL = "https://generativelanguage.googleapis.com";
 export const LOCAL_PROXY_PACKAGE = "@basketikun/canvas-proxy";
 export const DEFAULT_LOCAL_PROXY_URL = "http://127.0.0.1:23210";
 
@@ -85,21 +107,22 @@ export const defaultConfig: AiConfig = {
     channels: [
         {
             id: "default",
+            vendor: "openai",
             name: i18n.t("config.channels.defaultName"),
             baseUrl: OPENAI_BASE_URL,
             apiKey: "",
-            apiFormat: "openai",
             models: [
+                { name: "gpt-image-2.5-flare", capability: "image" },
+                { name: "gpt-image-2.5-sunburst", capability: "image" },
                 { name: "gpt-image-2", capability: "image" },
-                { name: "grok-imagine-video", capability: "video" },
                 { name: "gpt-5.5", capability: "text" },
                 { name: "gpt-4o-mini-tts", capability: "audio" },
             ],
         },
     ],
-    model: "default::gpt-image-2",
-    imageModel: "default::gpt-image-2",
-    videoModel: "default::grok-imagine-video",
+    model: "default::gpt-image-2.5-flare",
+    imageModel: "default::gpt-image-2.5-flare",
+    videoModel: "",
     textModel: "default::gpt-5.5",
     audioModel: "default::gpt-4o-mini-tts",
     audioVoice: "alloy",
@@ -107,18 +130,23 @@ export const defaultConfig: AiConfig = {
     audioSpeed: "1",
     audioInstructions: "",
     videoSeconds: "6",
+    videoSize: "1:1",
     vquality: "720",
     videoGenerateAudio: "true",
     videoWatermark: "false",
     videoMode: "frames",
     systemPrompt: "",
     reasoningEffort: "auto",
-    models: ["default::gpt-image-2", "default::grok-imagine-video", "default::gpt-5.5", "default::gpt-4o-mini-tts"],
+    models: ["default::gpt-image-2.5-flare", "default::gpt-image-2.5-sunburst", "default::gpt-image-2", "default::gpt-5.5", "default::gpt-4o-mini-tts"],
     quality: "auto",
-    size: "1:1",
-    background: "",
+    size: "1024x1024",
+    background: "auto",
+    outputFormat: "png",
+    outputCompression: 100,
+    moderation: "auto",
+    imageNative: { stream: false, google: { imageSize: "1K", thinkingLevel: "auto", store: false }, ark: { size: "2K", sequential: false, watermark: false, optimizePrompt: "standard" }, openai: { api: "images", store: false, partialImages: 0 } },
     count: "1",
-    canvasImageCount: "3",
+    canvasImageCount: "1",
     proxyEnabled: false,
     proxyUrl: DEFAULT_LOCAL_PROXY_URL,
 };
@@ -146,16 +174,19 @@ type ConfigStore = {
     clearPromptContinue: () => void;
 };
 
-const VIDEO_KEYWORDS = ["video", "sora", "veo", "kling", "wan", "hailuo"];
+const VIDEO_KEYWORDS = ["video", "sora", "veo", "seedance", "kling", "wan", "hailuo"];
 
 export function boolConfig(value: string, fallback: boolean) {
     return value ? value === "true" : fallback;
 }
 const AUDIO_KEYWORDS = ["audio", "tts", "speech", "voice", "music", "sound"];
-const IMAGE_KEYWORDS = ["seedream", "gpt-image", "image", "dall-e", "dalle", "imagen", "flux", "sdxl", "stable-diffusion", "midjourney"];
+const IMAGE_KEYWORDS = ["seedream", "gpt-image", "image", "banana", "dall-e", "dalle", "imagen", "flux", "sdxl", "stable-diffusion", "midjourney"];
 
 /** Best-effort default capability for a freshly fetched model name; user can override in the channel editor. */
 export function guessCapability(name: string): ModelCapability {
+    const normalized = normalizeModelId(name);
+    if (imageFamilies.some((family) => family.match.test(normalized))) return "image";
+    if (getVideoFamily(name).protocol) return "video";
     const value = name.toLowerCase();
     if (VIDEO_KEYWORDS.some((keyword) => value.includes(keyword))) return "video";
     if (AUDIO_KEYWORDS.some((keyword) => value.includes(keyword))) return "audio";
@@ -270,7 +301,7 @@ export const useConfigStore = create<ConfigStore>()(
                         videoGenerateAudio: config.videoGenerateAudio || "true",
                         videoWatermark: config.videoWatermark || "false",
                         videoMode: config.videoMode === "reference" ? "reference" : "frames",
-                        canvasImageCount: config.canvasImageCount || "3",
+                        canvasImageCount: config.canvasImageCount || "1",
                         proxyEnabled: Boolean(config.proxyEnabled),
                         proxyUrl: config.proxyUrl || DEFAULT_LOCAL_PROXY_URL,
                     },
@@ -295,21 +326,79 @@ export function normalizeChannelModels(models: Array<string | ChannelModel> | un
         seen.add(name);
         const capability = typeof item === "string" ? guessCapability(name) : item.capability || guessCapability(name);
         const script = typeof item === "string" ? undefined : item.script?.trim() || undefined;
-        result.push({ name, capability, script });
+        const endpointId = typeof item === "string" ? undefined : item.endpointId?.trim() || undefined;
+        result.push({ name, capability, script, ...(endpointId ? { endpointId } : {}) });
     }
     return result;
 }
 
-export function createModelChannel(channel?: Partial<ModelChannel>): ModelChannel {
-    const apiFormat = normalizeApiFormat(channel?.apiFormat);
+/** Older channels stored provider + apiFormat; they are migrated by host first, then by those fields. */
+type LegacyChannelFields = { provider?: string; apiFormat?: string };
+
+export function createModelChannel(channel?: Partial<ModelChannel> & LegacyChannelFields): ModelChannel {
+    const vendor = channel?.vendor || inferChannelVendor(channel);
+    const rawBaseUrl = channel?.baseUrl?.trim().replace(/\/+$/, "") || "";
+    const version = /\/(v1beta|v1)$/i.exec(rawBaseUrl)?.[1].toLowerCase() as GoogleApiVersion | undefined;
+    const baseUrl = vendor === "google" ? rawBaseUrl.replace(/\/v1(?:beta)?$/i, "") : rawBaseUrl;
     return {
+        vendor,
         id: channel?.id?.trim() || nanoid(),
         name: channel?.name?.trim() || i18n.t("config.channels.newName"),
-        baseUrl: channel?.baseUrl?.trim() || defaultBaseUrlForApiFormat(apiFormat),
+        baseUrl: baseUrl || vendorBaseUrls[vendor],
         apiKey: channel?.apiKey || "",
-        apiFormat,
+        ...(vendor === "google" ? { apiVersion: channel?.apiVersion || version || "v1beta" } : {}),
         models: normalizeChannelModels(channel?.models),
     };
+}
+
+function inferChannelVendor(channel?: Partial<ModelChannel> & LegacyChannelFields): ChannelVendor {
+    try {
+        const hostname = new URL(channel?.baseUrl || "").hostname.toLowerCase();
+        if (hostname === "api.openai.com") return "openai";
+        if (hostname === "generativelanguage.googleapis.com") return "google";
+        if (/\.volces\.com$|\.bytepluses\.com$/.test(hostname)) return "ark";
+        if (hostname === "api.x.ai") return "xai";
+    } catch { /* Incomplete addresses fall back to the legacy fields. */ }
+    if (channel?.provider === "google" || channel?.provider === "ark" || channel?.provider === "openai") return channel.provider;
+    return channel?.apiFormat === "gemini" ? "google" : "openai";
+}
+
+/** Request base address: Google appends the API version, Ark appends /api/v3. */
+export function channelApiBaseUrl(channel: Pick<ModelChannel, "vendor" | "baseUrl" | "apiVersion">) {
+    const base = channel.baseUrl.trim().replace(/\/+$/, "");
+    if (channel.vendor === "google") return /\/v1(?:beta)?$/i.test(base) ? base : `${base}/${channel.apiVersion || "v1beta"}`;
+    if (channel.vendor === "ark") return /\/api\/v3$/i.test(base) ? base : `${base}/api/v3`;
+    return base;
+}
+
+export function resolveImageProvider(config: AiConfig, model = config.imageModel || config.model): ImageProvider {
+    return resolveModelChannel(config, model).vendor;
+}
+
+export function sameChannelTextModels(config: AiConfig, model: string) {
+    return resolveModelChannel(config, model).models.filter((item) => item.capability === "text").map((item) => item.name);
+}
+
+export function resolveSameChannelMainModel(config: AiConfig, model: string, candidate?: string) {
+    const models = sameChannelTextModels(config, model);
+    const candidateName = modelOptionName(candidate || "");
+    if (candidateName && models.includes(candidateName)) return candidateName;
+    const textModel = decodeChannelModel(config.textModel);
+    if (textModel?.channelId === resolveModelChannel(config, model).id && models.includes(textModel.model)) return textModel.model;
+    return models[0] || "";
+}
+
+/** Resolve a channel Endpoint once, then preserve it with the generation options. */
+export function snapshotImageNativeOptions(config: AiConfig, model: string, value = config.imageNative): NativeImageOptions {
+    const native = structuredClone(value || {});
+    if (resolveImageProvider(config, model) !== "ark") return native;
+    const channel = resolveModelChannel(config, model);
+    const name = modelOptionName(model);
+    const modelKey = encodeChannelModel(channel.id, name);
+    const binding = native.ark?.endpoint;
+    const id = binding?.model === modelKey ? binding.id : channel.models.find((item) => item.name === name)?.endpointId || "";
+    native.ark = { ...native.ark, endpoint: { id: id.trim(), model: modelKey } };
+    return native;
 }
 
 export function upsertChannelCredentials(
@@ -338,7 +427,6 @@ export function upsertChannelCredentials(
         name: importedChannelName(baseUrl),
         baseUrl,
         apiKey,
-        apiFormat: "openai",
         models: [],
     });
     return { status: "created", channelName: channel.name, config: { ...config, channels: [...config.channels, channel] } };
@@ -429,9 +517,9 @@ export function resolveModelRequestConfig(config: AiConfig, value: string) {
     return {
         ...config,
         model: modelOptionName(value || config.model),
-        baseUrl: channel.baseUrl,
+        baseUrl: channelApiBaseUrl(channel),
         apiKey: channel.apiKey,
-        apiFormat: channel.apiFormat,
+        apiFormat: (channel.vendor === "google" ? "gemini" : "openai") as ApiCallFormat,
     };
 }
 
@@ -460,11 +548,6 @@ function normalizeChannels(config: AiConfig) {
     return channels;
 }
 
-export function defaultBaseUrlForApiFormat(apiFormat: ApiCallFormat) {
-    if (apiFormat === "gemini") return GEMINI_BASE_URL;
-    return OPENAI_BASE_URL;
-}
-
 function normalizeApiFormat(apiFormat: unknown): ApiCallFormat {
     return apiFormat === "gemini" ? apiFormat : "openai";
 }
@@ -476,7 +559,7 @@ function uniqueModelOptions(models: string[]) {
 export function buildApiUrl(baseUrl: string, path: string) {
     const normalizedBaseUrl = baseUrl.trim().replace(/\/+$/, "");
     const lowerBaseUrl = normalizedBaseUrl.toLowerCase();
-    const apiBaseUrl = lowerBaseUrl.endsWith("/v1") ? normalizedBaseUrl : `${normalizedBaseUrl}/v1`;
+    const apiBaseUrl = /\/(v1|v1beta|api\/v3)$/.test(lowerBaseUrl) ? normalizedBaseUrl : `${normalizedBaseUrl}/v1`;
     return withLocalProxy(`${apiBaseUrl}${path}`);
 }
 

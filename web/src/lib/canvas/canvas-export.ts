@@ -65,6 +65,7 @@ export async function exportCanvasNodes(nodes: CanvasNodeData[], fileName = i18n
 }
 
 function collectStorageKeys(value: unknown, keys = new Set<string>()) {
+    if (typeof value === "string" && /^(image|video|audio|file|video-reference|audio-reference):/.test(value)) keys.add(value);
     if (!value || typeof value !== "object") return [...keys];
     if ("storageKey" in value && typeof value.storageKey === "string" && value.storageKey.includes(":")) keys.add(value.storageKey);
     Object.values(value).forEach((item) => (Array.isArray(item) ? item.forEach((child) => collectStorageKeys(child, keys)) : collectStorageKeys(item, keys)));

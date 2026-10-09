@@ -4,6 +4,7 @@ import { Button, Segmented } from "antd";
 import { useTranslation } from "react-i18next";
 
 import { ModelPicker } from "@/components/model-picker";
+import { imageSettingKeys, type ImageSettingKey } from "@/components/image-settings-panel";
 import { defaultConfig, resolveModelForCapability, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
@@ -30,6 +31,7 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const mode = node.metadata?.generationMode || "image";
     const config = buildNodeConfig(globalConfig, node, mode);
+    const overriddenImageKeys = imageSettingKeys.filter((key) => node.metadata?.[key] !== undefined);
     const chipStyle = { background: theme.node.fill, borderColor: theme.node.stroke, color: theme.node.text };
     const hasAnyInput = Boolean(inputSummary.textCount || inputSummary.imageCount || inputSummary.videoCount || inputSummary.audioCount);
     const hasComposerContent = Boolean((node.metadata?.composerContent ?? node.metadata?.prompt ?? "").trim());
@@ -103,7 +105,7 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
                 {mode === "video" ? (
                     <CanvasVideoSettingsPopover config={config} placement="topRight" buttonClassName="canvas-compact-control !h-10 !w-full !justify-start !rounded-lg !px-2" onConfigChange={(key, value) => onConfigChange(node.id, videoConfigPatch(key, value))} />
                 ) : mode === "image" ? (
-                    <CanvasImageSettingsPopover config={config} placement="topRight" autoAdjustOverflow={false} buttonClassName="canvas-compact-control !h-10 !w-full !justify-start !rounded-lg !px-2" onConfigChange={(key, value) => onConfigChange(node.id, key === "count" ? { count: Number(value) || 1 } : { [key]: value })} />
+                    <CanvasImageSettingsPopover config={config} referenceCount={inputSummary.imageCount} placement="topRight" autoAdjustOverflow={false} buttonClassName="canvas-compact-control !h-10 !w-full !justify-start !rounded-lg !bg-transparent !px-2 hover:!bg-black/5 dark:hover:!bg-white/10" overriddenKeys={overriddenImageKeys} onResetOverrides={() => onConfigChange(node.id, resetImageConfigPatch())} onConfigChange={(key, value) => onConfigChange(node.id, imageConfigPatch(key, value))} onNativeChange={(imageNative) => onConfigChange(node.id, { imageNative: structuredClone(imageNative) })} />
                 ) : mode === "audio" ? (
                     <CanvasAudioSettingsPopover config={config} placement="topRight" buttonClassName="canvas-compact-control !h-10 !w-full !justify-start !rounded-lg !px-2" onConfigChange={(key, value) => onConfigChange(node.id, audioConfigPatch(key, value))} />
                 ) : (
@@ -153,8 +155,12 @@ function buildNodeConfig(globalConfig: AiConfig, node: CanvasNodeData, mode: Can
         model: resolveModelForCapability(globalConfig, node.metadata?.model, mode),
         reasoningEffort: node.metadata?.reasoningEffort || globalConfig.reasoningEffort || defaultConfig.reasoningEffort,
         quality: node.metadata?.quality || globalConfig.quality || defaultConfig.quality,
-        size: node.metadata?.size || globalConfig.size || defaultConfig.size,
+        size: node.metadata?.size || (mode === "video" ? globalConfig.videoSize : globalConfig.size) || defaultConfig.size,
         background: node.metadata?.background ?? globalConfig.background ?? defaultConfig.background,
+        outputFormat: node.metadata?.outputFormat || globalConfig.outputFormat || defaultConfig.outputFormat,
+        outputCompression: node.metadata?.outputCompression ?? globalConfig.outputCompression ?? defaultConfig.outputCompression,
+        moderation: node.metadata?.moderation || globalConfig.moderation || defaultConfig.moderation,
+        imageNative: structuredClone(node.metadata?.imageNative ?? globalConfig.imageNative ?? defaultConfig.imageNative),
         videoSeconds: node.metadata?.seconds || globalConfig.videoSeconds || defaultConfig.videoSeconds,
         vquality: node.metadata?.vquality || globalConfig.vquality || defaultConfig.vquality,
         videoGenerateAudio: node.metadata?.generateAudio || globalConfig.videoGenerateAudio || defaultConfig.videoGenerateAudio,
@@ -166,6 +172,14 @@ function buildNodeConfig(globalConfig: AiConfig, node: CanvasNodeData, mode: Can
         audioInstructions: node.metadata?.audioInstructions || globalConfig.audioInstructions || defaultConfig.audioInstructions,
         count: String(node.metadata?.count || (mode === "image" ? globalConfig.canvasImageCount || globalConfig.count : globalConfig.count) || defaultConfig.count),
     };
+}
+
+function imageConfigPatch(key: ImageSettingKey, value: AiConfig[ImageSettingKey]): Partial<CanvasNodeMetadata> {
+    return (key === "count" ? { count: Number(value) || 1 } : { [key]: value }) as Partial<CanvasNodeMetadata>;
+}
+
+function resetImageConfigPatch() {
+    return { quality: undefined, size: undefined, background: undefined, outputFormat: undefined, outputCompression: undefined, moderation: undefined, imageNative: undefined, count: undefined };
 }
 
 function videoConfigPatch(key: keyof AiConfig, value: string) {

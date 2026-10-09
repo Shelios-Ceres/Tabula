@@ -238,7 +238,11 @@ export function getPluginTemplates(): Record<ModelCapability, PluginTemplate[]> 
  * @param {string} params.size - output size, e.g. "1024x1024" or "auto"
  * @param {string} params.quality - "low" | "medium" | "high"
  * @param {number} params.count - number of images
- * @param {string} [params.background] - "transparent" when requested
+ * @param {string} [params.background] - "auto" | "opaque" | "transparent"
+ * @param {string} [params.outputFormat] - "png" | "jpeg" | "webp"
+ * @param {number} [params.outputCompression] - 0-100 for JPEG/WebP
+ * @param {string} [params.moderation] - "auto" | "low"
+ * @param {string} [params.maskDataUrl] - PNG alpha mask for editing
  * @param {string} model
  * @param {string} baseUrl
  * @param {string} apiKey
@@ -253,6 +257,10 @@ async function generateImage({
     quality,
     count,
     background,
+    outputFormat,
+    outputCompression,
+    moderation,
+    maskDataUrl,
   },
   model,
   baseUrl,
@@ -260,6 +268,7 @@ async function generateImage({
   request,
 }) {
   if (images.length === 0) {
+    const isGptImage = /^gpt-image-/.test(model);
     const data = await request({
       method: "post",
       url: \`\${baseUrl}/v1/images/generations\`,
@@ -274,28 +283,36 @@ async function generateImage({
         size: size,
         quality: quality,
         background: background,
-        response_format: "b64_json",
+        ...(isGptImage ? { output_format: outputFormat, ...((outputFormat === "jpeg" || outputFormat === "webp") ? { output_compression: outputCompression } : {}), moderation: moderation } : { response_format: "b64_json" }),
       },
     });
     const urls = [];
     for (const item of data.data || []) {
-      urls.push(item.b64_json ? \`data:image/png;base64,\${item.b64_json}\` : item.url);
+      urls.push(item.b64_json ? \`data:image/\${data.output_format || (isGptImage ? outputFormat : "png") || "png"};base64,\${item.b64_json}\` : item.url);
     }
     return urls;
   }
 
   const form = new FormData();
+  const isGptImage = /^gpt-image-/.test(model);
   form.set("model", model);
   form.set("prompt", prompt);
   form.set("n", String(count));
-  form.set("size", size);
-  form.set("quality", quality);
-  form.set("background", background);
-  form.set("response_format", "b64_json");
+  if (size) form.set("size", size);
+  if (quality) form.set("quality", quality);
+  if (background) form.set("background", background);
+  if (isGptImage) {
+    form.set("output_format", outputFormat || "png");
+    if ((outputFormat === "jpeg" || outputFormat === "webp") && outputCompression !== undefined) form.set("output_compression", String(outputCompression));
+    if (moderation) form.set("moderation", moderation);
+  } else {
+    form.set("response_format", "b64_json");
+  }
   const imageField = images.length > 1 ? "image[]" : "image";
   for (const dataUrl of images) {
     form.append(imageField, await (await fetch(dataUrl)).blob(), "ref.png");
   }
+  if (maskDataUrl) form.set("mask", await (await fetch(maskDataUrl)).blob(), "mask.png");
   const edited = await request({
     method: "post",
     url: \`\${baseUrl}/v1/images/edits\`,
@@ -306,7 +323,7 @@ async function generateImage({
   });
   const urls = [];
   for (const item of edited.data || []) {
-    urls.push(item.b64_json ? \`data:image/png;base64,\${item.b64_json}\` : item.url);
+    urls.push(item.b64_json ? \`data:image/\${edited.output_format || (isGptImage ? outputFormat : "png") || "png"};base64,\${item.b64_json}\` : item.url);
   }
   return urls;
 }

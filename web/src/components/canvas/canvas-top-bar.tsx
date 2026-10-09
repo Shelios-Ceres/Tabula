@@ -73,8 +73,8 @@ export function CanvasTopBar({
 
     return (
         <>
-            <div className="pointer-events-none absolute left-0 right-0 top-0 z-50 flex h-16 items-center justify-between pl-1 pr-4">
-                <div className="pointer-events-auto flex min-w-0 items-center gap-2">
+            <div className="pointer-events-none absolute left-0 right-0 top-0 z-50 flex h-16 items-center justify-between gap-3 px-3">
+                <div className="liquid-glass pointer-events-auto flex h-11 min-w-0 items-center gap-1.5 overflow-hidden rounded-full border pl-2 pr-4">
                     <Tooltip title={sidePanelOpen ? t("canvas.collapsePanel") : t("canvas.expandPanel")}>
                         <button
                             type="button"
@@ -121,30 +121,31 @@ export function CanvasTopBar({
                                     if (event.key === "Enter") onFinishTitleEditing();
                                     if (event.key === "Escape") onCancelTitleEditing();
                                 }}
-                                className="max-w-[280px] bg-transparent p-0 text-left text-lg font-semibold tracking-normal outline-none"
+                                className="max-w-[280px] bg-transparent p-0 text-left text-[15px] font-semibold tracking-tight outline-none"
                                 style={{ color: theme.node.text }}
                             />
                         ) : (
                             <button
                                 type="button"
-                                className="max-w-[280px] truncate border-b border-dashed border-transparent text-left text-lg font-semibold tracking-normal transition hover:border-current"
+                                className="min-w-0 max-w-[280px] truncate border-b border-dashed border-transparent text-left text-[15px] font-semibold tracking-tight transition hover:border-current"
                                 onDoubleClick={onStartTitleEditing}
                                 title={t("canvas.renameHint")}
                             >
-                                {title}
+                                {/* antd 全局 button 重置为 overflow: visible，截断交给内部 span */}
+                                <span className="block truncate">{title}</span>
                             </button>
                         )}
                     </div>
                     <CompactAgentStatus status={compactAgentStatus} onClick={onToggleAgent} />
                 </div>
 
-                <div className="pointer-events-auto flex items-center gap-1.5">
+                <div className="liquid-glass pointer-events-auto flex h-11 shrink-0 items-center gap-1 rounded-full border px-1.5">
                     <UserStatusActions variant="canvas" onOpenShortcuts={() => setShortcutsOpen(true)} onOpenPlugins={onOpenPlugins} />
-                    <span className="h-6 w-px" style={{ background: theme.toolbar.border }} />
+                    <span className="mx-0.5 h-5 w-px" style={{ background: theme.toolbar.border }} />
                     <Button
                         type="text"
-                        className="!h-10 !rounded-xl !px-3 !font-medium"
-                        style={{ background: agentOpen ? theme.toolbar.activeBg : theme.toolbar.panel, color: theme.node.text, boxShadow: "0 10px 30px rgba(28,25,23,.10)" }}
+                        className="!h-8 !rounded-full !px-3 !font-medium"
+                        style={{ background: agentOpen ? theme.toolbar.activeBg : undefined, color: agentOpen ? theme.node.activeStroke : theme.node.text }}
                         icon={<Bot className="size-4" />}
                         onClick={onToggleAgent}
                     >
@@ -199,6 +200,7 @@ function CompactAgentStatus({ status, onClick }: { status: { connected: boolean;
 }
 
 function Shortcut({ keys, value }: { keys: string[]; value: string }) {
+    const theme = canvasThemes[useThemeStore((state) => state.theme)];
     return (
         <div className="grid grid-cols-[minmax(0,1fr)_120px] items-center gap-6 rounded-lg px-1 py-1.5">
             <span className="flex min-w-0 flex-wrap items-center gap-1.5">
@@ -207,7 +209,7 @@ function Shortcut({ keys, value }: { keys: string[]; value: string }) {
                         {index ? <span className="text-xs opacity-35">+</span> : null}
                         <kbd
                             className="min-w-9 rounded-md border px-2.5 py-1.5 text-center text-xs font-medium leading-none shadow-[inset_0_-1px_0_rgba(0,0,0,.08),0_1px_2px_rgba(0,0,0,.06)]"
-                            style={{ borderColor: "rgba(120,113,108,.28)", background: "linear-gradient(#fff, rgba(245,245,244,.92))", color: "rgb(68,64,60)" }}
+                            style={{ borderColor: theme.toolbar.border, background: theme.toolbar.itemHover, color: theme.node.text }}
                         >
                             {key}
                         </kbd>

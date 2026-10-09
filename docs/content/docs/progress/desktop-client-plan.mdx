@@ -1,0 +1,42 @@
+---
+title: WinUI 3 Desktop Client Plan
+description: Architecture, migration mapping, native provider adapters and phase status of the WinUI 3 rewrite
+---
+
+# WinUI 3 Desktop Client Plan
+
+The desktop client lives in `desktop/` and rewrites the canvas natively in C# + WinUI 3, without a browser, local proxy or Docker. The web client stays as a feature reference and is no longer kept in sync.
+
+## Stack
+
+| Layer | Choice |
+| --- | --- |
+| Framework | .NET 10, Windows App SDK 1.8 (WinUI 3), unpackaged and self-contained |
+| Material | Windows 11 Fluent: `DesktopAcrylicBackdrop` window showing through a translucent canvas, clear acrylic (`GlassBrush` / `GlassThickBrush`) with system shadows for floating toolbars and panels, the system accent colour, a colourful per-kind palette, follows the system theme |
+| Canvas | XAML node layer + Win2D grid/connection layer + Win2D selection/draft overlay; only nodes near the viewport are realized |
+| Storage | `%LocalAppData%\InfiniteCanvas`: one folder per canvas (`project.json` + `assets/`), settings in `settings.json` |
+| Keys | API keys are DPAPI-encrypted for the current Windows user; requests go straight to each vendor through the system proxy |
+
+## Native provider adapters
+
+Each channel has a single vendor and uses only that vendor's official protocol:
+
+- **OpenAI**: Image API generations / multipart edits (optional SSE previews) or the Responses `image_generation` tool; Responses text streaming; `/v1/audio/speech`. Sora was shut down on 2026-09-24, so there is no OpenAI video.
+- **Google Gemini**: Interactions API for images and streamed text; Veo `predictLongRunning` with polling and keyed download.
+- **Volcengine Ark**: Seedream image generation (5.0 pro/flash/lite, 4.5, 4.0), Seedance video tasks, Chat API text.
+- **xAI**: Grok Imagine images and video tasks, Responses API text.
+- **Qwen (Model Studio)**: DashScope `multimodal-generation` for Qwen-Image 3.0 / 3.0-pro / 2.1-pro and DashScope SSE text.
+
+Model capabilities are declared per model family in `desktop/src/InfiniteCanvas.Core/Models/ModelFamilies.cs`.
+
+## Phases
+
+| Phase | Scope | Status |
+| --- | --- | --- |
+| 0 | Acrylic shell, canvas list, settings | Done, pending review |
+| 1 | Canvas engine: pan/zoom, box select, drag, resize, connections, groups, undo/redo, import/paste/drop, autosave | Done, pending review |
+| 2 | Image / video / text / speech generation for all five vendors, config nodes, video task resume | Done, pending real-account tests |
+| 3 | Image tools: crop, split, angle, upscale, mask editing, hover toolbar | Done, pending review |
+| 4 | Minimap and new video features (drafts, last frame, reference video/audio, edit/extend, keyframes, Gemini Omni), Wan 2.7 video, Gemini TTS | Done, pending review |
+| 5 | Media library and local prompt library done, pending review; WebDAV sync on hold | Done, pending review |
+| 6 | Agent assistant (local agents over ACP + canvas MCP tools) done, pending tests; plugin nodes on hold | Done, pending review |

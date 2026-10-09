@@ -52,10 +52,11 @@ export async function resolveCanvasReferenceImages(references: CanvasResourceRef
 
 export function getMentionResourceNodes(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[]) {
     const configInputs = expandGroupResourceNodes(getConnectedConfigInputNodes(nodeId, nodes, connections), nodes);
-    if (configInputs.length) return configInputs;
     const ownInputs = expandGroupResourceNodes(getContextInputNodes(nodeId, nodes, connections), nodes);
-    if (ownInputs.length) return ownInputs;
+    const inputs = configInputs.length ? configInputs : ownInputs;
     const node = nodes.find((item) => item.id === nodeId);
+    if (node?.type === CanvasNodeType.Image && node.metadata?.content) return [node, ...inputs.filter((input) => input.id !== nodeId)];
+    if (inputs.length) return inputs;
     return node && isResourceNode(node) ? [node] : [];
 }
 

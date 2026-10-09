@@ -1,14 +1,15 @@
 import axios from "axios";
 
 import i18n from "@/i18n";
-import { buildApiUrl, resolveModelRequestConfig, resolveModelScript, withLocalProxy, type AiConfig, type ModelChannel } from "@/stores/use-config-store";
+import { buildApiUrl, channelApiBaseUrl, resolveModelRequestConfig, resolveModelScript, withLocalProxy, type AiConfig, type ModelChannel } from "@/stores/use-config-store";
 import { normalizePluginImages, runModelPlugin } from "./model-plugin";
 import { nanoid } from "nanoid";
-import { dataUrlToFile } from "@/lib/image-utils";
+import { dataUrlToFile, readImageMeta } from "@/lib/image-utils";
 import { buildImageReferencePromptText } from "@/lib/image-reference-prompt";
 import { imageToDataUrl } from "@/services/image-storage";
-import { imageSizePresets, inferMediaScale } from "@/lib/media-size";
-import type { ReferenceImage } from "@/types/image";
+import { imageSizePresets } from "@/lib/media-size";
+import type { ImageGenerationResult, ImageOutputFormat, ImageResponseMetadata, ReferenceImage } from "@/types/image";
+import { getImageModelCapabilities, imageBackgrounds, imageOutputFormats } from "@/lib/image-model-capabilities";
 
 const apiText = (key: string, options?: Record<string, unknown>) => i18n.t(`apiErrors.${key}`, options);
 
@@ -76,6 +77,11 @@ type ImageApiResponse = {
     error?: { message?: string };
     code?: number;
     msg?: string;
+    background?: string;
+    quality?: string;
+    size?: string;
+    output_format?: string;
+    usage?: ImageResponseMetadata["usage"];
 };
 type GeminiPart = {
     text?: string;
@@ -95,7 +101,7 @@ type GeminiPayload = {
     promptFeedback?: { blockReason?: string };
 };
 type GeminiStreamState = { buffer: string; text: string; toolCalls: ResponseToolCall[]; error?: string };
-type RequestOptions = { signal?: AbortSignal };
+export type RequestOptions = { signal?: AbortSignal; mask?: ReferenceImage };
 
 const QUALITY_BASE: Record<string, number> = {
     low: 1024,
@@ -115,20 +121,27 @@ const IMAGE_MIN_PIXELS = 655360;
 const IMAGE_MAX_PIXELS = 8294400;
 const IMAGE_MAX_EDGE = 3840;
 const IMAGE_MAX_RATIO = 3;
-const IMAGE_OUTPUT_FORMAT = "png";
 
-const GEMINI_SUPPORTED_RATIOS = ["1:1", "1:4", "1:8", "2:3", "3:2", "3:4", "4:1", "4:3", "4:5", "5:4", "8:1", "9:16", "16:9", "21:9"];
-const GEMINI_IMAGE_SIZE_BY_QUALITY: Record<string, string> = { low: "1K", medium: "2K", high: "4K", standard: "1K", hd: "2K" };
 
-function normalizeQuality(quality: string) {
+function normalizeQuality(quality: string, model?: string) {
     const value = quality.trim().toLowerCase();
     const normalized = QUALITY_ALIASES[value] || value;
-    return QUALITY_BASE[normalized] ? normalized : undefined;
+    if (model && getImageModelCapabilities(model).isGptImage) {
+        const capabilities = getImageModelCapabilities(model);
+        if (!(capabilities.qualities as readonly string[]).includes(normalized)) throw new Error(apiText("invalidImageQuality", { quality }));
+    }
+    return QUALITY_BASE[normalized] || normalized === "xhigh" || normalized === "max" ? normalized : undefined;
 }
 
 /** Only "transparent" is forwarded; any other value (incl. empty) means keep the default opaque background. */
-function normalizeBackground(background: string | undefined) {
-    return background?.trim().toLowerCase() === "transparent" ? "transparent" : undefined;
+function normalizeBackground(background: string | undefined, isGptImage = false) {
+    const value = background?.trim().toLowerCase();
+    if (isGptImage) {
+        if (!value || value === "auto") return "auto";
+        if ((imageBackgrounds as readonly string[]).includes(value)) return value;
+        throw new Error(apiText("invalidImageBackground", { background }));
+    }
+    return value === "transparent" ? "transparent" : undefined;
 }
 
 /** Map "quality + ratio" to an explicit pixel dimension like "3840x2160". */
@@ -189,7 +202,7 @@ function validateImageSize(width: number, height: number) {
     if (pixels < IMAGE_MIN_PIXELS || pixels > IMAGE_MAX_PIXELS) throw new Error(apiText("imagePixelLimit"));
 }
 
-function resolveRequestSize(quality: string | undefined, size: string) {
+export function resolveRequestSize(quality: string | undefined, size: string) {
     const value = size.trim();
     if (!value || value.toLowerCase() === "auto") return undefined;
     const dimensions = parseImageDimensions(value);
@@ -201,48 +214,9 @@ function resolveRequestSize(quality: string | undefined, size: string) {
     throw new Error(apiText("invalidImageSizeFormat"));
 }
 
-function resolveGeminiImageConfig(config: AiConfig) {
-    const value = config.size.trim();
-    const dimensions = parseImageDimensions(value);
-    const ratio = dimensions ? `${dimensions.width}:${dimensions.height}` : value;
-    const aspectRatio = value && value.toLowerCase() !== "auto" ? closestGeminiAspectRatio(ratio) : undefined;
-    const imageSize = supportsGeminiImageSize(config.model) ? resolveGeminiImageSize(config.quality, dimensions) : undefined;
-    const image = { ...(aspectRatio ? { aspectRatio } : {}), ...(imageSize ? { imageSize } : {}) };
-    return Object.keys(image).length ? { imageConfig: image } : {};
-}
-
-function closestGeminiAspectRatio(value: string) {
-    const ratio = parseImageRatio(value);
-    const target = ratio.width / ratio.height;
-    return GEMINI_SUPPORTED_RATIOS.reduce((best, item) => {
-        const current = parseRatioValue(item);
-        const bestRatio = parseRatioValue(best);
-        return Math.abs(current.width / current.height - target) < Math.abs(bestRatio.width / bestRatio.height - target) ? item : best;
-    });
-}
-
-function resolveGeminiImageSize(quality: string, dimensions: { width: number; height: number } | null) {
-    const normalizedQuality = normalizeQuality(quality);
-    if (normalizedQuality) return GEMINI_IMAGE_SIZE_BY_QUALITY[normalizedQuality];
-    if (!dimensions) return undefined;
-    const size = `${dimensions.width}x${dimensions.height}`;
-    const scale = inferMediaScale(size);
-    if (Object.values(imageSizePresets[scale]).includes(size)) return scale.toUpperCase();
-    const edge = Math.max(dimensions.width, dimensions.height);
-    if (edge <= 768) return "512";
-    if (edge <= 1536) return "1K";
-    if (edge <= 3072) return "2K";
-    return "4K";
-}
-
-function supportsGeminiImageSize(model: string) {
-    const value = model.toLowerCase();
-    return value.includes("gemini-3") || value.includes("3.1") || value.includes("3-pro");
-}
-
-function resolveImageSource(item: Record<string, unknown>) {
+function resolveImageSource(item: Record<string, unknown>, outputFormat: ImageOutputFormat = "png") {
     if (typeof item.b64_json === "string" && item.b64_json) {
-        return `data:image/png;base64,${item.b64_json}`;
+        return `data:image/${outputFormat};base64,${item.b64_json}`;
     }
     if (typeof item.url === "string" && item.url) {
         return item.url;
@@ -250,19 +224,31 @@ function resolveImageSource(item: Record<string, unknown>) {
     return null;
 }
 
-function parseImagePayload(payload: ImageApiResponse) {
+function parseImagePayload(payload: ImageApiResponse, response?: ImageResponseMetadata) {
     if (typeof payload.code === "number" && payload.code !== 0) {
         throw new Error(payload.msg || apiText("requestFailed"));
     }
     // Support data, images, and results response fields used by different APIs.
+    const payloadFormat = typeof payload.output_format === "string" && (imageOutputFormats as readonly string[]).includes(payload.output_format) ? payload.output_format as ImageOutputFormat : undefined;
+    const outputFormat = payloadFormat || response?.outputFormat || "png";
+    const effectiveResponse: ImageResponseMetadata | undefined = response || payloadFormat || payload.quality || payload.size || payload.background || payload.usage
+        ? {
+            ...(response || {}),
+            ...(payload.background ? { background: payload.background } : {}),
+            ...(payload.quality ? { quality: payload.quality } : {}),
+            ...(payload.size ? { size: payload.size } : {}),
+            outputFormat,
+            ...(payload.usage ? { usage: payload.usage } : {}),
+        }
+        : undefined;
     const imageList = payload.data
         || (payload as Record<string, unknown>).images as Array<Record<string, unknown>> | undefined
         || (payload as Record<string, unknown>).results as Array<Record<string, unknown>> | undefined
         || [];
     const images = imageList
-        .map(resolveImageSource)
+        .map((item) => resolveImageSource(item, outputFormat))
         .filter((value): value is string => Boolean(value))
-        .map((dataUrl) => ({ id: nanoid(), dataUrl }));
+        .map((dataUrl) => ({ id: nanoid(), dataUrl, ...(effectiveResponse ? { response: effectiveResponse } : {}) }));
 
     if (images.length === 0) {
         // Check whether the response contains data in an unrecognized format.
@@ -273,6 +259,63 @@ function parseImagePayload(payload: ImageApiResponse) {
     }
 
     return images;
+}
+
+type GptImageOptions = { quality?: string; background?: string; output_format?: ImageOutputFormat; output_compression?: number; moderation?: "auto" | "low" };
+
+function gptImageOptions(config: AiConfig, model: string): GptImageOptions {
+    const capabilities = getImageModelCapabilities(model);
+    if (!capabilities.isGptImage) return {};
+    const quality = normalizeQuality(config.quality, model);
+    const outputFormat = String(config.outputFormat || "png").toLowerCase() as ImageOutputFormat;
+    if (!(imageOutputFormats as readonly string[]).includes(outputFormat)) throw new Error(apiText("invalidImageFormat", { format: config.outputFormat }));
+    const background = normalizeBackground(config.background, true);
+    if (outputFormat === "jpeg" && background === "transparent") throw new Error(apiText("transparentJpeg", { defaultValue: "JPEG 不支持透明背景" }));
+    const compression = Number(config.outputCompression);
+    if (!Number.isInteger(compression) || compression < 0 || compression > 100) throw new Error(apiText("invalidImageCompression", { defaultValue: "压缩质量必须为 0–100 的整数" }));
+    if (config.moderation !== "auto" && config.moderation !== "low") throw new Error(apiText("invalidImageModeration", { defaultValue: "审核级别无效" }));
+    return {
+        ...(quality ? { quality } : {}),
+        ...(background ? { background } : {}),
+        output_format: outputFormat,
+        ...(outputFormat === "jpeg" || outputFormat === "webp" ? { output_compression: Math.floor(compression) } : {}),
+        moderation: config.moderation === "low" ? "low" : "auto",
+    };
+}
+
+async function validateMask(mask: ReferenceImage | undefined, firstReference: ReferenceImage | undefined) {
+    if (!mask) return;
+    if (!firstReference) throw new Error(apiText("maskRequiresImage", { defaultValue: "遮罩编辑需要一张主图" }));
+    if (!/^image\/png$/i.test(mask.type || mask.dataUrl.match(/^data:([^;]+)/)?.[1] || "")) throw new Error(apiText("maskMustBePng", { defaultValue: "遮罩必须是 PNG 图片" }));
+    const [sourceDataUrl, maskDataUrl] = await Promise.all([imageToDataUrl(firstReference), imageToDataUrl(mask)]);
+    const [sourceMeta, maskMeta] = await Promise.all([readImageMeta(sourceDataUrl), readImageMeta(maskDataUrl)]);
+    if (sourceMeta.width !== maskMeta.width || sourceMeta.height !== maskMeta.height) throw new Error(apiText("maskSizeMismatch", { defaultValue: "遮罩尺寸必须与主图一致" }));
+    if (typeof document === "undefined" || typeof Image === "undefined") throw new Error(apiText("maskAlphaUnavailable", { defaultValue: "无法读取遮罩透明通道" }));
+    {
+        const image = new Image();
+        const alpha = await new Promise<boolean>((resolve, reject) => {
+            image.onload = () => {
+                const canvas = document.createElement("canvas");
+                canvas.width = image.naturalWidth;
+                canvas.height = image.naturalHeight;
+                const context = canvas.getContext("2d");
+                if (!context) return reject(new Error(apiText("maskAlphaUnavailable", { defaultValue: "无法读取遮罩透明通道" })));
+                try {
+                    context.drawImage(image, 0, 0);
+                    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+                    for (let index = 3; index < pixels.length; index += 4) {
+                        if (pixels[index] < 255) return resolve(true);
+                    }
+                    resolve(false);
+                } catch {
+                    reject(new Error(apiText("maskAlphaUnavailable", { defaultValue: "无法读取遮罩透明通道" })));
+                }
+            };
+            image.onerror = () => reject(new Error(apiText("maskAlphaUnavailable", { defaultValue: "无法读取遮罩透明通道" })));
+            image.src = maskDataUrl;
+        });
+        if (!alpha) throw new Error(apiText("maskNeedsAlpha", { defaultValue: "遮罩必须包含透明区域" }));
+    }
 }
 
 function readApiErrorMessage(value: unknown): string {
@@ -307,22 +350,26 @@ function readApiErrorMessage(value: unknown): string {
     );
 }
 
-function readAxiosError(error: unknown, fallback: string) {
-    if (axios.isCancel(error)) return apiText("requestCanceled");
-    if (axios.isAxiosError(error)) {
-        if (!error.response && error.code === "ERR_NETWORK") return apiText("requestFailed");
-        const responseData = error.response?.data;
-        // Prefer the API error from the response body.
-        const apiMsg = readApiErrorMessage(responseData);
-        if (apiMsg) return apiMsg;
-        // Infer the error from the HTTP status when the response body has no usable message.
-        const statusMsg = readStatusError(error.response?.status, fallback);
-        if (statusMsg) return statusMsg;
-        // Fall back to Axios's own error message.
-        return error.message || fallback;
-    }
-    if (error instanceof DOMException && error.name === "AbortError") return apiText("requestCanceled");
-    return error instanceof Error ? readApiErrorMessage(error.message) || error.message : fallback;
+export function imageRequestError(error: unknown, fallback: string) {
+    const source = error && typeof error === "object" ? error as Record<string, unknown> : {};
+    const axiosError = axios.isAxiosError(error) ? error : undefined;
+    const payload = axiosError?.response?.data ?? source;
+    const record = payload && typeof payload === "object" ? payload as Record<string, unknown> : {};
+    const detail = record.error && typeof record.error === "object" ? errorRecord(record.error) : {};
+    const status = axiosError?.response?.status ?? (typeof source.status === "number" ? source.status : undefined);
+    const canceled = axios.isCancel(error) || error instanceof DOMException && error.name === "AbortError";
+    const network = !axiosError?.response && (source.code === "ERR_NETWORK" || error instanceof TypeError && error.message === "Failed to fetch");
+    const code = canceled ? "ERR_CANCELED" : detail.code || record.code || source.code || (network ? "FETCH_NETWORK_ERROR" : undefined);
+    const requestId = axiosError?.response?.headers?.["x-request-id"] || axiosError?.response?.headers?.["request-id"] || source.requestId || record.request_id || detail.request_id;
+    const originalMessage = typeof source.originalMessage === "string" ? source.originalMessage : error instanceof Error ? error.message : undefined;
+    const message = canceled ? apiText("requestCanceled") : network ? apiText("networkFailed", { defaultValue: "网络连接失败，浏览器未收到服务器响应。请检查网络、代理和接口地址，也可能是浏览器跨域拦截。" }) : readApiErrorMessage(payload) || readStatusError(status, originalMessage || fallback);
+    const context = canceled ? "" : formatErrorContext(status, { code, request_id: requestId });
+    return Object.assign(new Error(message.endsWith(context) ? message : `${message}${context}`), {
+        ...(status !== undefined ? { status } : {}),
+        ...(code ? { code: String(code) } : {}),
+        ...(requestId ? { requestId: String(requestId) } : {}),
+        ...(originalMessage ? { originalMessage } : {}),
+    });
 }
 
 function readStatusError(status: number | undefined, fallback: string) {
@@ -333,6 +380,17 @@ function readStatusError(status: number | undefined, fallback: string) {
     if (status === 503) return apiText("serviceBusy");
     return status ? apiText("httpFailed", { status }) : fallback;
 }
+
+function formatErrorContext(status: number | undefined, data: unknown, headers?: Record<string, unknown>) {
+    const record = data && typeof data === "object" ? data as Record<string, unknown> : {};
+    const error = record.error && typeof record.error === "object" ? errorRecord(record.error) : {};
+    const code = record.code || error.code;
+    const requestId = headers?.["x-request-id"] || headers?.["request-id"] || record.request_id || error.request_id;
+    const details = [status ? `status ${status}` : "", code ? `code ${String(code)}` : "", requestId ? `request ${String(requestId)}` : ""].filter(Boolean);
+    return details.length ? ` (${details.join(", ")})` : "";
+}
+
+function errorRecord(value: object) { return value as Record<string, unknown>; }
 
 function withSystemPrompt(config: AiConfig, prompt: string) {
     const systemPrompt = config.systemPrompt.trim();
@@ -683,51 +741,20 @@ function parseGeminiToolResponse(payload: GeminiPayload): ToolResponseResult {
     return { content, toolCalls };
 }
 
-async function requestGeminiImages(config: AiConfig, prompt: string, references: ReferenceImage[], count: number, options?: RequestOptions) {
-    const requests = Array.from({ length: count }, () => requestGeminiImagesOnce(config, prompt, references, options));
-    return (await Promise.all(requests)).flat();
-}
-
-async function requestGeminiImagesOnce(config: AiConfig, prompt: string, references: ReferenceImage[], options?: RequestOptions) {
-    const parts: GeminiPart[] = [{ text: prompt }];
-    for (const image of references) {
-        parts.push(toGeminiImagePart(await imageToDataUrl(image)));
-    }
-    const response = await axios.post<GeminiPayload>(
-        geminiApiUrl(config, "generateContent"),
-        {
-            ...toGeminiBody(config, [{ role: "user", content: prompt }], { generationConfig: { responseModalities: ["TEXT", "IMAGE"], ...resolveGeminiImageConfig(config) } }),
-            contents: [{ role: "user", parts }],
-        },
-        { headers: geminiHeaders(config), signal: options?.signal },
-    );
-    return parseGeminiImagePayload(response.data);
-}
-
-function parseGeminiImagePayload(payload: GeminiPayload) {
-    validateGeminiPayload(payload);
-    const images =
-        payload.candidates
-            ?.flatMap((candidate) => candidate.content?.parts || [])
-            .map((part) => {
-                const inlineData = part.inlineData || (part.inline_data ? { mimeType: part.inline_data.mimeType || part.inline_data.mime_type, data: part.inline_data.data } : undefined);
-                if (inlineData?.data) return `data:${inlineData.mimeType || "image/png"};base64,${inlineData.data}`;
-                return part.fileData?.fileUri || null;
-            })
-            .filter((value): value is string => Boolean(value))
-            .map((dataUrl) => ({ id: nanoid(), dataUrl })) || [];
-    if (!images.length) throw new Error(apiText("geminiNoImage"));
-    return images;
-}
-
-export async function requestGeneration(config: AiConfig, prompt: string, options?: RequestOptions) {
+export async function requestGeneration(config: AiConfig, prompt: string, options?: RequestOptions): Promise<ImageGenerationResult[]> {
     const requestConfig = resolveModelRequestConfig(config, config.model || config.imageModel);
-    const n = Math.max(1, Math.min(15, Math.floor(Math.abs(Number(config.count)) || 1)));
     const script = resolveModelScript(config, config.model || config.imageModel);
+    const capabilities = getImageModelCapabilities(requestConfig.model);
+    const builtInGpt = !script && capabilities.isGptImage;
+    if (builtInGpt && withSystemPrompt(requestConfig, prompt).length > 32000) throw new Error(apiText("imagePromptTooLong", { max: 32000 }));
+    const requestedCount = Number(config.count);
+    const n = builtInGpt ? requestedCount : Math.min(15, Math.floor(Math.abs(requestedCount)) || 1);
+    if (builtInGpt && (!Number.isInteger(requestedCount) || requestedCount < 1 || requestedCount > capabilities.maxImages)) throw new Error(apiText("imageCountLimit", { max: capabilities.maxImages }));
     if (script) {
         const quality = normalizeQuality(config.quality);
         const requestSize = resolveRequestSize(quality, config.size);
         const background = normalizeBackground(config.background);
+        const gptOptions = {};
         try {
             const result = await runModelPlugin({
                 capability: "image",
@@ -735,24 +762,18 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
                 config: requestConfig,
                 prompt: withSystemPrompt(requestConfig, prompt),
                 images: [],
-                params: { size: requestSize, quality, count: n, ...(background ? { background } : {}) },
+                params: { size: requestSize, quality, count: n, ...(background ? { background } : {}), ...gptOptions, outputFormat: config.outputFormat, outputCompression: config.outputCompression, moderation: config.moderation },
                 signal: options?.signal,
             });
             return normalizePluginImages(result).map((dataUrl) => ({ id: nanoid(), dataUrl }));
         } catch (error) {
-            throw new Error(readAxiosError(error, apiText("requestFailed")));
+            throw imageRequestError(error, apiText("requestFailed"));
         }
     }
-    if (requestConfig.apiFormat === "gemini") {
-        try {
-            return await requestGeminiImages(requestConfig, prompt, [], n, options);
-        } catch (error) {
-            throw new Error(readAxiosError(error, apiText("requestFailed")));
-        }
-    }
-    const quality = normalizeQuality(config.quality);
-    const requestSize = resolveRequestSize(quality, config.size);
-    const background = normalizeBackground(config.background);
+    const quality = normalizeQuality(config.quality, requestConfig.model);
+    const requestSize = resolveRequestSize(builtInGpt ? undefined : quality, config.size);
+    const background = normalizeBackground(config.background, builtInGpt);
+    const gptOptions = builtInGpt ? gptImageOptions(config, requestConfig.model) : {};
     try {
         const response = await axios.post<ImageApiResponse>(
             aiApiUrl(requestConfig, "/images/generations"),
@@ -764,30 +785,40 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
                 ...(requestSize ? { size: requestSize } : {}),
                 ...(background ? { background } : {}),
                 // gpt-image models reject response_format; they always return b64.
-                ...(/gpt-image/.test(requestConfig.model) ? {} : { response_format: "b64_json" }),
-                output_format: IMAGE_OUTPUT_FORMAT,
+                ...(builtInGpt ? {} : { response_format: "b64_json" }),
+                ...gptOptions,
             },
             {
                 headers: aiHeaders(requestConfig, "application/json"),
                 signal: options?.signal,
             },
         );
-        const images = await parseImagePayload(response.data);
+        const outputFormat = (gptOptions.output_format || "png") as ImageOutputFormat;
+        const metadata: ImageResponseMetadata = { outputFormat, usage: response.data.usage, requestId: String(response.headers["x-request-id"] || response.headers["request-id"] || "") || undefined };
+        const images = await parseImagePayload(response.data, metadata);
         return images;
     } catch (error) {
-        throw new Error(readAxiosError(error, apiText("requestFailed")));
+        throw imageRequestError(error, apiText("requestFailed"));
     }
 }
 
-export async function requestEdit(config: AiConfig, prompt: string, references: ReferenceImage[], options?: RequestOptions) {
+export async function requestEdit(config: AiConfig, prompt: string, references: ReferenceImage[], options?: RequestOptions): Promise<ImageGenerationResult[]> {
     const requestConfig = resolveModelRequestConfig(config, config.model || config.imageModel);
-    const n = Math.max(1, Math.min(15, Math.floor(Math.abs(Number(config.count)) || 1)));
-    const requestPrompt = buildImageReferencePromptText(prompt, references);
     const script = resolveModelScript(config, config.model || config.imageModel);
+    const capabilities = getImageModelCapabilities(requestConfig.model);
+    const builtInGpt = !script && capabilities.isGptImage;
+    const requestedCount = Number(config.count);
+    const n = builtInGpt ? requestedCount : Math.min(15, Math.floor(Math.abs(requestedCount)) || 1);
+    if (builtInGpt && (!Number.isInteger(requestedCount) || requestedCount < 1 || requestedCount > capabilities.maxImages)) throw new Error(apiText("imageCountLimit", { max: capabilities.maxImages }));
+    if (builtInGpt && (references.length < 1 || references.length > 16)) throw new Error(apiText("imageReferenceCountLimit", { max: 16 }));
+    const requestPrompt = buildImageReferencePromptText(prompt, references);
+    if (builtInGpt && withSystemPrompt(requestConfig, requestPrompt).length > 32000) throw new Error(apiText("imagePromptTooLong", { max: 32000 }));
+    await validateMask(options?.mask, references[0]);
     if (script) {
         const quality = normalizeQuality(config.quality);
         const requestSize = resolveRequestSize(quality, config.size);
         const background = normalizeBackground(config.background);
+        const gptOptions = {};
         const refs = await Promise.all(references.map((image) => imageToDataUrl(image)));
         try {
             const result = await runModelPlugin({
@@ -796,34 +827,30 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
                 config: requestConfig,
                 prompt: withSystemPrompt(requestConfig, requestPrompt),
                 images: refs,
-                params: { size: requestSize, quality, count: n, ...(background ? { background } : {}) },
+                params: { size: requestSize, quality, count: n, ...(background ? { background } : {}), ...gptOptions, outputFormat: config.outputFormat, outputCompression: config.outputCompression, moderation: config.moderation, ...(options?.mask ? { maskDataUrl: await imageToDataUrl(options.mask) } : {}) },
                 signal: options?.signal,
             });
             return normalizePluginImages(result).map((dataUrl) => ({ id: nanoid(), dataUrl }));
         } catch (error) {
-            throw new Error(readAxiosError(error, apiText("requestFailed")));
-        }
-    }
-    if (requestConfig.apiFormat === "gemini") {
-        try {
-            return await requestGeminiImages(requestConfig, requestPrompt, references, n, options);
-        } catch (error) {
-            throw new Error(readAxiosError(error, apiText("requestFailed")));
+            throw imageRequestError(error, apiText("requestFailed"));
         }
     }
 
-    const quality = normalizeQuality(config.quality);
-    const requestSize = resolveRequestSize(quality, config.size);
-    const background = normalizeBackground(config.background);
+    const quality = normalizeQuality(config.quality, requestConfig.model);
+    const requestSize = resolveRequestSize(builtInGpt ? undefined : quality, config.size);
+    const background = normalizeBackground(config.background, builtInGpt);
+    const gptOptions = builtInGpt ? gptImageOptions(config, requestConfig.model) : {};
     const formData = new FormData();
     formData.set("model", requestConfig.model);
     formData.set("prompt", withSystemPrompt(requestConfig, requestPrompt));
     formData.set("n", String(n));
     // gpt-image models reject response_format; they always return b64.
-    if (!/gpt-image/.test(requestConfig.model)) {
+    if (!builtInGpt) {
         formData.set("response_format", "b64_json");
     }
-    formData.set("output_format", IMAGE_OUTPUT_FORMAT);
+    if (gptOptions.output_format) formData.set("output_format", gptOptions.output_format);
+    if (gptOptions.output_compression !== undefined) formData.set("output_compression", String(gptOptions.output_compression));
+    if (gptOptions.moderation) formData.set("moderation", gptOptions.moderation);
     if (quality) {
         formData.set("quality", quality);
     }
@@ -836,13 +863,16 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
     const files = await Promise.all(references.map(async (image) => dataUrlToFile({ ...image, dataUrl: await imageToDataUrl(image) })));
     const imageField = files.length > 1 ? "image[]" : "image";
     files.forEach((file) => formData.append(imageField, file));
+    if (options?.mask) formData.set("mask", dataUrlToFile({ ...options.mask, dataUrl: await imageToDataUrl(options.mask) }));
 
     try {
         const response = await axios.post<ImageApiResponse>(aiApiUrl(requestConfig, "/images/edits"), formData, { headers: aiHeaders(requestConfig), signal: options?.signal });
-        const images = await parseImagePayload(response.data);
+        const outputFormat = (gptOptions.output_format || "png") as ImageOutputFormat;
+        const metadata: ImageResponseMetadata = { outputFormat, usage: response.data.usage, requestId: String(response.headers["x-request-id"] || response.headers["request-id"] || "") || undefined };
+        const images = await parseImagePayload(response.data, metadata);
         return images;
     } catch (error) {
-        throw new Error(readAxiosError(error, apiText("requestFailed")));
+        throw imageRequestError(error, apiText("requestFailed"));
     }
 }
 
@@ -863,7 +893,7 @@ export async function requestImageQuestion(config: AiConfig, messages: AiTextMes
             if (text === apiText("noContent")) onDelta(text);
             return text;
         } catch (error) {
-            throw new Error(readAxiosError(error, apiText("requestFailed")));
+            throw imageRequestError(error, apiText("requestFailed"));
         }
     }
     try {
@@ -880,23 +910,24 @@ export async function requestImageQuestion(config: AiConfig, messages: AiTextMes
         if (answer === apiText("noContent")) onDelta(answer);
         return answer;
     } catch (error) {
-        throw new Error(readAxiosError(error, apiText("requestFailed")));
+        throw imageRequestError(error, apiText("requestFailed"));
     }
 }
 
-export async function fetchImageModels(config: Pick<AiConfig, "baseUrl" | "apiKey" | "apiFormat">) {
+export async function fetchChannelModels(channel: ModelChannel) {
+    const baseUrl = channelApiBaseUrl(channel);
     try {
-        if (config.apiFormat === "gemini") {
-            const response = await axios.get<GeminiPayload>(geminiApiUrl({ ...defaultGeminiConfig, ...config }), { headers: geminiHeaders({ ...defaultGeminiConfig, ...config }) });
+        if (channel.vendor === "google") {
+            const response = await axios.get<GeminiPayload>(geminiApiUrl({ baseUrl, model: "" }), { headers: geminiHeaders(channel) });
             validateGeminiPayload(response.data);
             return (response.data.models || [])
                 .map((model) => model.name?.replace(/^models\//, ""))
                 .filter((id): id is string => Boolean(id))
                 .sort((a, b) => a.localeCompare(b));
         }
-        const response = await axios.get<{ data?: Array<{ id?: string }>; error?: { message?: string } }>(buildApiUrl(config.baseUrl, "/models"), {
+        const response = await axios.get<{ data?: Array<{ id?: string }>; error?: { message?: string } }>(buildApiUrl(baseUrl, "/models"), {
             headers: {
-                Authorization: `Bearer ${config.apiKey}`,
+                Authorization: `Bearer ${channel.apiKey}`,
             },
         });
         return (response.data.data || [])
@@ -904,18 +935,6 @@ export async function fetchImageModels(config: Pick<AiConfig, "baseUrl" | "apiKe
             .filter((id): id is string => Boolean(id))
             .sort((a, b) => a.localeCompare(b));
     } catch (error) {
-        throw new Error(readAxiosError(error, apiText("modelReadFailed")));
+        throw imageRequestError(error, apiText("modelReadFailed"));
     }
 }
-
-export async function fetchChannelModels(channel: ModelChannel) {
-    return fetchImageModels({ baseUrl: channel.baseUrl, apiKey: channel.apiKey, apiFormat: channel.apiFormat });
-}
-
-const defaultGeminiConfig: Pick<AiConfig, "baseUrl" | "apiKey" | "apiFormat" | "model" | "systemPrompt"> = {
-    baseUrl: "https://generativelanguage.googleapis.com",
-    apiKey: "",
-    apiFormat: "gemini",
-    model: "",
-    systemPrompt: "",
-};

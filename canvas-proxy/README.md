@@ -37,15 +37,17 @@ http://127.0.0.1:23210/https://api.openai.com/v1/models
 
 ## 转发日志
 
-每转发一条请求就在终端打印一行，包含时间、方法、完整目标地址、上游状态码和耗时：
+每转发一条请求就在终端打印一行，包含时间、方法、目标协议/域名/路径、上游状态码和耗时：
 
 ```
 4:05:42 PM GET https://api.openai.com/v1/models -> 200 0.9s
 4:05:43 PM POST https://api.openai.com/v1/images/generations -> 200 26.4s
-4:05:45 PM GET https://api.example.com/v1/models -> failed (fetch failed) 1.6s
+4:05:45 PM GET https://api.example.com/v1/models -> failed (fetch failed | ECONNRESET: socket hang up) 1.6s
 ```
 
-日志在收到上游响应头时打印，所以流式请求会立刻出现一行，而不是等整段响应结束。日志只输出到终端，不落盘，也不包含请求头和请求体，因此不会泄露 API Key。
+日志在收到上游响应头时打印，所以流式请求会立刻出现一行，而不是等整段响应结束。日志只输出到终端，不落盘，也不包含请求头和请求体；目标 URL 的账号、密码、查询参数和片段会移除，错误消息中的 Bearer 凭据及 `sk-` 字符串会遮蔽。
+
+转发异常仍返回 HTTP 502，`error` 保留可读错误摘要，`code` 和 `causes` 补充底层错误码及原因，包括聚合连接错误。排查时应保留这些信息；仅有 `fetch failed` 不能确定是 DNS、连接、TLS 还是等待响应时失败。代理收到的上游 HTTP 状态码仍原样透传。
 
 ## 安全提示
 

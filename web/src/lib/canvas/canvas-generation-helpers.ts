@@ -1,4 +1,5 @@
-import { defaultConfig, resolveModelForCapability, type AiConfig } from "@/stores/use-config-store";
+import { defaultConfig, resolveImageProvider, resolveModelForCapability, resolveSameChannelMainModel, snapshotImageNativeOptions, type AiConfig } from "@/stores/use-config-store";
+import { resolveNativeImageCount, resolveNativeImageOptions, resolveNativeImageOutputFormat } from "@/lib/image-model-capabilities";
 import i18n from "@/i18n";
 import { resolveImageUrl, uploadImage } from "@/services/image-storage";
 import { resolveMediaUrl } from "@/services/file-storage";
@@ -9,8 +10,9 @@ import type { CanvasImageAngleParams } from "@/components/canvas/canvas-node-ang
 import type { ReferenceImage } from "@/types/image";
 import { CanvasNodeType, type CanvasAssistantSession, type CanvasConnection, type CanvasNodeData, type CanvasNodeMetadata } from "@/types/canvas";
 
-export function imageExtension(dataUrl: string) {
-    return dataUrl.match(/^data:image[/]([^;]+)/)?.[1] || dataUrl.match(/image[/]([^;]+)/)?.[1] || "png";
+export function imageExtension(dataUrl: string, mimeType?: string) {
+    const type = mimeType?.split("/")[1] || dataUrl.match(/^data:image[/]([^;]+)/)?.[1] || "png";
+    return type === "jpeg" ? "jpg" : type;
 }
 
 export function audioExtension(mimeType?: string) {
@@ -40,6 +42,14 @@ export async function resolveMetadataReferences(metadata: CanvasNodeMetadata) {
         }),
     );
     return references.every(Boolean) ? (references as ReferenceImage[]) : null;
+}
+
+export async function resolveMetadataMask(metadata?: CanvasNodeMetadata): Promise<ReferenceImage | undefined> {
+    const reference = metadata?.maskReference;
+    if (!reference) return undefined;
+    const dataUrl = reference.startsWith("image:") ? await resolveImageUrl(reference, "") : reference;
+    if (!dataUrl) throw new Error(i18n.t("imageOptions.maskMissing", { defaultValue: "遮罩文件已丢失，请重新绘制遮罩。" }));
+    return { id: "mask", name: "mask.png", type: "image/png", dataUrl, storageKey: reference.startsWith("image:") ? reference : undefined };
 }
 
 export async function hydrateCanvasImages(nodes: CanvasNodeData[]) {
@@ -94,13 +104,22 @@ export function getInputSummary(inputs: NodeGenerationInput[]) {
 }
 
 export function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | undefined, mode: CanvasNodeGenerationMode): AiConfig {
+    const model = resolveModelForCapability(config, node?.metadata?.model, mode);
+    const provider = resolveImageProvider(config, model);
+    const imageNative = snapshotImageNativeOptions(config, model, resolveNativeImageOptions(provider, model, node?.metadata?.imageNative ?? config.imageNative ?? defaultConfig.imageNative));
+    if (provider === "openai" && imageNative.openai?.api === "responses") imageNative.openai.mainModel = resolveSameChannelMainModel(config, model, imageNative.openai.mainModel);
+    const requestedCount = Number(node?.metadata?.count || (mode === "image" ? config.canvasImageCount || config.count : config.count) || defaultConfig.count);
     return {
         ...config,
-        model: resolveModelForCapability(config, node?.metadata?.model, mode),
+        model,
         reasoningEffort: node?.metadata?.reasoningEffort || config.reasoningEffort || defaultConfig.reasoningEffort,
         quality: node?.metadata?.quality || config.quality || defaultConfig.quality,
-        size: node?.metadata?.size || config.size || defaultConfig.size,
+        size: node?.metadata?.size || (mode === "video" ? config.videoSize : config.size) || defaultConfig.size,
         background: node?.metadata?.background ?? config.background ?? defaultConfig.background,
+        outputFormat: resolveNativeImageOutputFormat(provider, model, imageNative, node?.metadata?.outputFormat ?? config.outputFormat ?? defaultConfig.outputFormat),
+        outputCompression: node?.metadata?.outputCompression ?? config.outputCompression ?? defaultConfig.outputCompression,
+        moderation: node?.metadata?.moderation ?? config.moderation ?? defaultConfig.moderation,
+        imageNative,
         videoSeconds: node?.metadata?.seconds || config.videoSeconds || defaultConfig.videoSeconds,
         vquality: node?.metadata?.vquality || config.vquality || defaultConfig.vquality,
         videoGenerateAudio: node?.metadata?.generateAudio || config.videoGenerateAudio || defaultConfig.videoGenerateAudio,
@@ -110,7 +129,7 @@ export function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | u
         audioFormat: node?.metadata?.audioFormat || config.audioFormat || defaultConfig.audioFormat,
         audioSpeed: node?.metadata?.audioSpeed || config.audioSpeed || defaultConfig.audioSpeed,
         audioInstructions: node?.metadata?.audioInstructions || config.audioInstructions || defaultConfig.audioInstructions,
-        count: String(node?.metadata?.count || (mode === "image" ? config.canvasImageCount || config.count : config.count) || defaultConfig.count),
+        count: String(mode === "image" ? resolveNativeImageCount(provider, model, imageNative, requestedCount) : requestedCount),
     };
 }
 
@@ -138,7 +157,7 @@ export function resetInterruptedGeneration(nodes: CanvasNodeData[]) {
 }
 
 export function isGenerationCanceled(error: unknown) {
-    return error instanceof Error && (error.message === i18n.t("common.requestCanceled") || error.name === "AbortError");
+    return error instanceof Error && ((error as Error & { code?: string }).code === "ERR_CANCELED" || error.message === i18n.t("common.requestCanceled") || error.name === "AbortError");
 }
 
 export function findRetrySourceNode(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[]) {

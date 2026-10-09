@@ -141,6 +141,7 @@ function flattenGenerationInputs(inputs: NodeGenerationInput[]) {
 }
 
 function readNodeGenerationResource(node: CanvasNodeData): NodeGenerationResourceInput[] {
+    if (node.metadata?.imageRole === "mask") return [];
     const image = readReferenceImage(node);
     if (image) return [{ nodeId: node.id, type: "image", title: node.title, image }];
     const video = readReferenceVideo(node);

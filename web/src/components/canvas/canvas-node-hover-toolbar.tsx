@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { App, Modal, Segmented, Tooltip } from "antd";
 import { Download, Ellipsis, FolderPlus, Image as ImageIcon, Info, MessageSquare, Minus, Music2, Plus, RefreshCw, Settings2, Trash2, Ungroup, Upload, Video } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -6,6 +6,7 @@ import { useTranslation } from "react-i18next";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
 import { formatBytes, getDataUrlByteSize } from "@/lib/image-utils";
+import { ImageResponseDetails } from "@/components/image-response-details";
 import { useCopyText } from "@/hooks/use-copy-text";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasNodeType, type CanvasNodeData, type ViewportTransform } from "@/types/canvas";
@@ -86,6 +87,7 @@ export function CanvasNodeHoverToolbar({
     const { message } = App.useApp();
     const { t } = useTranslation();
     const copyText = useCopyText();
+    const theme = canvasThemes[useThemeStore((state) => state.theme)];
 
     useEffect(() => {
         try {
@@ -185,8 +187,8 @@ export function CanvasNodeHoverToolbar({
     return (
         <>
             <div
-                className="absolute z-[70] flex h-12 -translate-x-1/2 -translate-y-full items-center overflow-visible rounded-[18px] border border-black/10 bg-white text-[15px] text-[#242529] shadow-[0_8px_28px_rgba(15,23,42,.12)]"
-                style={{ left, top }}
+                className="liquid-glass absolute z-[70] flex h-12 -translate-x-1/2 -translate-y-full items-center overflow-visible rounded-full border px-1.5 text-[15px]"
+                style={{ left, top, color: theme.node.text, "--canvas-toolbar-hover": theme.toolbar.itemHover, "--canvas-toolbar-active": theme.toolbar.activeBg } as CSSProperties}
                 onMouseEnter={() => onKeep(node.id)}
                 onMouseLeave={() => {
                     if (!imageToolSettingsOpen) onLeave();
@@ -270,6 +272,8 @@ export function CanvasNodeInfoModal({ node, open, onClose }: { node: CanvasNodeD
                             {node.metadata?.prompt ? <InfoRow label={t("canvas.configNode.prompt")} value={node.metadata.prompt} /> : null}
                             {node.metadata?.videoTaskId ? <InfoRow label={t("canvas.nodeToolbar.videoTaskId")} value={node.metadata.videoTaskId} /> : null}
                             {imageBytes ? <InfoRow label={t("canvas.nodeToolbar.imageSize")} value={formatBytes(imageBytes)} /> : null}
+                            {node.metadata?.imageResponse ? <ImageResponseDetails response={node.metadata.imageResponse} model={node.metadata.model} /> : null}
+                            {node.metadata?.imageTexts?.length || node.metadata?.imageOutputOrder?.length ? <CanvasImageNativeOutput texts={node.metadata.imageTexts || []} order={node.metadata.imageOutputOrder || []} /> : null}
                             {node.metadata?.errorDetails ? (
                                 <div className="rounded-lg border p-3 text-red-400" style={{ borderColor: theme.node.stroke }}>
                                     {node.metadata.errorDetails}
@@ -287,12 +291,33 @@ export function CanvasNodeInfoModal({ node, open, onClose }: { node: CanvasNodeD
     );
 }
 
+function CanvasImageNativeOutput({ texts, order }: { texts: string[]; order: Array<{ kind: "image" | "text"; index: number }> }) {
+    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const { t } = useTranslation();
+    return (
+        <div className="space-y-3 rounded-lg border p-3" style={{ borderColor: theme.node.stroke }}>
+            {texts.length ? (
+                <div>
+                    <div className="mb-2 text-xs font-medium" style={{ color: theme.node.muted }}>{t("nativeImage.returnedText")}</div>
+                    <div className="space-y-2">{texts.map((text, index) => <p key={`${index}-${text.slice(0, 20)}`} className="whitespace-pre-wrap text-sm leading-6">{text}</p>)}</div>
+                </div>
+            ) : null}
+            {order.length ? (
+                <div>
+                    <div className="mb-2 text-xs font-medium" style={{ color: theme.node.muted }}>{t("nativeImage.outputOrder")}</div>
+                    <div className="flex flex-wrap gap-1.5">{order.map((item, sequence) => <span key={`${item.kind}-${item.index}-${sequence}`} className="rounded-full border px-2 py-1 text-xs" style={{ borderColor: theme.node.stroke }}>{t(item.kind === "image" ? "nativeImage.outputImage" : "nativeImage.outputText", { index: item.index + 1 })}</span>)}</div>
+                </div>
+            ) : null}
+        </div>
+    );
+}
+
 function ToolbarAction({ title, label, icon, onClick, showLabel, active = false, danger = false }: ToolbarTool & { showLabel: boolean }) {
     const hasText = showLabel && Boolean(label);
     return (
-        <Tooltip title={title} placement="top" mouseEnterDelay={0.2} color="#ffffff" styles={{ root: { color: "#242529", boxShadow: "0 8px 24px rgba(15,23,42,.16)", fontSize: 13, fontWeight: 500 } }}>
+        <Tooltip title={title} placement="top" mouseEnterDelay={0.2} styles={{ root: { fontSize: 13, fontWeight: 500 } }}>
             <button type="button" className={`group relative flex h-12 items-center whitespace-nowrap px-1.5 ${danger ? "text-[#ef4444]" : ""}`} onClick={onClick} aria-label={title}>
-                <span className={`flex h-9 items-center ${hasText ? "gap-2 px-2.5" : "justify-center px-2"} rounded-lg transition group-hover:bg-[#f0f0f1] ${active ? "bg-[#eeeeef]" : ""}`}>
+                <span className={`flex h-9 items-center ${hasText ? "gap-2 px-2.5" : "justify-center px-2"} rounded-full transition group-hover:bg-[var(--canvas-toolbar-hover)] ${active ? "bg-[var(--canvas-toolbar-active)]" : ""}`}>
                     {icon}
                     {hasText ? <span>{label}</span> : null}
                 </span>

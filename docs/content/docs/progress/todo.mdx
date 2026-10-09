@@ -5,5 +5,11 @@ description: Planned follow-up work
 
 # TODO
 
+- WinUI 3 desktop client next phases (see the [Desktop Client Plan](/docs/progress/desktop-client-plan)): WebDAV sync, plugin nodes and Kling are on hold; running Qwen and Gemini image generation as background tasks (submit, then poll, surviving dropped connections and restarts like OpenAI Responses) is deferred; Agent assistant follow-ups (save transcripts with the canvas and resume via session/load, render replies as Markdown, send selected images as attachments).
+- Canvas UI: split image settings into common and advanced groups, and add a light hint on empty canvases.
+- Model family follow-ups: the official Kling API is on hold; Wan 2.6 and earlier (older protocol) are not integrated; Gemini multi-speaker TTS is not integrated yet.
+
+- Remaining real-account checks: untested GPT Image 2.5 Images options and Responses, other Gemini models, native search, Ark Pro layer decomposition and server-stored conversation continuation. Dated-snapshot Sunburst Images editing, tested Pro/Lite Endpoints and Gemini 3.1 Flash Image flows are listed in Pending Tests. Run native image schema tests after installing canvas-agent's own dependencies. Batch APIs, explicit cache controls, and custom safety controls remain outside the current real-time creation scope.
+
 - Replace the Claude Code CLI adapter with a Claude Agent SDK adapter and improve the tool queue, following the [Local Agent Integration Plan](/docs/progress/local-agent-integration-plan).
 - Add Skill installation from web search, Skill resource-file management, and controlled local-memory persistence.

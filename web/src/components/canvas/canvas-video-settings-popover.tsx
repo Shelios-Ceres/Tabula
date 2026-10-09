@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { Settings2 } from "lucide-react";
 import { Button } from "antd";
 
-import { VideoSettingsPanel, videoModeLabel, videoResolutionLabel, videoSecondsLabel, videoSizeLabel } from "@/components/video-settings-panel";
+import { VideoSettingsPanel, videoSettingsSummary } from "@/components/video-settings-panel";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { AiConfig } from "@/stores/use-config-store";
@@ -50,7 +50,7 @@ export function CanvasVideoSettingsPopover({ config, onConfigChange, buttonClass
             <span ref={buttonRef} className="inline-flex min-w-0">
                 <Button size="small" type="text" className={buttonClassName || "!h-8 !max-w-[220px] !justify-start !rounded-full !px-2.5"} style={{ background: theme.node.fill, color: theme.node.text }} icon={<Settings2 className="size-3.5" />} onClick={() => setOpen((current) => !current)}>
                     <span className="truncate">
-                        {videoResolutionLabel(config.vquality)} · {videoSizeLabel(config.size)} · {videoSecondsLabel(config.videoSeconds)} · {videoModeLabel(config.videoMode)}
+                        {videoSettingsSummary(config)}
                     </span>
                 </Button>
             </span>
@@ -87,9 +87,7 @@ function VideoSettingsPortal({
         width,
         left: Math.max(margin, Math.min(window.innerWidth - width - margin, left)),
         ...(topPlacement ? { bottom: window.innerHeight - buttonRect.top + gap, maxHeight: Math.max(260, buttonRect.top - margin * 2) } : { top: buttonRect.bottom + gap, maxHeight: Math.max(260, window.innerHeight - buttonRect.bottom - margin * 2) }),
-        background: theme.toolbar.panel,
         borderRadius: 18,
-        boxShadow: "0 18px 54px rgba(28, 25, 23, 0.16)",
         padding: 18,
         overflowY: "auto",
         color: theme.node.text,
@@ -98,7 +96,7 @@ function VideoSettingsPortal({
     return createPortal(
         <div
             ref={panelRef}
-            className="canvas-image-settings-popover"
+            className="canvas-image-settings-popover liquid-glass liquid-glass-regular"
             style={style}
             onPointerDown={(event) => event.stopPropagation()}
             onMouseDown={(event) => event.stopPropagation()}

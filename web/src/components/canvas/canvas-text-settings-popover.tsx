@@ -83,15 +83,13 @@ function TextSettingsPortal({ buttonRect, panelRef, placement, theme, config, co
         width,
         left: Math.max(margin, Math.min(window.innerWidth - width - margin, left)),
         ...(topPlacement ? { bottom: window.innerHeight - buttonRect.top + gap } : { top: buttonRect.bottom + gap }),
-        background: theme.toolbar.panel,
         borderRadius: 18,
-        boxShadow: "0 18px 54px rgba(28, 25, 23, 0.16)",
         padding: 18,
         color: theme.node.text,
     } as const;
 
     return createPortal(
-        <div ref={panelRef} style={style} onPointerDown={(event) => event.stopPropagation()} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}>
+        <div ref={panelRef} className="liquid-glass liquid-glass-regular" style={style} onPointerDown={(event) => event.stopPropagation()} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}>
             <TextSettingsPanel config={config} onConfigChange={onConfigChange} theme={theme} />
             {onCountChange ? (
                 <div className="mt-4 space-y-2.5">

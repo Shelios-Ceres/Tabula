@@ -2,24 +2,26 @@ import axios from "axios";
 import { nanoid } from "nanoid";
 
 import i18n from "@/i18n";
-import { dataUrlToFile, readFileAsDataUrl } from "@/lib/image-utils";
+import { readFileAsDataUrl } from "@/lib/image-utils";
 import { clampVideoSeconds, computeVideoSize, inferVideoRatio } from "@/lib/media-size";
 import { getMediaBlob, resolveMediaUrl, uploadMediaFile, type UploadedFile } from "@/services/file-storage";
 import { imageToDataUrl } from "@/services/image-storage";
-import { boolConfig, buildApiUrl, modelOptionName, resolveModelRequestConfig, resolveModelScript, withLocalProxy, type AiConfig } from "@/stores/use-config-store";
+import { getVideoFamily, snapVideoRatio, snapVideoResolution, snapVideoSeconds } from "@/lib/model-families";
+import { boolConfig, buildApiUrl, modelOptionName, resolveModelChannel, resolveModelRequestConfig, resolveModelScript, withLocalProxy, type AiConfig } from "@/stores/use-config-store";
 import { runModelPlugin } from "./model-plugin";
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
 
-type VideoResponse = { id: string; status?: string; error?: { message?: string }; url?: string; result_url?: string; video_url?: string; content?: { video_url?: string; url?: string } | null };
-type ApiVideoResponse = VideoResponse | { code?: number | string; data?: VideoResponse | null; msg?: string; message?: string; error?: { message?: string } };
 type ApiEnvelope<T> = T | { code?: number | string; data?: T | null; msg?: string; message?: string; error?: { message?: string } };
 type RequestOptions = { signal?: AbortSignal };
 type VideoMediaOptions = RequestOptions & { videos?: ReferenceVideo[]; audios?: ReferenceAudio[] };
 const apiText = (key: string, options?: Record<string, unknown>) => i18n.t(`apiErrors.${key}`, options);
 
 export type VideoGenerationResult = { blob?: Blob; url?: string; mimeType?: string };
-export type VideoGenerationTask = { id: string; provider: "openai" | "gemini" | "plugin"; model: string };
+export type VideoTaskProvider = "gemini" | "ark" | "xai";
+export type VideoGenerationTask = { id: string; provider: VideoTaskProvider | "plugin"; model: string };
+/** 2.5s × 360 ≈ 15 minutes; a timed-out task keeps its ID and can be queried again. */
+export const VIDEO_POLL_ATTEMPTS = 360;
 type GeminiInlineData = { bytesBase64Encoded: string; mimeType: string };
 type GeminiVideoOperation = {
     name?: string;
@@ -48,12 +50,12 @@ export async function requestVideoGeneration(config: AiConfig, prompt: string, r
 }
 
 export async function waitForVideoGenerationTask(config: AiConfig, task: VideoGenerationTask, options?: RequestOptions): Promise<VideoGenerationResult> {
-    for (let attempt = 0; attempt < 120; attempt += 1) {
+    for (let attempt = 0; attempt < VIDEO_POLL_ATTEMPTS; attempt += 1) {
         if (options?.signal?.aborted) throw new DOMException("Aborted", "AbortError");
         const state = await pollVideoGenerationTask(config, task, options);
         if (state.status === "completed") return state.result;
         if (state.status === "failed") throw videoTaskFailed(state.error);
-        if (attempt === 119) throw new Error(apiText("videoTimeout", { provider: "" }));
+        if (attempt === VIDEO_POLL_ATTEMPTS - 1) throw new Error(apiText("videoTimeout", { provider: "" }));
         await delay(2500, options?.signal);
     }
     throw new Error(apiText("videoTimeout", { provider: "" }));
@@ -75,8 +77,27 @@ export async function createVideoGenerationTask(config: AiConfig, prompt: string
     const script = resolveModelScript(config, selectedModel);
     if (script) return createPluginVideoTask(requestConfig, selectedModel, script, prompt, references, options);
     assertVideoConfig(requestConfig, requestConfig.model);
-    if (requestConfig.apiFormat === "gemini") return createGeminiVideoTask(requestConfig, selectedModel, prompt, references, options);
-    return createOpenAIVideoTask(requestConfig, selectedModel, prompt, references, options);
+    const protocol = videoProtocol(requestConfig);
+    if (protocol === "gemini") return createGeminiVideoTask(requestConfig, selectedModel, prompt, references, options);
+    if (protocol === "ark") return createArkVideoTask(requestConfig, selectedModel, resolveModelChannel(config, selectedModel).models.find((item) => item.name === requestConfig.model)?.endpointId, prompt, references, options);
+    return createXaiVideoTask(requestConfig, selectedModel, prompt, references, options);
+}
+
+/** Known families pick their official protocol; unknown models on a Google channel fall back to Veo. */
+function videoProtocol(config: AiConfig): VideoTaskProvider {
+    const protocol = getVideoFamily(config.model).protocol || (config.apiFormat === "gemini" ? "gemini" : undefined);
+    if (!protocol) throw new Error(apiText("videoModelUnsupported", { model: config.model }));
+    return protocol;
+}
+
+/** Family-normalized seconds, resolution tier and ratio; "2160" is sent as 4k. */
+function videoParams(config: AiConfig, referenceMode: boolean) {
+    const family = getVideoFamily(config.model);
+    const resolution = snapVideoResolution(family, config.vquality);
+    const ratio = snapVideoRatio(family, videoAspectRatio(config.size, "auto"));
+    // Veo only accepts 8s for 1080p/4k and reference images.
+    const seconds = family.protocol === "gemini" && (resolution !== "720" || referenceMode) ? 8 : snapVideoSeconds(family, config.videoSeconds);
+    return { family, ratio, seconds, resolution: resolution === "2160" ? "4k" : `${resolution}p` };
 }
 
 export async function pollVideoGenerationTask(config: AiConfig, task: VideoGenerationTask, options?: RequestOptions): Promise<VideoGenerationTaskState> {
@@ -87,7 +108,8 @@ export async function pollVideoGenerationTask(config: AiConfig, task: VideoGener
     const requestConfig = resolveModelRequestConfig(config, task.model);
     assertVideoConfig(requestConfig, requestConfig.model);
     if (task.provider === "gemini") return pollGeminiVideoTask(requestConfig, task, options);
-    return pollOpenAIVideoTask(requestConfig, task, options);
+    if (task.provider === "ark") return pollArkVideoTask(requestConfig, task, options);
+    return pollXaiVideoTask(requestConfig, task, options);
 }
 
 async function createPluginVideoTask(config: AiConfig, model: string, script: string, prompt: string, references: ReferenceImage[], options?: VideoMediaOptions): Promise<VideoGenerationTask> {
@@ -146,61 +168,14 @@ export async function storeGeneratedVideo(result: VideoGenerationResult): Promis
     throw new Error(apiText("noPlayableVideo"));
 }
 
-async function createOpenAIVideoTask(config: AiConfig, model: string, prompt: string, references: ReferenceImage[], options?: VideoMediaOptions): Promise<VideoGenerationTask> {
-    const images = await Promise.all(references.map(async (image) => dataUrlToFile({ ...image, dataUrl: await imageToDataUrl(image) })));
-    const videos = await Promise.all((options?.videos || []).map((video) => referenceMediaToFile(video, "ref.mp4", "invalidReferenceVideo", options)));
-    const audios = await Promise.all((options?.audios || []).map((audio) => referenceMediaToFile(audio, "ref.mp3", "invalidReferenceAudio", options)));
-    const mode = resolveVideoMode(config.videoMode, images.length);
-    const body = new FormData();
-    body.append("model", modelOptionName(model));
-    body.append("prompt", prompt);
-    body.append("seconds", normalizeVideoSeconds(config.videoSeconds));
-    body.append("size", normalizeVideoSize(config.size, config.vquality) || "1280x720");
-    body.append("resolution_name", normalizeVideoResolution(config.vquality));
-    body.append("generate_audio", String(boolConfig(config.videoGenerateAudio, true)));
-    body.append("watermark", String(boolConfig(config.videoWatermark, false)));
-    body.append("mode", mode);
-    if (mode === "frames") {
-        if (images[0]) body.append("first_frame", images[0], "first.png");
-        if (images[1]) body.append("last_frame", images[1], "last.png");
-    } else {
-        images.forEach((file) => body.append("image[]", file, "ref.png"));
-    }
-    videos.forEach((file) => body.append("video[]", file));
-    audios.forEach((file) => body.append("audio[]", file));
+async function videoResultFromUrl(url: string, options?: RequestOptions, headers?: Record<string, string>): Promise<VideoGenerationResult> {
     try {
-        const created = unwrapVideoResponse((await axios.post<ApiVideoResponse>(aiApiUrl(config, "/videos"), body, { headers: aiHeaders(config), signal: options?.signal })).data);
-        if (!created.id) throw new Error(apiText("noVideoTaskId"));
-        return { id: created.id, provider: "openai", model };
-    } catch (error) {
-        throw new Error(readAxiosError(error, apiText("videoTaskCreateFailed")));
-    }
-}
-
-async function pollOpenAIVideoTask(config: AiConfig, task: VideoGenerationTask, options?: RequestOptions): Promise<VideoGenerationTaskState> {
-    try {
-        const video = unwrapVideoResponse((await axios.get<ApiVideoResponse>(aiApiUrl(config, `/videos/${task.id}`), { headers: aiHeaders(config), signal: options?.signal })).data);
-        const url = videoResultUrl(video);
-        if (url) return { status: "completed", result: await videoResultFromUrl(url, options) };
-        if (video.status === "completed") {
-            const content = await axios.get<Blob>(aiApiUrl(config, `/videos/${task.id}/content`), { headers: aiHeaders(config), responseType: "blob", signal: options?.signal });
-            await assertVideoBlob(content.data);
-            return { status: "completed", result: { blob: content.data } };
-        }
-        if (video.status === "failed" || video.status === "cancelled") return { status: "failed", error: readApiErrorMessage(video.error?.message) || apiText("videoGenerationFailed") };
-        return { status: "pending" };
-    } catch (error) {
-        throw new Error(readAxiosError(error, apiText("videoTaskQueryFailed")));
-    }
-}
-
-async function videoResultFromUrl(url: string, options?: RequestOptions): Promise<VideoGenerationResult> {
-    try {
-        const response = await axios.get<Blob>(withLocalProxy(url), { responseType: "blob", signal: options?.signal });
+        const response = await axios.get<Blob>(withLocalProxy(url), { headers, responseType: "blob", signal: options?.signal });
         await assertVideoBlob(response.data);
         return { blob: response.data };
     } catch (error) {
-        if (axios.isCancel(error) || options?.signal?.aborted) throw error;
+        // Header-authenticated URLs cannot play without credentials, so keep the task resumable instead of saving them.
+        if (axios.isCancel(error) || options?.signal?.aborted || headers) throw error;
         return { url, mimeType: "video/mp4" };
     }
 }
@@ -219,15 +194,17 @@ async function createGeminiVideoTask(config: AiConfig, model: string, prompt: st
     }
     if (videos[0]) instance.video = await fileToGeminiInline(videos[0]);
     if (audios[0]) instance.audio = await fileToGeminiInline(audios[0]);
+    const params = videoParams(config, mode === "reference" && images.length > 0);
     try {
         const created = unwrapEnvelope((await axios.post<ApiEnvelope<GeminiVideoOperation>>(geminiVideoUrl(config, model, "predictLongRunning"), {
             instances: [instance],
             parameters: {
-                aspectRatio: videoAspectRatio(config.size),
-                durationSeconds: Number(normalizeVideoSeconds(config.videoSeconds)) || 8,
-                resolution: normalizeVideoResolution(config.vquality),
-                generateAudio: boolConfig(config.videoGenerateAudio, true),
-                addWatermark: boolConfig(config.videoWatermark, false),
+                aspectRatio: params.ratio === "auto" ? "16:9" : params.ratio,
+                durationSeconds: params.seconds,
+                resolution: params.resolution,
+                // Veo on the Gemini API always generates audio and has no watermark switch.
+                ...(params.family.audio ? { generateAudio: boolConfig(config.videoGenerateAudio, true) } : {}),
+                ...(params.family.watermark ? { addWatermark: boolConfig(config.videoWatermark, false) } : {}),
             },
         }, { headers: geminiVideoHeaders(config), signal: options?.signal })).data, apiText("noVideoTask"));
         if (!created.name) throw new Error(apiText("noVideoTaskId"));
@@ -244,8 +221,90 @@ async function pollGeminiVideoTask(config: AiConfig, task: VideoGenerationTask, 
         if (!state.done) return { status: "pending" };
         const uri = state.response?.generateVideoResponse?.generatedSamples?.[0]?.video?.uri;
         if (!uri) return { status: "failed", error: apiText("noPlayableVideo") };
-        const url = uri.includes("key=") ? uri : `${uri}${uri.includes("?") ? "&" : "?"}key=${config.apiKey}`;
-        return { status: "completed", result: await videoResultFromUrl(url, options) };
+        return { status: "completed", result: await videoResultFromUrl(uri, options, { "x-goog-api-key": config.apiKey }) };
+    } catch (error) {
+        throw new Error(readAxiosError(error, apiText("videoTaskQueryFailed")));
+    }
+}
+
+function arkTasksUrl(config: Pick<AiConfig, "baseUrl">, id = "") {
+    const base = config.baseUrl.trim().replace(/\/+$/, "");
+    return withLocalProxy(`${/\/api\/v3$/i.test(base) ? base : `${base}/api/v3`}/contents/generations/tasks${id ? `/${encodeURIComponent(id)}` : ""}`);
+}
+
+/** Seedance only accepts URLs for reference video/audio; local images are sent as data URLs. */
+function publicMediaUrl(item: { url?: string }) {
+    if (!isPublicMediaUrl(item.url || "")) throw new Error(apiText("arkVideoMediaUrl"));
+    return item.url!;
+}
+
+async function createArkVideoTask(config: AiConfig, model: string, endpointId: string | undefined, prompt: string, references: ReferenceImage[], options?: VideoMediaOptions): Promise<VideoGenerationTask> {
+    const images = await Promise.all(references.map((image) => imageToDataUrl(image)));
+    const mode = resolveVideoMode(config.videoMode, images.length);
+    const params = videoParams(config, mode === "reference");
+    const content = [
+        ...(prompt.trim() ? [{ type: "text", text: prompt }] : []),
+        ...images.map((url, index) => ({ type: "image_url", image_url: { url }, role: mode === "frames" ? (index === 0 ? "first_frame" : "last_frame") : "reference_image" })),
+        ...(options?.videos || []).map((video) => ({ type: "video_url", video_url: { url: publicMediaUrl(video) }, role: "reference_video" })),
+        ...(options?.audios || []).map((audio) => ({ type: "audio_url", audio_url: { url: publicMediaUrl(audio) }, role: "reference_audio" })),
+    ];
+    try {
+        const created = (await axios.post<{ id?: string }>(arkTasksUrl(config), {
+            model: endpointId?.trim() || config.model,
+            content,
+            ratio: params.ratio === "auto" ? "adaptive" : params.ratio,
+            duration: params.seconds,
+            resolution: params.resolution,
+            ...(params.family.audio ? { generate_audio: boolConfig(config.videoGenerateAudio, true) } : {}),
+            watermark: boolConfig(config.videoWatermark, false),
+        }, { headers: aiHeaders(config, "application/json"), signal: options?.signal })).data;
+        if (!created.id) throw new Error(apiText("noVideoTaskId"));
+        return { id: created.id, provider: "ark", model };
+    } catch (error) {
+        throw new Error(readAxiosError(error, apiText("videoTaskCreateFailed")));
+    }
+}
+
+async function pollArkVideoTask(config: AiConfig, task: VideoGenerationTask, options?: RequestOptions): Promise<VideoGenerationTaskState> {
+    try {
+        const state = (await axios.get<{ status?: string; content?: { video_url?: string }; error?: { message?: string } }>(arkTasksUrl(config, task.id), { headers: aiHeaders(config), signal: options?.signal })).data;
+        if (state.status === "failed" || state.status === "expired" || state.status === "cancelled") return { status: "failed", error: readApiErrorMessage(state.error?.message) || apiText("videoGenerationFailed") };
+        if (state.status !== "succeeded" && state.status !== "completed") return { status: "pending" };
+        const url = state.content?.video_url;
+        return url ? { status: "completed", result: await videoResultFromUrl(url, options) } : { status: "failed", error: apiText("noPlayableVideo") };
+    } catch (error) {
+        throw new Error(readAxiosError(error, apiText("videoTaskQueryFailed")));
+    }
+}
+
+async function createXaiVideoTask(config: AiConfig, model: string, prompt: string, references: ReferenceImage[], options?: VideoMediaOptions): Promise<VideoGenerationTask> {
+    const images = await Promise.all(references.map((image) => imageToDataUrl(image)));
+    const mode = resolveVideoMode(config.videoMode, images.length);
+    const params = videoParams(config, mode === "reference");
+    try {
+        const created = (await axios.post<{ request_id?: string }>(aiApiUrl(config, "/videos/generations"), {
+            model: config.model,
+            prompt,
+            duration: params.seconds,
+            aspect_ratio: params.ratio === "auto" ? "16:9" : params.ratio,
+            resolution: params.resolution,
+            ...(mode === "frames" && images[0] ? { image: { url: images[0] } } : {}),
+            ...(mode === "reference" && images.length ? { reference_images: images.map((url) => ({ url })) } : {}),
+        }, { headers: aiHeaders(config, "application/json"), signal: options?.signal })).data;
+        if (!created.request_id) throw new Error(apiText("noVideoTaskId"));
+        return { id: created.request_id, provider: "xai", model };
+    } catch (error) {
+        throw new Error(readAxiosError(error, apiText("videoTaskCreateFailed")));
+    }
+}
+
+async function pollXaiVideoTask(config: AiConfig, task: VideoGenerationTask, options?: RequestOptions): Promise<VideoGenerationTaskState> {
+    try {
+        const state = (await axios.get<{ status?: string; video?: { url?: string | null }; error?: { message?: string } }>(aiApiUrl(config, `/videos/${encodeURIComponent(task.id)}`), { headers: aiHeaders(config), signal: options?.signal })).data;
+        if (state.status === "failed" || state.status === "expired") return { status: "failed", error: readApiErrorMessage(state.error?.message) || apiText("videoGenerationFailed") };
+        if (state.status !== "done") return { status: "pending" };
+        const url = state.video?.url;
+        return url ? { status: "completed", result: await videoResultFromUrl(url, options) } : { status: "failed", error: apiText("noPlayableVideo") };
     } catch (error) {
         throw new Error(readAxiosError(error, apiText("videoTaskQueryFailed")));
     }
@@ -275,9 +334,9 @@ function geminiVideoHeaders(config: Pick<AiConfig, "apiKey">) {
     return { "x-goog-api-key": config.apiKey, "Content-Type": "application/json" };
 }
 
-function videoAspectRatio(size: string) {
+function videoAspectRatio(size: string, fallback = "16:9") {
     const ratio = inferVideoRatio(size);
-    return ratio === "auto" ? "16:9" : ratio;
+    return ratio === "auto" ? fallback : ratio;
 }
 
 function parseDataUrlInline(dataUrl: string, fallbackType = "image/png"): GeminiInlineData {
@@ -329,10 +388,6 @@ function normalizeVideoResolution(value: string) {
     return `${resolution}p`;
 }
 
-function unwrapVideoResponse(payload: ApiVideoResponse) {
-    return unwrapEnvelope(payload, apiText("noVideoTask"));
-}
-
 function unwrapEnvelope<T>(payload: ApiEnvelope<T>, emptyMessage: string): T {
     if (!payload) throw new Error(emptyMessage);
     if (typeof payload === "object" && "code" in payload && payload.code !== undefined) {
@@ -341,10 +396,6 @@ function unwrapEnvelope<T>(payload: ApiEnvelope<T>, emptyMessage: string): T {
         return payload.data;
     }
     return payload as T;
-}
-
-function videoResultUrl(payload: VideoResponse) {
-    return [payload.video_url, payload.result_url, payload.url, payload.content?.video_url, payload.content?.url].find((url) => typeof url === "string" && (isPublicMediaUrl(url) || /\.mp4(\?|#|$)/i.test(url)));
 }
 
 function readApiErrorMessage(value: unknown): string {

@@ -169,7 +169,7 @@ export async function deleteStoredImages(keys: Iterable<string>) {
     );
 }
 
-export async function cleanupUnusedImages(usedData: unknown) {
+export async function cleanupUnusedImages(usedData: unknown, candidates?: Iterable<string>) {
     const usedKeys = collectImageStorageKeys(usedData);
     await Promise.all([
         imageLogStore.iterate((value) => {
@@ -180,13 +180,16 @@ export async function cleanupUnusedImages(usedData: unknown) {
         }),
     ]);
     const unused: string[] = [];
-    await store.iterate((_value, key) => {
+    if (candidates) {
+        for (const key of new Set(candidates)) if (!usedKeys.has(key)) unused.push(key);
+    } else await store.iterate((_value, key) => {
         if (!usedKeys.has(key)) unused.push(key);
     });
     await deleteStoredImages(unused);
 }
 
 export function collectImageStorageKeys(value: unknown, keys = new Set<string>()) {
+    if (typeof value === "string" && value.startsWith("image:")) keys.add(value);
     if (!value || typeof value !== "object") return keys;
     if ("storageKey" in value && typeof value.storageKey === "string" && value.storageKey.startsWith("image:")) keys.add(value.storageKey);
     Object.values(value).forEach((item) => (Array.isArray(item) ? item.forEach((child) => collectImageStorageKeys(child, keys)) : collectImageStorageKeys(item, keys)));

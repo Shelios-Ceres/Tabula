@@ -1,0 +1,493 @@
+using InfiniteCanvas.Core.Canvas;
+using InfiniteCanvas.Core.Models;
+using InfiniteCanvas.Core.Settings;
+using InfiniteCanvas.Core.Storage;
+
+namespace InfiniteCanvas.Tests;
+
+internal static class TestEnvironment
+{
+    /// <summary>Point ProjectStore.Root at a throwaway folder before any test runs, so no test touches the real data folder.</summary>
+    [System.Runtime.CompilerServices.ModuleInitializer]
+    internal static void Isolate() => Environment.SetEnvironmentVariable("INFINITE_CANVAS_DATA", Path.Combine(Path.GetTempPath(), "InfiniteCanvas.Tests"));
+}
+
+public class CoreTests
+{
+    [Theory]
+    [InlineData("default::gpt-image-2.5-flare", "gpt-image-2.5-flare")]
+    [InlineData("models/gemini-3-pro-image-preview", "gemini-3-pro-image")]
+    [InlineData("doubao-seedream-4-5-251128", "doubao-seedream-4-5")]
+    [InlineData("veo-3.1-generate-preview", "veo-3.1-generate")]
+    public void Normalize_strips_prefixes_and_snapshots(string input, string expected) => Assert.Equal(expected, ModelFamilies.Normalize(input));
+
+    [Fact]
+    public void Every_recommended_media_model_has_a_family()
+    {
+        foreach (var vendor in Enum.GetValues<Vendor>())
+        foreach (var model in ModelFamilies.Recommended(vendor))
+        {
+            var capability = ModelFamilies.GuessCapability(model);
+            if (capability == Capability.Image) Assert.True(ModelFamilies.FindImage(vendor, model) is not null, model);
+            if (capability == Capability.Video) Assert.True(ModelFamilies.FindVideo(vendor, model) is not null, model);
+        }
+        Assert.Equal("seedream-5-flash", ModelFamilies.FindImage(Vendor.Ark, "doubao-seedream-5-0-flash-260901")!.Id);
+        Assert.Equal("seedream-5-lite", ModelFamilies.FindImage(Vendor.Ark, "doubao-seedream-5-0-260128")!.Id);
+        Assert.Equal("seedance-2.0-fast", ModelFamilies.FindVideo(Vendor.Ark, "doubao-seedance-2-0-mini-260801")!.Id);
+    }
+
+    [Fact]
+    public void Image_sizes_follow_each_vendor_table()
+    {
+        Assert.Equal("2048x1152", ModelFamilies.ImageSize(ModelFamilies.FindImage(Vendor.OpenAI, "gpt-image-2")!, "2K", "16:9"));
+        Assert.Equal("auto", ModelFamilies.ImageSize(ModelFamilies.FindImage(Vendor.OpenAI, "gpt-image-2")!, "auto", "16:9"));
+        Assert.Equal("2848x1600", ModelFamilies.ImageSize(ModelFamilies.FindImage(Vendor.Ark, "doubao-seedream-5-0-pro-260628")!, "2K", "16:9"));
+        Assert.Equal("2144x2144", ModelFamilies.ImageSize(ModelFamilies.FindImage(Vendor.Ark, "doubao-seedream-5-0-pro-260628")!, "2K", "1:1"));
+        Assert.Equal("1792x1344", ModelFamilies.ImageSize(ModelFamilies.FindImage(Vendor.Ark, "doubao-seedream-5-0-pro-260628")!, "1.5K", "4:3"));
+        Assert.Equal("5456x3072", ModelFamilies.ImageSize(ModelFamilies.FindImage(Vendor.Ark, "doubao-seedream-4-5-251128")!, "4K", "16:9"));
+        Assert.Equal("2848x1600", ModelFamilies.ImageSize(ModelFamilies.FindImage(Vendor.Ark, "doubao-seedream-4-5-251128")!, "2K", "16:9"));
+        Assert.Equal("1280x720", ModelFamilies.ImageSize(ModelFamilies.FindImage(Vendor.Ark, "doubao-seedream-4-0-250828")!, "1K", "16:9"));
+        Assert.Equal("3K", ModelFamilies.ImageSize(ModelFamilies.FindImage(Vendor.Ark, "doubao-seedream-5-0-260128")!, "3K", "auto"));
+        var qwen = ModelFamilies.FindImage(Vendor.Qwen, "qwen-image-3.0-pro")!;
+        Assert.Equal("2720*1536", ModelFamilies.ImageSize(qwen, "2K", "16:9"));
+        Assert.Equal("2048*2048", ModelFamilies.ImageSize(qwen, "2K", "1:1"));
+        Assert.Equal("1984*1120", ModelFamilies.ImageSize(qwen, "1K", "16:9"));
+        Assert.Equal("1488*1488", ModelFamilies.ImageSize(qwen, "1K", "1:1"));
+        Assert.Null(ModelFamilies.ImageSize(ModelFamilies.FindImage(Vendor.Qwen, "qwen-image-3.0")!, "auto", "16:9"));
+        var legacy = ModelFamilies.FindImage(Vendor.OpenAI, "gpt-image-1.5")!;
+        Assert.Equal("gpt-image-1", legacy.Id);
+        Assert.Equal("gpt-image-1", ModelFamilies.FindImage(Vendor.OpenAI, "gpt-image-1-mini")!.Id);
+        Assert.Equal("1536x1024", ModelFamilies.ImageSize(legacy, "1K", "3:2"));
+        Assert.Equal("1024x1024", ModelFamilies.ImageSize(legacy, "1K", "16:9"));
+        Assert.Equal("auto", ModelFamilies.ImageSize(legacy, "2K", "16:9"));
+    }
+
+    [Fact]
+    public void Qwen_sizes_stay_within_official_limits_for_every_ratio()
+    {
+        foreach (var family in ModelFamilies.Image.Where(f => f.Vendor == Vendor.Qwen && f.Tiers.Length > 0))
+        foreach (var tier in new[] { "1K", "2K" })
+        foreach (var ratio in family.Ratios)
+        {
+            var parts = ModelFamilies.ImageSize(family, tier, ratio)!.Split('*').Select(int.Parse).ToArray();
+            long area = (long)parts[0] * parts[1];
+            Assert.InRange(area, 512L * 512, tier == "1K" ? 2_250_000 : 2048L * 2048);
+            Assert.InRange((double)parts[0] / parts[1], 1 / 8.0, 8);
+            Assert.InRange(Math.Abs((double)parts[0] / parts[1] - ModelFamilies.AspectOf(ratio)), 0, 0.03);
+        }
+    }
+
+    [Fact]
+    public void OpenAI_4k_sizes_fill_the_documented_ceiling()
+    {
+        var family = ModelFamilies.FindImage(Vendor.OpenAI, "gpt-image-2.5-sunburst")!;
+        foreach (var ratio in family.Ratios)
+        {
+            var parts = ModelFamilies.ImageSize(family, "4K", ratio)!.Split('x').Select(long.Parse).ToArray();
+            Assert.All(parts, edge => Assert.True(edge % 16 == 0 && edge <= 3840, ratio));
+            // 21:9 hits the 3840 px edge limit first.
+            Assert.InRange((double)(parts[0] * parts[1]) / 8_294_400, ratio is "21:9" or "9:21" ? 0.76 : 0.99, 1);
+            Assert.InRange(Math.Abs(Math.Log((double)parts[0] / parts[1] / ModelFamilies.AspectOf(ratio))), 0, 0.005);
+        }
+    }
+
+    [Fact]
+    public void Families_match_the_latest_documented_options()
+    {
+        var plus = ModelFamilies.FindImage(Vendor.Qwen, "qwen-image-max-2025-12-30")!;
+        Assert.Equal("qwen-image-plus", plus.Id);
+        Assert.Equal("qwen-image-plus", ModelFamilies.FindImage(Vendor.Qwen, "qwen-image")!.Id);
+        Assert.Equal(("1472*1104", "1664*928"), (ModelFamilies.ImageSize(plus, null, "4:3"), ModelFamilies.ImageSize(plus, null, "auto")));
+        Assert.Equal((0, 1), (plus.MaxReferences, plus.MaxImages));
+        Assert.Equal("qwen-image", ModelFamilies.FindImage(Vendor.Qwen, "qwen-image-2.1-pro")!.Id);
+        Assert.Contains("8:1", ModelFamilies.FindImage(Vendor.Google, "gemini-nano-banana-2.1")!.Ratios);
+        Assert.Equal(["1k", "1.5k", "2k"], ModelFamilies.FindImage(Vendor.XAI, "grok-imagine-image-2.0")!.Tiers);
+        var veo3 = ModelFamilies.FindVideo(Vendor.Google, "veo-3.0-generate-001")!;
+        Assert.Equal(("veo-3", "2160", "9:16"), (veo3.Id, veo3.Resolutions[^1], veo3.Ratios[^1]));
+        Assert.Equal("veo-3.1-fast", ModelFamilies.FindVideo(Vendor.Google, "veo-3.1-fast-generate-preview")!.Id);
+    }
+
+    [Fact]
+    public void Top_size_tiers_use_almost_all_of_the_documented_ceiling()
+    {
+        foreach (var family in ModelFamilies.Image.Where(f => f.MaxPixels > 0))
+        foreach (var ratio in family.Ratios.Where(r => r != "auto"))
+        {
+            var parts = ModelFamilies.ImageSize(family, family.Tiers[^1], ratio)!.Split('x').Select(long.Parse).ToArray();
+            Assert.InRange((double)(parts[0] * parts[1]) / family.MaxPixels, 0.97, 1);
+            Assert.InRange(Math.Abs((double)parts[0] / parts[1] - ModelFamilies.AspectOf(ratio)), 0, 0.03);
+        }
+    }
+
+    [Fact]
+    public void Video_values_snap_to_family_limits()
+    {
+        var veo = ModelFamilies.FindVideo(Vendor.Google, "veo-3.1-lite-generate-preview")!;
+        Assert.Equal(6, ModelFamilies.SnapSeconds(veo, 6));
+        Assert.Equal(8, ModelFamilies.SnapSeconds(veo, 12));
+        Assert.Equal("1080", ModelFamilies.SnapResolution(veo, "2160"));
+        var seedance = ModelFamilies.FindVideo(Vendor.Ark, "doubao-seedance-2-5-260628")!;
+        Assert.Equal(30, ModelFamilies.SnapSeconds(seedance, 45));
+        Assert.Equal("adaptive", ModelFamilies.SnapRatio(seedance, "5:4"));
+        Assert.Equal(-1, ModelFamilies.SnapSeconds(seedance, -1));
+    }
+
+    [Fact]
+    public void Assets_are_numbered_per_kind_after_the_highest_in_use()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "ic-assets-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            string Save(string prefix, string extension) => ProjectStore.Numbered(dir, prefix, extension, path => File.WriteAllBytes(path, [1]));
+            Assert.Equal("图片-001.png", Save("图片", ".png"));
+            Assert.Equal("图片-002.jpg", Save("图片", ".jpg"));
+            Assert.Equal("视频-001.mp4", Save("视频", ".mp4"));
+            File.Delete(Path.Combine(dir, "图片-001.png"));
+            Assert.Equal("图片-003.png", Save("图片", ".png"));
+            Assert.Equal("图片", Media.Label("image/webp"));
+            Assert.Equal("音频", Media.Label("audio/wav"));
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Fact]
+    public void Media_titles_follow_their_numbered_file_until_renamed()
+    {
+        var node = CanvasNode.Create(NodeKind.Image, 0, 0);
+        node.Content = "图片-004.png";
+        ProjectStore.TitleFromAsset(node, null);
+        Assert.Equal("图片-004", node.Title);
+        node.Content = "图片-009.png";
+        ProjectStore.TitleFromAsset(node, "图片-004.png");
+        Assert.Equal("图片-009", node.Title);
+        node.Title = "主角";
+        node.Content = "图片-010.png";
+        ProjectStore.TitleFromAsset(node, "图片-009.png");
+        Assert.Equal("主角", node.Title);
+    }
+
+    [Fact]
+    public void Batch_stacks_hide_all_but_the_lead_until_opened()
+    {
+        var doc = new CanvasDocument();
+        var members = Enumerable.Range(0, 4).Select(i => CanvasNode.Create(NodeKind.Image, i * 400, 0)).ToList();
+        foreach (var member in members) doc.Nodes.Add(member);
+        Stacks.Form(members);
+        Assert.All(members, m => Assert.Equal((members[0].X, members[0].Y), (m.X, m.Y)));
+        Assert.Equal(members.Skip(1).ToHashSet(), Stacks.Hidden(doc));
+        // Outputs of a stacked card never join its stack.
+        Assert.Contains(NodeKeys.Stack, NodeKeys.PerImage);
+        foreach (var member in members) member.SetOption(NodeKeys.StackOpen, "true");
+        Assert.Empty(Stacks.Hidden(doc));
+        var grid = Stacks.Grid(members);
+        Assert.Equal((members[0].X, members[0].Y), grid[0]);
+        Assert.Equal(members[0].X + members[0].Width + Stacks.Gap, grid[1].X);
+        Assert.Equal(members[0].Y + members[0].Height + Stacks.Gap, grid[2].Y);
+    }
+
+    [Theory]
+    [InlineData("doubao-seedream-5-0-pro-260628", "Seedream 5.0 Pro")]
+    [InlineData("doubao-seedance-2-0-fast-260128", "Seedance 2.0 Fast")]
+    [InlineData("veo-3.1-fast-generate-preview", "Veo 3.1 Fast")]
+    [InlineData("gpt-image-2.5-flare", "GPT Image 2.5 Flare")]
+    [InlineData("gpt-4o-mini-tts", "GPT 4o Mini TTS")]
+    [InlineData("wan2.7-i2v", "Wan2.7 I2V")]
+    public void Short_names_drop_vendor_prefixes_and_snapshot_dates(string model, string expected) => Assert.Equal(expected, ModelFamilies.ShortName(model));
+
+    [Fact]
+    public void Labels_prefer_the_alias_and_keep_ambiguous_short_names_whole()
+    {
+        var channel = new ModelChannel
+        {
+            Id = "c", Vendor = Vendor.Ark,
+            Models = [new() { Name = "doubao-seedream-5-0-260128" }, new() { Name = "doubao-seedream-5-0-261015" }, new() { Name = "doubao-seedream-5-0-pro-260628", Alias = "SD 专业版" }, new() { Name = "doubao-seedance-2-5-260628" }],
+        };
+        var settings = new AppSettings { Channels = [channel] };
+        // Two snapshots of one model would both read "Seedream 5.0", so they keep their full IDs.
+        Assert.Equal("doubao-seedream-5-0-260128（火山方舟）", settings.Label(ModelRef.Encode("c", "doubao-seedream-5-0-260128")));
+        Assert.Equal("SD 专业版", settings.Label(ModelRef.Encode("c", "doubao-seedream-5-0-pro-260628")));
+        Assert.Equal("Seedance 2.5（火山方舟）", settings.Label(ModelRef.Encode("c", "doubao-seedance-2-5-260628")));
+    }
+
+    [Fact]
+    public void Prompt_tags_split_on_common_separators() =>
+        Assert.Equal(["人物", "产品图", "cyber"], InfiniteCanvas.Core.Storage.PromptEntry.ParseTags(" 人物，产品图; cyber  人物 "));
+
+    [Fact]
+    public void Video_families_declare_edit_extend_and_extras()
+    {
+        var omni = ModelFamilies.FindVideo(Vendor.Google, "gemini-omni-1.1-flash")!;
+        Assert.Equal("gemini-omni", omni.Id);
+        Assert.False(ModelFamilies.HasDuration(omni));
+        Assert.True(omni.Conversational);
+        Assert.Equal(Capability.Video, ModelFamilies.GuessCapability("gemini-omni-1.1-flash"));
+        Assert.Equal(["extend"], ModelFamilies.FindVideo(Vendor.Google, "veo-3.1-fast-generate-preview")!.Tasks);
+        Assert.Empty(ModelFamilies.FindVideo(Vendor.Google, "veo-3.1-lite-generate-preview")!.Tasks);
+        var grok15 = ModelFamilies.FindVideo(Vendor.XAI, "grok-imagine-video-1.5")!;
+        Assert.Equal((3, 4), (grok15.MaxVoices, grok15.MaxKeyframes));
+        Assert.Equal(0, ModelFamilies.FindVideo(Vendor.XAI, "grok-imagine-video")!.MaxKeyframes);
+        var seedance = ModelFamilies.FindVideo(Vendor.Ark, "doubao-seedance-2-5-260628")!;
+        Assert.True(seedance.Draft && seedance.LastFrame && seedance.SmartDuration);
+        Assert.Equal((10, 10), (seedance.MaxVideos, seedance.MaxAudios));
+        Assert.False(ModelFamilies.FindVideo(Vendor.Ark, "doubao-seedance-2-0-260128")!.Draft);
+        Assert.False(ModelFamilies.FindVideo(Vendor.Ark, "doubao-seedance-1-0-pro-250528")!.SmartDuration);
+    }
+
+    [Theory]
+    [InlineData(Vendor.OpenAI, "https://api.openai.com/", "https://api.openai.com/v1")]
+    [InlineData(Vendor.OpenAI, "api.openai.com", "https://api.openai.com/v1")]
+    [InlineData(Vendor.Google, "https://generativelanguage.googleapis.com", "https://generativelanguage.googleapis.com/v1beta")]
+    [InlineData(Vendor.Ark, "https://ark.cn-beijing.volces.com/api/v3", "https://ark.cn-beijing.volces.com/api/v3")]
+    [InlineData(Vendor.XAI, "", "https://api.x.ai/v1")]
+    [InlineData(Vendor.Qwen, "https://ws1.cn-beijing.maas.aliyuncs.com", "https://ws1.cn-beijing.maas.aliyuncs.com/api/v1")]
+    public void Api_base_appends_vendor_version_once(Vendor vendor, string baseUrl, string expected) =>
+        Assert.Equal(expected, new ModelChannel { Vendor = vendor, BaseUrl = baseUrl }.ApiBase());
+
+    [Theory]
+    [InlineData("qwen3.8-max", true)]
+    [InlineData("qwen3-vl-plus", true)]
+    [InlineData("qwen-plus", false)]
+    [InlineData("qwen-max", false)]
+    public void Qwen_text_routes_multimodal_models(string model, bool multimodal) => Assert.Equal(multimodal, ModelFamilies.QwenMultimodal(model));
+
+    [Theory]
+    [InlineData("gpt-6-luna", "none")]
+    [InlineData("gpt-6.1-sol", "low")]
+    [InlineData("gpt-6-astra", "low")]
+    [InlineData("gpt-5.5", "none")]
+    [InlineData("gpt-5", "minimal")]
+    [InlineData("gpt-5-nano", "minimal")]
+    [InlineData("o3", "low")]
+    [InlineData("gpt-4.1", null)]
+    [InlineData("gpt-5-chat-latest", null)]
+    public void Mainline_models_default_to_their_lowest_effort(string model, string? lowest) => Assert.Equal(lowest, ModelFamilies.SnapReasoning(model, null));
+
+    [Fact]
+    public void Mainline_effort_falls_back_when_the_model_rejects_it()
+    {
+        Assert.Equal("max", ModelFamilies.SnapReasoning("gpt-6.1-sol", "max"));
+        Assert.Equal("low", ModelFamilies.SnapReasoning("gpt-6.1-sol", "none"));
+        Assert.Equal("none", ModelFamilies.SnapReasoning("gpt-5.1", "xhigh"));
+    }
+
+    [Fact]
+    public void Reference_budgets_sit_just_under_each_vendor_limit()
+    {
+        Assert.Equal(9_500_000, ReferenceLimits.Budget(ReferenceLimits.For(Vendor.Qwen), 1));
+        Assert.Equal((long)(30_000_000 * 0.95), ReferenceLimits.Budget(ReferenceLimits.For(Vendor.Ark), 5));
+        Assert.Equal((long)(6000L * 6000 * 0.95), ReferenceLimits.PixelBudget(ReferenceLimits.For(Vendor.Ark)));
+        // Gemini shares one 100MB request (base64 inflated) across every reference.
+        Assert.Equal((long)(75_000_000 / 3 * 0.95), ReferenceLimits.Budget(ReferenceLimits.For(Vendor.Google), 3));
+        Assert.Equal(long.MaxValue, ReferenceLimits.PixelBudget(ReferenceLimits.For(Vendor.OpenAI)));
+    }
+
+    [Fact]
+    public void Image_geometry_crops_and_splits_without_losing_pixels()
+    {
+        Assert.Equal(new PixelRect(250, 0, 1000, 1000), ImageGeometry.CenteredCrop(1500, 1000, 1));
+        Assert.Equal(new PixelRect(0, 78, 1500, 844), ImageGeometry.CenteredCrop(1500, 1000, 16 / 9d));
+        Assert.Equal(new PixelRect(1499, 990, 1, 10), ImageGeometry.Clamp(new PixelRect(2000, 990, 50, 50), 1500, 1000));
+        var tiles = ImageGeometry.Split(1001, 700, 3, 4);
+        Assert.Equal(12, tiles.Count);
+        Assert.Equal(1001L * 700, tiles.Sum(t => (long)t.Width * t.Height));
+        Assert.Equal((750, 466, 251, 234), (tiles[^1].X, tiles[^1].Y, tiles[^1].Width, tiles[^1].Height));
+        Assert.Contains("向左旋转 30 度", ImageGeometry.AnglePrompt(-30, 15, 3, true));
+        Assert.Contains("俯视 15 度", ImageGeometry.AnglePrompt(-30, 15, 3, true));
+    }
+
+    [Fact]
+    public void Connections_keep_config_nodes_in_the_middle()
+    {
+        var text = CanvasNode.Create(NodeKind.Text, 0, 0);
+        var config = CanvasNode.Create(NodeKind.Config, 0, 0);
+        var image = CanvasNode.Create(NodeKind.Image, 0, 0);
+        Assert.Equal((text.Id, config.Id), CanvasGraph.NormalizeConnection(text, config, false));
+        Assert.Equal((config.Id, image.Id), CanvasGraph.NormalizeConnection(config, image, true));
+        Assert.Equal((image.Id, config.Id), CanvasGraph.NormalizeConnection(config, image, false));
+        Assert.Null(CanvasGraph.NormalizeConnection(config, CanvasNode.Create(NodeKind.Config, 0, 0), true));
+        var group = new CanvasNode { Kind = NodeKind.Group };
+        Assert.Equal((group.Id, image.Id), CanvasGraph.NormalizeConnection(image, group, false));
+        Assert.Null(CanvasGraph.NormalizeConnection(image, group, true));
+        Assert.Null(CanvasGraph.NormalizeConnection(group, image, false));
+        Assert.Null(CanvasGraph.NormalizeConnection(new CanvasNode { Kind = NodeKind.Image, GroupId = group.Id }, group, false));
+    }
+
+    [Fact]
+    public void Upstream_resources_expand_groups_and_number_prompts()
+    {
+        var doc = new CanvasDocument();
+        var group = new CanvasNode { Kind = NodeKind.Group };
+        var a = new CanvasNode { Kind = NodeKind.Text, Content = "第一段", GroupId = group.Id };
+        var b = new CanvasNode { Kind = NodeKind.Image, Content = "x.png", GroupId = group.Id };
+        var c = new CanvasNode { Kind = NodeKind.Text, Content = "第二段" };
+        var config = new CanvasNode { Kind = NodeKind.Config };
+        foreach (var node in new[] { group, a, b, c, config }) doc.Nodes.Add(node);
+        doc.Connections.Add(CanvasConnection.Create(group.Id, config.Id));
+        doc.Connections.Add(CanvasConnection.Create(c.Id, config.Id));
+        var resources = CanvasGraph.UpstreamResources(doc, config.Id);
+        Assert.Equal([a.Id, b.Id, c.Id], resources.Select(r => r.Node.Id));
+        var prompt = CanvasGraph.ComposePrompt("画一张海报", resources);
+        Assert.Contains("图片1", prompt);
+        Assert.Contains("【文本2】\n第二段", prompt);
+    }
+
+    [Fact]
+    public void Upstream_resources_skip_the_node_inside_its_source_group()
+    {
+        var doc = new CanvasDocument();
+        var group = new CanvasNode { Kind = NodeKind.Group };
+        var text = new CanvasNode { Kind = NodeKind.Text, Content = "参考", GroupId = group.Id };
+        var config = new CanvasNode { Kind = NodeKind.Config, Prompt = "画海报", GroupId = group.Id };
+        foreach (var node in new[] { group, text, config }) doc.Nodes.Add(node);
+        doc.Connections.Add(CanvasConnection.Create(group.Id, config.Id));
+        Assert.Equal([text.Id], CanvasGraph.UpstreamResources(doc, config.Id).Select(r => r.Node.Id));
+    }
+
+    [Fact]
+    public void Upstream_resources_ignore_config_prompts()
+    {
+        var doc = new CanvasDocument();
+        var config = new CanvasNode { Kind = NodeKind.Config, Prompt = "一只猫在太空" };
+        var image = new CanvasNode { Kind = NodeKind.Image, Content = "o.png" };
+        foreach (var node in new[] { config, image }) doc.Nodes.Add(node);
+        doc.Connections.Add(CanvasConnection.Create(config.Id, image.Id));
+        Assert.Empty(CanvasGraph.UpstreamResources(doc, image.Id));
+    }
+
+    [Fact]
+    public void Containing_group_is_the_innermost()
+    {
+        CanvasNode Node(double x) => new() { Kind = NodeKind.Image, X = x, Width = 100, Height = 100 };
+        CanvasNode Group(params CanvasNode[] members)
+        {
+            var rect = CanvasGraph.GroupRect(members);
+            return new() { Kind = NodeKind.Group, X = rect.Left, Y = rect.Top, Width = rect.Width, Height = rect.Height };
+        }
+        var doc = new CanvasDocument();
+        var (n1, n2, n3) = (Node(0), Node(200), Node(400));
+        foreach (var node in new[] { n1, n2, n3 }) doc.Nodes.Add(node);
+        var outer = Group(n1, n2, n3);
+        doc.Nodes.Insert(0, outer);
+        var inner = Group(n1, n2);
+        doc.Nodes.Insert(0, inner);
+        Assert.Same(inner, CanvasGraph.ContainingGroup(doc, n1));
+        Assert.Same(outer, CanvasGraph.ContainingGroup(doc, n3));
+    }
+
+    [Fact]
+    public void Match_size_keeps_media_aspect_for_one_dimension()
+    {
+        CanvasNode Node(NodeKind kind, double w, double h) => new() { Kind = kind, X = 10, Y = 20, Width = w, Height = h };
+        var anchor = Node(NodeKind.Image, 400, 300);
+        var portrait = Node(NodeKind.Image, 200, 300);
+        var text = Node(NodeKind.Text, 340, 240);
+
+        CanvasGraph.MatchSize(anchor, [portrait, text], width: true, height: false);
+        Assert.Equal((400d, 600d), (portrait.Width, portrait.Height));
+        Assert.Equal((400d, 240d), (text.Width, text.Height));
+
+        CanvasGraph.MatchSize(anchor, [portrait, text], width: false, height: true);
+        Assert.Equal((200d, 300d), (portrait.Width, portrait.Height));
+        Assert.Equal((400d, 300d), (text.Width, text.Height));
+        Assert.Equal((10d, 20d), (portrait.X, portrait.Y));
+
+        CanvasGraph.MatchSize(anchor, [portrait], width: true, height: true);
+        Assert.Equal((400d, 300d), (portrait.Width, portrait.Height));
+        Assert.True(portrait.FreeResize);
+    }
+
+    [Fact]
+    public void History_undoes_and_redoes_snapshots()
+    {
+        var doc = new CanvasDocument();
+        var history = new CanvasHistory(doc);
+        history.Record();
+        doc.Nodes.Add(CanvasNode.Create(NodeKind.Text, 0, 0));
+        history.Record();
+        doc.Nodes[0].X = 500;
+        Assert.True(history.Undo());
+        Assert.Equal(-170, doc.Nodes[0].X);
+        Assert.True(history.Undo());
+        Assert.Empty(doc.Nodes);
+        Assert.True(history.Redo());
+        Assert.Single(doc.Nodes);
+    }
+
+    [Fact]
+    public void History_keeps_generating_nodes_live()
+    {
+        var doc = new CanvasDocument();
+        var history = new CanvasHistory(doc);
+        var target = CanvasNode.Create(NodeKind.Image, 0, 0);
+        target.Status = NodeStatus.Loading;
+        doc.Nodes.Add(target);
+        history.Record();
+        doc.Nodes.Add(CanvasNode.Create(NodeKind.Text, 0, 0));
+        Assert.True(history.Undo());
+        Assert.Same(target, Assert.Single(doc.Nodes));
+        target.Status = NodeStatus.Success;
+        Assert.True(history.Redo());
+        Assert.Same(target, doc.Nodes[0]);
+        Assert.Equal(NodeStatus.Success, target.Status);
+    }
+
+    [Fact]
+    public void History_coalesces_records_with_the_same_key()
+    {
+        var doc = new CanvasDocument();
+        doc.Nodes.Add(CanvasNode.Create(NodeKind.Text, 0, 0));
+        var history = new CanvasHistory(doc);
+        history.Record("k");
+        doc.Nodes[0].Content = "a";
+        history.Record("k");
+        doc.Nodes[0].Content = "ab";
+        Assert.True(history.Undo());
+        Assert.Null(doc.Nodes[0].Content);
+        Assert.False(history.Undo());
+
+        history.Record("k");
+        history.Record();
+        history.Record("k");
+        for (var i = 0; i < 3; i++) Assert.True(history.Undo());
+        Assert.False(history.Undo());
+
+        history.Record("k");
+        Assert.True(history.Undo());
+        history.Record("k");
+        Assert.True(history.CanUndo);
+    }
+
+    [Fact]
+    public void History_keeps_at_most_100_steps()
+    {
+        var doc = new CanvasDocument();
+        doc.Nodes.Add(CanvasNode.Create(NodeKind.Text, 0, 0));
+        var history = new CanvasHistory(doc);
+        for (var i = 1; i <= 101; i++)
+        {
+            history.Record();
+            doc.Nodes[0].X = i;
+        }
+        for (var i = 0; i < 100; i++) Assert.True(history.Undo());
+        Assert.False(history.Undo());
+        Assert.Equal(1, doc.Nodes[0].X);
+    }
+
+    [Fact]
+    public void Prune_assets_keeps_referenced_files_only()
+    {
+        var doc = new CanvasDocument();
+        var image = new CanvasNode { Kind = NodeKind.Image, Content = "a.png" };
+        image.SetOption(NodeKeys.Mask, "m.png");
+        doc.Nodes.Add(image);
+        var dir = ProjectStore.AssetsDir(doc.Id);
+        Directory.CreateDirectory(dir);
+        try
+        {
+            foreach (var name in new[] { "a.png", "m.png", "orphan.png" }) File.WriteAllText(Path.Combine(dir, name), "");
+            ProjectStore.PruneAssets(doc);
+            Assert.Equal(["a.png", "m.png"], Directory.GetFiles(dir).Select(f => Path.GetFileName(f)).Order());
+        }
+        finally { Directory.Delete(Path.GetDirectoryName(dir)!, true); }
+    }
+}

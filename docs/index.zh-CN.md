@@ -33,6 +33,7 @@
 - [更新日志](/zh-CN/docs/progress/changelog)
 - [待测试](/zh-CN/docs/progress/pending-test)
 - [TODO](/zh-CN/docs/progress/todo)
+- [WinUI 3 桌面客户端规划](/zh-CN/docs/progress/desktop-client-plan)
 
 ## 说明
 

@@ -1,17 +1,24 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { Settings2 } from "lucide-react";
-import { Button } from "antd";
+import { Button, ConfigProvider } from "antd";
 import { useTranslation } from "react-i18next";
 
-import { ImageSettingsPanel, imageQualityLabel, imageSizeLabel } from "@/components/image-settings-panel";
+import { ImageSettingsPanel, imageQualityLabel, imageSizeLabel, type ImageSettingKey, type ImageSettingsChange } from "@/components/image-settings-panel";
+import i18n from "@/i18n";
 import { canvasThemes } from "@/lib/canvas-theme";
+import { resolveNativeImageCount, resolveNativeImageOptions } from "@/lib/image-model-capabilities";
 import { useThemeStore } from "@/stores/use-theme-store";
-import type { AiConfig } from "@/stores/use-config-store";
+import { resolveImageProvider, type AiConfig } from "@/stores/use-config-store";
+import type { NativeImageOptions } from "@/types/image-generation";
 
 type CanvasImageSettingsPopoverProps = {
     config: AiConfig;
-    onConfigChange: (key: keyof AiConfig, value: string) => void;
+    onConfigChange: ImageSettingsChange;
+    onNativeChange?: (value: NativeImageOptions) => void;
+    referenceCount?: number;
+    overriddenKeys?: readonly ImageSettingKey[];
+    onResetOverrides?: () => void;
     onMissingConfig?: () => void;
     onOpenChange?: (open: boolean) => void;
     buttonClassName?: string;
@@ -20,7 +27,7 @@ type CanvasImageSettingsPopoverProps = {
     autoAdjustOverflow?: boolean;
 };
 
-export function CanvasImageSettingsPopover({ config, onConfigChange, onOpenChange, buttonClassName, placement = "topLeft" }: CanvasImageSettingsPopoverProps) {
+export function CanvasImageSettingsPopover({ config, onConfigChange, onNativeChange, referenceCount = 0, overriddenKeys, onResetOverrides, onOpenChange, buttonClassName, placement = "topLeft" }: CanvasImageSettingsPopoverProps) {
     const { t } = useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const buttonRef = useRef<HTMLSpanElement>(null);
@@ -58,14 +65,18 @@ export function CanvasImageSettingsPopover({ config, onConfigChange, onOpenChang
         };
     }, [onOpenChange, open]);
 
-    const panel = open && buttonRect ? <ImageSettingsPortal buttonRect={buttonRect} panelRef={panelRef} placement={placement} theme={theme} config={config} onConfigChange={onConfigChange} /> : null;
+    const provider = resolveImageProvider(config, config.model);
+    const native = resolveNativeImageOptions(provider, config.model, config.imageNative);
+    const effectiveCount = resolveNativeImageCount(provider, config.model, native, count, referenceCount);
+    const summary = provider === "google" ? `${native.google?.imageSize || "1K"} · ${native.google?.aspectRatio || "1:1"}` : provider === "ark" ? `${native.ark?.size || "2K"} · ${t("canvas.controls.images", { count: effectiveCount })}` : provider === "xai" ? `${native.xai?.resolution || "1k"} · ${native.xai?.aspectRatio && native.xai.aspectRatio !== "auto" ? native.xai.aspectRatio : t("settingsPanels.common.auto")} · ${t("canvas.controls.images", { count: effectiveCount })}` : `${imageQualityLabel(quality)} · ${imageSizeLabel(activeSize)} · ${t("canvas.controls.images", { count: effectiveCount })} · ${config.outputFormat.toUpperCase()}`;
+    const panel = open && buttonRect ? <ImageSettingsPortal buttonRect={buttonRect} panelRef={panelRef} placement={placement} theme={theme} config={config} referenceCount={referenceCount} overriddenKeys={overriddenKeys} onResetOverrides={onResetOverrides} onConfigChange={onConfigChange} onNativeChange={onNativeChange} /> : null;
 
     return (
         <>
             <span ref={buttonRef} className="inline-flex min-w-0">
-                <Button size="small" type="text" className={buttonClassName || "!h-8 !max-w-[180px] !justify-start !rounded-full !px-2.5"} style={{ background: theme.node.fill, color: theme.node.text }} icon={<Settings2 className="size-3.5" />} onClick={() => updateOpen(!open)}>
+                <Button size="small" type="text" className={buttonClassName || "!h-8 !max-w-[210px] !justify-start !rounded-full !bg-transparent !px-2.5 hover:!bg-black/5 dark:hover:!bg-white/10"} style={{ color: theme.node.text }} icon={<Settings2 className="size-3.5" />} onClick={() => updateOpen(!open)} title={summary} aria-expanded={open}>
                     <span className="truncate">
-                        {imageQualityLabel(quality)} · {imageSizeLabel(activeSize)} · {t("canvas.controls.images", { count })}
+                        {summary}
                     </span>
                 </Button>
             </span>
@@ -80,16 +91,24 @@ function ImageSettingsPortal({
     placement,
     theme,
     config,
+    referenceCount,
+    overriddenKeys,
+    onResetOverrides,
     onConfigChange,
+    onNativeChange,
 }: {
     buttonRect: DOMRect;
     panelRef: RefObject<HTMLDivElement | null>;
     placement: CanvasImageSettingsPopoverProps["placement"];
     theme: (typeof canvasThemes)[keyof typeof canvasThemes];
     config: AiConfig;
-    onConfigChange: (key: keyof AiConfig, value: string) => void;
+    referenceCount: number;
+    overriddenKeys?: readonly ImageSettingKey[];
+    onResetOverrides?: () => void;
+    onConfigChange: ImageSettingsChange;
+    onNativeChange?: (value: NativeImageOptions) => void;
 }) {
-    const width = 356;
+    const width = Math.min(356, window.innerWidth - 24);
     const gap = 8;
     const margin = 12;
     const alignRight = placement?.endsWith("Right");
@@ -102,24 +121,33 @@ function ImageSettingsPortal({
         width,
         left: Math.max(margin, Math.min(window.innerWidth - width - margin, left)),
         ...(topPlacement ? { bottom: window.innerHeight - buttonRect.top + gap, maxHeight: Math.max(260, buttonRect.top - margin * 2) } : { top: buttonRect.bottom + gap, maxHeight: Math.max(260, window.innerHeight - buttonRect.bottom - margin * 2) }),
-        background: theme.toolbar.panel,
         borderRadius: 18,
-        boxShadow: "0 18px 54px rgba(28, 25, 23, 0.16)",
-        padding: 18,
-        overflowY: "auto",
         color: theme.node.text,
     } as const;
 
     return createPortal(
         <div
             ref={panelRef}
-            className="canvas-image-settings-popover"
+            className="canvas-image-settings-popover liquid-glass liquid-glass-regular"
             style={style}
             onPointerDown={(event) => event.stopPropagation()}
             onMouseDown={(event) => event.stopPropagation()}
             onClick={(event) => event.stopPropagation()}
         >
-            <ImageSettingsPanel config={config} onConfigChange={(key, value) => onConfigChange(key, value)} theme={theme} className="space-y-4" />
+            {/* Dropdowns stay inside the dismiss boundary, outside the scroll clipping. */}
+            <ConfigProvider getPopupContainer={() => panelRef.current || document.body}>
+                <div style={{ maxHeight: style.maxHeight, overflowY: "auto", padding: 18, borderRadius: "inherit" }}>
+                    {overriddenKeys ? (
+                        <div className="mb-3 flex items-center justify-between gap-3 border-b pb-3 text-xs" style={{ borderColor: theme.node.stroke, color: theme.node.muted }}>
+                            <span>{overriddenKeys.length ? i18n.t("settingsPanels.image.nodeOverrides", { count: overriddenKeys.length }) : i18n.t("settingsPanels.image.inheritsGlobal")}</span>
+                            {overriddenKeys.length && onResetOverrides ? (
+                                <Button size="small" type="text" className="!h-7 !px-1.5" onClick={onResetOverrides}>{i18n.t("settingsPanels.image.resetGlobal")}</Button>
+                            ) : null}
+                        </div>
+                    ) : null}
+                    <ImageSettingsPanel config={config} model={config.model} referenceCount={referenceCount} onConfigChange={onConfigChange} onNativeChange={onNativeChange} theme={theme} className="space-y-4" />
+                </div>
+            </ConfigProvider>
         </div>,
         document.body,
     );

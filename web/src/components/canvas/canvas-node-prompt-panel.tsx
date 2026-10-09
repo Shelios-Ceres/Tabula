@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
-import { ArrowUp, LoaderCircle, Maximize2, Square } from "lucide-react";
+import { ArrowUp, LoaderCircle, Maximize2, RotateCcw, Square } from "lucide-react";
 import { Button, Modal, Tooltip } from "antd";
 import { useTranslation } from "react-i18next";
 
 import { ModelPicker } from "@/components/model-picker";
+import { imageSettingKeys, type ImageSettingKey } from "@/components/image-settings-panel";
 import { defaultConfig, resolveModelForCapability, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
@@ -42,9 +43,12 @@ export function CanvasNodePromptPanel({ node, nodes, isRunning, onPromptChange, 
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const mode = modeOverride ?? defaultMode(node.type);
     const config = buildNodeConfig(globalConfig, node, mode);
+    const overriddenImageKeys = imageSettingKeys.filter((key) => node.metadata?.[key] !== undefined);
     const hasTextContent = node.type === CanvasNodeType.Text && Boolean(node.metadata?.content?.trim());
     const hasImageContent = node.type === CanvasNodeType.Image && Boolean(node.metadata?.content);
+    const imageReferenceCount = new Set([...mentionReferences.filter((item) => item.kind === "image" && item.active).map((item) => item.nodeId), ...connectedNodes.filter((item) => item.type === CanvasNodeType.Image && item.metadata?.content).map((item) => item.id), ...(hasImageContent ? [node.id] : [])]).size;
     const isEditingExistingContent = hasTextContent || hasImageContent;
+    const hasImageConversation = Boolean(node.metadata?.imageConversation || node.metadata?.imageInputConversation);
     const [prompt, setPrompt] = useState(node.metadata?.composerContent ?? node.metadata?.prompt ?? "");
     const [expanded, setExpanded] = useState(false);
 
@@ -73,13 +77,20 @@ export function CanvasNodePromptPanel({ node, nodes, isRunning, onPromptChange, 
     return (
         <div
             data-canvas-no-zoom
-            className="rounded-2xl border p-3 shadow-2xl backdrop-blur"
-            style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }}
+            className="liquid-glass liquid-glass-regular rounded-2xl border p-3"
+            style={{ color: theme.node.text }}
             onMouseDown={(event) => event.stopPropagation()}
             onPointerDown={(event) => event.stopPropagation()}
             onWheel={(event) => event.stopPropagation()}
         >
             <CanvasNodeReferenceBar nodeId={node.id} nodes={nodes} connectedNodes={connectedNodes} onDisconnect={onDisconnectReference} onStartSelection={onStartReferenceSelection} />
+            {hasImageContent && hasImageConversation ? (
+                <div className="mb-1 flex justify-end">
+                    <Button type="text" size="small" className="!h-7 !bg-transparent !px-1.5 hover:!bg-black/5 dark:hover:!bg-white/10" style={{ color: theme.node.muted }} icon={<RotateCcw className="size-3.5" />} onClick={() => onConfigChange(node.id, { imageConversation: undefined, imageInputConversation: undefined })}>
+                        {t("canvas.promptPanel.restartFromImage")}
+                    </Button>
+                </div>
+            ) : null}
             <CanvasPromptChipInput
                 value={prompt}
                 references={mentionReferences}
@@ -101,9 +112,13 @@ export function CanvasNodePromptPanel({ node, nodes, isRunning, onPromptChange, 
                             <ModelPicker config={config} value={config.model} onChange={(model) => onConfigChange(node.id, { model })} capability="image" onMissingConfig={() => openConfigDialog(true)} className="max-w-[190px]" />
                             <CanvasImageSettingsPopover
                                 config={config}
+                                referenceCount={imageReferenceCount}
                                 placement="topLeft"
-                                buttonClassName="!h-10 !max-w-[170px] !justify-start !rounded-full !px-3"
-                                onConfigChange={(key, value) => onConfigChange(node.id, key === "count" ? { count: Number(value) || 1 } : { [key]: value })}
+                                buttonClassName="!h-10 !max-w-[210px] !justify-start !rounded-full !bg-transparent !px-3 hover:!bg-black/5 dark:hover:!bg-white/10"
+                                overriddenKeys={overriddenImageKeys}
+                                onResetOverrides={() => onConfigChange(node.id, resetImageConfigPatch())}
+                                onConfigChange={(key, value) => onConfigChange(node.id, imageConfigPatch(key, value))}
+                                onNativeChange={(imageNative) => onConfigChange(node.id, { imageNative: structuredClone(imageNative) })}
                                 onMissingConfig={() => openConfigDialog(true)}
                                 onOpenChange={onImageSettingsOpenChange}
                             />
@@ -173,8 +188,12 @@ function buildNodeConfig(globalConfig: AiConfig, node: CanvasNodeData, mode: Can
         model: resolveModelForCapability(globalConfig, node.metadata?.model, mode),
         reasoningEffort: node.metadata?.reasoningEffort || globalConfig.reasoningEffort || defaultConfig.reasoningEffort,
         quality: node.metadata?.quality || globalConfig.quality || defaultConfig.quality,
-        size: node.metadata?.size || globalConfig.size || defaultConfig.size,
+        size: node.metadata?.size || (mode === "video" ? globalConfig.videoSize : globalConfig.size) || defaultConfig.size,
         background: node.metadata?.background ?? globalConfig.background ?? defaultConfig.background,
+        outputFormat: node.metadata?.outputFormat || globalConfig.outputFormat || defaultConfig.outputFormat,
+        outputCompression: node.metadata?.outputCompression ?? globalConfig.outputCompression ?? defaultConfig.outputCompression,
+        moderation: node.metadata?.moderation || globalConfig.moderation || defaultConfig.moderation,
+        imageNative: structuredClone(node.metadata?.imageNative ?? globalConfig.imageNative ?? defaultConfig.imageNative),
         videoSeconds: node.metadata?.seconds || globalConfig.videoSeconds || defaultConfig.videoSeconds,
         vquality: node.metadata?.vquality || globalConfig.vquality || defaultConfig.vquality,
         videoGenerateAudio: node.metadata?.generateAudio || globalConfig.videoGenerateAudio || defaultConfig.videoGenerateAudio,
@@ -186,6 +205,14 @@ function buildNodeConfig(globalConfig: AiConfig, node: CanvasNodeData, mode: Can
         audioInstructions: node.metadata?.audioInstructions || globalConfig.audioInstructions || defaultConfig.audioInstructions,
         count: String(node.metadata?.count || (mode === "image" ? globalConfig.canvasImageCount || globalConfig.count : globalConfig.count) || defaultConfig.count),
     };
+}
+
+function imageConfigPatch(key: ImageSettingKey, value: AiConfig[ImageSettingKey]): Partial<CanvasNodeData["metadata"]> {
+    return (key === "count" ? { count: Number(value) || 1 } : { [key]: value }) as Partial<CanvasNodeData["metadata"]>;
+}
+
+function resetImageConfigPatch() {
+    return { quality: undefined, size: undefined, background: undefined, outputFormat: undefined, outputCompression: undefined, moderation: undefined, imageNative: undefined, count: undefined };
 }
 
 function videoConfigPatch(key: keyof AiConfig, value: string) {

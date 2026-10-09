@@ -5,6 +5,17 @@ const positionSchema = z.object({ x: z.number(), y: z.number() });
 const viewportSchema = z.object({ x: z.number(), y: z.number(), k: z.number() });
 const nodeTypeSchema = z.enum(["image", "text", "config", "video", "audio"]);
 const generationModeSchema = z.enum(["text", "image", "video", "audio"]);
+const imageSelectionSchema = z.union([
+    z.object({ kind: z.literal("point"), x: z.number().min(0).max(1), y: z.number().min(0).max(1), imageIndex: z.number().int().nonnegative().optional() }).strict(),
+    z.object({ kind: z.literal("rectangle"), x1: z.number().min(0).max(1), y1: z.number().min(0).max(1), x2: z.number().min(0).max(1), y2: z.number().min(0).max(1), imageIndex: z.number().int().nonnegative().optional() }).strict().refine((box) => box.x1 <= box.x2 && box.y1 <= box.y2, "矩形选区必须按左上到右下填写"),
+]);
+const imageNativeSchema = z.object({
+    stream: z.boolean().optional(),
+    openai: z.object({ api: z.enum(["images", "responses"]).optional(), mainModel: z.string().optional(), store: z.boolean().optional(), partialImages: z.number().int().min(0).max(3).optional() }).strict().optional(),
+    google: z.object({ imageSize: z.enum(["512", "1K", "2K", "4K"]).optional(), aspectRatio: z.string().optional(), thinkingLevel: z.enum(["auto", "minimal", "medium", "high"]).optional(), webSearch: z.boolean().optional(), imageSearch: z.boolean().optional(), includeText: z.boolean().optional(), store: z.boolean().optional() }).strict().optional(),
+    ark: z.object({ endpoint: z.object({ id: z.string(), model: z.string() }).strict().optional(), size: z.string().optional(), sequential: z.boolean().optional(), watermark: z.boolean().optional(), optimizePrompt: z.enum(["standard", "fast"]).optional(), webSearch: z.boolean().optional(), layerDecomposition: z.boolean().optional(), transparent: z.boolean().optional() }).strict().optional(),
+    xai: z.object({ resolution: z.enum(["1k", "1.5k", "2k"]).optional(), aspectRatio: z.string().optional() }).strict().optional(),
+}).strict();
 
 /** Canvas Agent 对外提供的工具名称。 */
 export const toolNames = [
@@ -69,7 +80,18 @@ const generationOptionsSchema = z.object({
     model: z.string().optional(),
     size: z.string().optional(),
     quality: z.string().optional(),
-    count: z.number().optional(),
+    count: z.number().int().min(1).optional(),
+    background: z.enum(["auto", "opaque", "transparent"]).optional(),
+    outputFormat: z.enum(["png", "jpeg", "webp"]).optional(),
+    outputCompression: z.number().int().min(0).max(100).optional(),
+    moderation: z.enum(["auto", "low"]).optional(),
+    imageNative: imageNativeSchema.optional(),
+    imageSelections: z.array(imageSelectionSchema).optional(),
+    imageInputConversation: recordSchema.optional(),
+    imageConversation: recordSchema.optional(),
+    imageTexts: z.array(z.string()).optional(),
+    imageOutputOrder: z.array(z.object({ kind: z.enum(["image", "text"]), index: z.number().int().nonnegative() }).strict()).optional(),
+    videoSize: z.string().optional(),
     seconds: z.string().optional(),
     vquality: z.string().optional(),
     generateAudio: z.string().optional(),
@@ -118,9 +140,9 @@ export const toolInputSchemas = {
     canvas_run_generation: z.object({ nodeId: z.string(), mode: generationModeSchema.optional(), prompt: z.string().optional() }),
     generation_get_status: z.object({ scope: z.enum(["all", "canvas", "image", "video"]).optional(), taskId: z.string().optional(), nodeIds: z.array(z.string()).optional(), limit: z.number().optional() }),
     workbench_image_get_config: z.object({}).passthrough(),
-    workbench_image_generate: z.object({ prompt: z.string(), model: z.string().optional(), quality: z.string().optional(), size: z.string().optional(), count: z.number().optional(), run: z.boolean().optional() }),
+    workbench_image_generate: z.object({ prompt: z.string(), model: z.string().optional(), quality: z.string().optional(), size: z.string().optional(), count: z.number().int().min(1).optional(), background: z.enum(["auto", "opaque", "transparent"]).optional(), outputFormat: z.enum(["png", "jpeg", "webp"]).optional(), outputCompression: z.number().int().min(0).max(100).optional(), moderation: z.enum(["auto", "low"]).optional(), imageNative: imageNativeSchema.optional(), run: z.boolean().optional() }),
     workbench_video_get_config: z.object({}).passthrough(),
-    workbench_video_generate: z.object({ prompt: z.string(), model: z.string().optional(), size: z.string().optional(), seconds: z.string().optional(), resolution: z.string().optional(), generateAudio: z.boolean().optional(), watermark: z.boolean().optional(), mode: z.enum(["frames", "reference"]).optional(), run: z.boolean().optional() }),
+    workbench_video_generate: z.object({ prompt: z.string(), model: z.string().optional(), videoSize: z.string().optional(), seconds: z.string().optional(), resolution: z.string().optional(), generateAudio: z.boolean().optional(), watermark: z.boolean().optional(), mode: z.enum(["frames", "reference"]).optional(), run: z.boolean().optional() }),
     prompts_search: z.object({ keyword: z.string().optional(), category: z.string().optional(), tags: z.array(z.string()).optional(), page: z.number().optional(), pageSize: z.number().optional() }),
     assets_list: z.object({ kind: z.enum(["all", "text", "image", "video"]).optional(), keyword: z.string().optional(), page: z.number().optional(), pageSize: z.number().optional() }),
     assets_add: z.object({ kind: z.enum(["text", "image"]), title: z.string(), content: z.string().optional(), imageUrl: z.string().optional(), tags: z.array(z.string()).optional(), source: z.string().optional(), note: z.string().optional() }),
@@ -154,10 +176,10 @@ export const toolDescriptions: Record<ToolName, string> = {
     canvas_set_viewport: "调整画布视口。",
     canvas_run_generation: "触发指定节点生成，通常用于配置节点或文本/图片/视频/音频节点。",
     generation_get_status: "查询当前活动网页的生成任务状态。默认返回画布、生图工作台和视频工作台最近任务；可用 scope 过滤来源，用 taskId 查询工作台任务，用 nodeIds 查询画布节点。",
-    workbench_image_get_config: "读取生图工作台的当前参数和可选项（可用模型、质量、分辨率 1k/2k/4k/auto、宽高比、张数范围），在调用 workbench_image_generate 前先了解可选值。",
-    workbench_image_generate: "在生图工作台填入提示词并按需设置 model、quality、size（如 16:9 或 2048x1152）、count，run 默认 true 会自动点击生成按钮。会自动跳转到生图工作台。生成为异步过程，提交后返回 taskId，可用 generation_get_status 查询状态。",
-    workbench_video_get_config: "读取视频创作台的当前参数和可选项（可用模型、清晰度 480/720/1080、比例 1:1/3:4/4:3/16:9/9:16/21:9/auto、时长 4–30 秒、首尾帧或全能参考模式、是否生成声音与水印）。",
-    workbench_video_generate: "在视频创作台填入提示词并按需设置 model、size（1:1、3:4、4:3、16:9、9:16、21:9、auto 或 1280x720）、seconds（4–30）、resolution（480/720/1080）、generateAudio、watermark、mode（frames 首尾帧 / reference 全能参考），run 默认 true 会自动点击生成按钮。会自动跳转到视频创作台。生成为异步过程，提交后返回 taskId，可用 generation_get_status 查询状态。",
+    workbench_image_get_config: "读取生图工作台的当前参数和可选项（可用模型、按模型区分的质量、分辨率、宽高比、张数范围、背景、输出格式、压缩和审核级别），在调用 workbench_image_generate 前先了解可选值。",
+    workbench_image_generate: "在生图工作台填入提示词并按需设置 model、quality、size、count、background、outputFormat、outputCompression、moderation，run 默认 true 会自动点击生成按钮。每个任务会保存完整参数快照，提交后返回 taskId，可用 generation_get_status 查询状态。",
+    workbench_video_get_config: "读取视频创作台的当前参数和可选项（可用模型、清晰度 480/720/1080、videoSize 比例、时长 4–30 秒、首尾帧或全能参考模式、是否生成声音与水印）。",
+    workbench_video_generate: "在视频创作台填入提示词并按需设置 model、videoSize（1:1、3:4、4:3、16:9、9:16、21:9、auto 或 1280x720）、seconds（4–30）、resolution（480/720/1080）、generateAudio、watermark、mode（frames 首尾帧 / reference 全能参考），run 默认 true 会自动点击生成按钮。会自动跳转到视频创作台。生成为异步过程，提交后返回 taskId，可用 generation_get_status 查询状态。",
     prompts_search: "搜索提示词库（第三方提示词合集），支持 keyword、category、tags 过滤和 page/pageSize 分页，返回标题、提示词、分类、标签、封面等。",
     assets_list: "列出用户「我的素材」，支持 kind（text/image/video）过滤、keyword 搜索和 page/pageSize 分页。为控制体积不返回图片/视频原始 data，仅返回封面与元信息。",
     assets_add: "向「我的素材」新增素材。kind=text 时用 content 传文本内容；kind=image 时用 imageUrl 传图片地址或 dataURL。可附带 title、tags、source、note。",

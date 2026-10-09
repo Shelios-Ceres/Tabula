@@ -9,13 +9,13 @@ import { useTranslation } from "react-i18next";
 import { AssetPickerModal, type InsertAssetPayload } from "@/components/canvas/asset-picker-modal";
 import { ModelPicker } from "@/components/model-picker";
 import { PromptSelectDialog } from "@/components/prompts/prompt-select-dialog";
-import { VideoSettingsPanel, normalizeVideoResolutionValue, normalizeVideoSizeValue, videoModeLabel, videoSizeLabel } from "@/components/video-settings-panel";
+import { VideoSettingsPanel, normalizeVideoResolutionValue, normalizeVideoSizeValue, videoSettingsSummary } from "@/components/video-settings-panel";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { clampVideoSeconds } from "@/lib/media-size";
 import { formatBytes, formatDuration } from "@/lib/image-utils";
 import { deleteStoredMedia, resolveMediaUrl } from "@/services/file-storage";
 import { resolveImageUrl, uploadImage } from "@/services/image-storage";
-import { createVideoGenerationTask, pollVideoGenerationTask, storeGeneratedVideo, type VideoGenerationTask } from "@/services/api/video";
+import { createVideoGenerationTask, pollVideoGenerationTask, storeGeneratedVideo, VIDEO_POLL_ATTEMPTS, type VideoGenerationTask } from "@/services/api/video";
 import { useAssetStore } from "@/stores/use-asset-store";
 import { useWorkbenchAgentStore } from "@/stores/use-workbench-agent-store";
 import { boolConfig, modelOptionLabel, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
@@ -230,7 +230,7 @@ export default function VideoPage() {
             openConfigDialog(true);
             return null;
         }
-        return { text, config: buildVideoConfig(effectiveConfig, model), references: [...references] };
+        return { text, config: buildVideoConfig({ ...effectiveConfig, size: effectiveConfig.videoSize }, model), references: [...references] };
     };
 
     const retryResult = () => {
@@ -314,7 +314,7 @@ export default function VideoPage() {
         setResults((value) => (value.length ? value : [{ id: log.id, status: "pending" }]));
         const taskConfig = buildVideoConfig({ ...effectiveConfig, ...log.config }, log.task.model || log.model);
         try {
-            for (let attempt = 0; attempt < 120; attempt += 1) {
+            for (let attempt = 0; attempt < VIDEO_POLL_ATTEMPTS; attempt += 1) {
                 const state = await pollVideoGenerationTask(configOverride || taskConfig, log.task);
                 if (state.status === "completed") {
                     const stored = await storeGeneratedVideo(state.result);
@@ -335,7 +335,7 @@ export default function VideoPage() {
                     return;
                 }
                 if (state.status === "failed") throw new Error(state.error);
-                if (attempt === 119) throw new Error(t("videoWorkbench.timeout"));
+                if (attempt === VIDEO_POLL_ATTEMPTS - 1) throw new Error(t("videoWorkbench.timeout"));
                 await delay(2500);
             }
         } catch (error) {
@@ -359,7 +359,7 @@ export default function VideoPage() {
         setPrompt(log.prompt);
         setReferences(log.references || []);
         if (log.config.videoModel || log.model) updateConfig("videoModel", log.config.videoModel || log.model);
-        if (log.config.size) updateConfig("size", log.config.size);
+        if (log.config.size) updateConfig("videoSize", log.config.size);
         if (log.config.vquality) updateConfig("vquality", log.config.vquality);
         if (log.config.videoSeconds) updateConfig("videoSeconds", log.config.videoSeconds);
         if (log.config.videoGenerateAudio) updateConfig("videoGenerateAudio", log.config.videoGenerateAudio);
@@ -371,12 +371,12 @@ export default function VideoPage() {
     return (
         <div className="flex h-full flex-col overflow-hidden bg-stone-50 text-stone-900 dark:bg-stone-950 dark:text-stone-100">
             <main className="grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-y-auto p-3 lg:grid-cols-[300px_minmax(0,1fr)] lg:overflow-hidden xl:grid-cols-[320px_minmax(0,1fr)]">
-                <aside className="thin-scrollbar hidden min-h-0 overflow-y-auto rounded-lg border border-stone-200 bg-card p-4 shadow-sm dark:border-stone-800 lg:block">
+                <aside className="thin-scrollbar hidden min-h-0 overflow-y-auto liquid-glass liquid-glass-regular liquid-glass-static rounded-2xl border p-4 lg:block">
                     <LogPanel logs={logs} selectedLogIds={selectedLogIds} activeLogId={previewLog?.id} onSelectedLogIdsChange={setSelectedLogIds} onCreateSession={createSession} onDeleteSelected={() => setDeleteConfirmOpen(true)} onPreviewLog={previewGenerationLog} />
                 </aside>
 
                 <section className="grid gap-3 lg:min-h-0 lg:overflow-hidden xl:grid-cols-[420px_minmax(0,1fr)]">
-                    <div className="thin-scrollbar flex flex-col rounded-lg border border-stone-200 bg-card p-4 shadow-sm dark:border-stone-800 lg:min-h-0 lg:overflow-y-auto">
+                    <div className="thin-scrollbar flex flex-col liquid-glass liquid-glass-regular liquid-glass-static rounded-2xl border p-4 lg:min-h-0 lg:overflow-y-auto">
                         <div className="flex items-start justify-between gap-3">
                             <h1 className="text-2xl font-semibold text-stone-950 dark:text-stone-100">{t("videoWorkbench.title")}</h1>
                             <div className="flex shrink-0 gap-2 lg:hidden">
@@ -443,7 +443,7 @@ export default function VideoPage() {
 
                             <div className="flex items-center justify-between rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 text-sm dark:border-stone-800 dark:bg-stone-900 sm:hidden">
                                 <span className="truncate text-stone-500 dark:text-stone-400">
-                                    {modelOptionLabel(effectiveConfig, model)} · {normalizeResolution(effectiveConfig.vquality)}p · {videoSizeLabel(effectiveConfig.size)} · {normalizeVideoSeconds(effectiveConfig.videoSeconds)}s · {videoModeLabel(effectiveConfig.videoMode)}
+                                    {modelOptionLabel(effectiveConfig, model)} · {videoSettingsSummary({ ...effectiveConfig, size: effectiveConfig.videoSize }, model)}
                                 </span>
                                 <Button size="small" type="text" icon={<SlidersHorizontal className="size-4" />} onClick={() => setSettingsOpen(true)}>
                                     {t("workbench.adjust")}
@@ -462,7 +462,7 @@ export default function VideoPage() {
                         </div>
                     </div>
 
-                    <div className="thin-scrollbar rounded-lg border border-stone-200 bg-card p-4 shadow-sm dark:border-stone-800 lg:min-h-0 lg:overflow-y-auto lg:p-5">
+                    <div className="thin-scrollbar liquid-glass liquid-glass-regular liquid-glass-static rounded-2xl border p-4 lg:min-h-0 lg:overflow-y-auto lg:p-5">
                         <div className="mb-4 flex items-center justify-between gap-3">
                             <h2 className="text-xl font-semibold">{t("workbench.results")}</h2>
                             {running ? <Tag className="m-0 px-2 py-1">{t("workbench.waiting", { time: formatDuration(elapsedMs) })}</Tag> : null}
@@ -519,7 +519,7 @@ function GenerationSettings({ config, model, updateConfig, openConfigDialog }: {
                 <ModelPicker config={config} value={model} onChange={(value) => updateConfig("videoModel", value)} capability="video" fullWidth onMissingConfig={() => openConfigDialog(false)} />
             </label>
             <div className="col-span-2">
-                <VideoSettingsPanel config={config} onConfigChange={(key, value) => updateConfig(key, value)} theme={theme} showTitle={false} className="space-y-4" />
+                <VideoSettingsPanel config={{ ...config, size: config.videoSize }} model={model} onConfigChange={(key, value) => updateConfig(key === "size" ? "videoSize" : key, value)} theme={theme} showTitle={false} className="space-y-4" />
             </div>
         </>
     );

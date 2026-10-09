@@ -35,6 +35,8 @@
 - 页面私有 hook 放在对应页面目录下，例如 `admin/assets/use-admin-assets.ts`；只有多个页面真实复用的 hook 才放到外层 `hooks/`。
 - 管理后台页面私有组件放到各自页面目录的 `components/` 下，例如 `admin/assets/components/`、`admin/prompts/components/`；不要为了单页面使用放到 `admin/components/` 共享目录。
 - 管理后台主题、背景、卡片阴影、表格配色等统一在 `web/src/lib/app-theme.ts`、`AppProviders` 或必要的全局 CSS 作用域中配置；页面私有组件不要自己写 `dark ? ...` 主题分支。
+- antd 的全局重置样式（如 `a` 的链接色、`button { overflow: visible }`）不在 CSS layer 中，会压过 Tailwind 工具类：链接颜色通过 `app-theme.ts` 的 `colorLink` 控制，不要指望 `text-*` 类覆盖；`<button>` 内需要截断的文字包一层 `<span className="block truncate">`，不要直接在 button 上写 `truncate`。
+- 当前 antd 是 v6，部分弹层的 DOM 类名与 v5 不同（如 Modal 用 `.ant-modal-container`、Popover 用 `.ant-popover-container`、Drawer 用 `.ant-drawer-section`、Message 用 `.ant-message-notice`）；写全局覆盖样式或选择器前，先在 `node_modules/antd/es/<组件>/style` 或运行中的 DOM 确认类名，不要照搬 v5 的 `-inner`、`-content`。
 - Ant Design 的 Dropdown、Menu、Select、Cascader、TreeSelect 等弹层背景、悬停态和选中态颜色统一通过 `web/src/lib/app-theme.ts` 的全局 Alias Token 与组件 Token 配置；不要在业务组件内为单个弹层覆盖颜色。
 - 组件优先使用函数组件和现有 hooks，不新增大型状态管理方案。
 - UI 图标优先使用 `lucide-react` 或项目已经使用的 Ant Design 图标。
@@ -51,11 +53,32 @@
 - 优先使用 `canvasThemes`、`useThemeStore` 或 Ant Design `ConfigProvider` token。
 - 不要硬编码黑白、stone、slate 等颜色导致浅色/深色主题不一致。
 - 新增画布按钮、弹窗、浮层时，尽量复用已有工具栏、节点面板、Modal 的视觉风格。
-- 画布顶部工具栏和状态信息优先采用极简扁平风格：无边框、无阴影、无胶囊背景，融入整体背景，弱化按钮感，仅保留轻微 hover 反馈，保持简洁现代、低视觉重量。
-- 左侧画布面板等列表里的节点/元素缩略图容器，非图片类型（文本、配置、视频、音频等）不要使用 `theme.node.fill`（`#e7e5df`/`#292524`）这类灰色背景，图标直接无背景展示，尽量不要给多余底色，保持干净。
-- 画布内的操作按钮（如面板里的「添加」「导出」「选择」等）默认用扁平无底色样式：透明背景、仅 `hover:bg-black/5 dark:hover:bg-white/10` 轻微反馈，靠图标+文字表达，不要用 `theme.toolbar.activeBg`（`#e7e5df`/`#3a3631`）或 `theme.node.fill` 之类的灰色作为按钮填充底色。灰色 `activeBg` 只允许用于「选中态」等需要表达状态的高亮，不要当普通装饰底色。
+- 全站采用苹果 Liquid Glass 风格，材质移植自 LiquidGlassWinUI 的 LiquidGlass.hlsl（折射带、光谱色散、菲涅尔边光、方向性眩光），由 AppProviders 中的 `useLiquidGlass()` 全局自动挂载：元素只需加类名，小控件（画布胶囊、按钮）用 `liquid-glass`（通透档），面板、弹窗、菜单、下拉等文字较多的地方用 `liquid-glass liquid-glass-regular`（常规档），贴边的导航栏/侧栏再加 `data-glass-edge` 标出唯一的自由边；背后是纯色背景、不会浮在内容上的页面面板和卡片再加 `liquid-glass-static`（贴边栏自动按静态处理），只叠计算出的边光、不用 backdrop-filter，保证动画流畅；实时折射只留给浮在内容上的胶囊、浮层和菜单；antd 的 Modal、Popover、Dropdown、Select、Drawer、Message 浮层自动按常规档处理，嵌在玻璃里的浮层自动改用实色。不要在组件里各自写 `backdrop-blur`、半透明底色、阴影、CSS 描边、内发光或手绘渐变来画玻璃；材质参数只在 `stores/use-liquid-glass-store.ts` 的 `LIQUID_GLASS_DEFAULTS` 里调整（开发环境右下角「玻璃参数」面板可实时调参），染色与投影由 hook 注入为 `--liquid-*` CSS 变量。
+- 中性灰统一用 `stone-*`（已在 `globals.css` 的 `@theme` 中重定义为苹果系统冷灰），不要引入 `zinc`、`slate`、`gray`、`neutral` 等其他灰阶；强调色使用系统蓝（antd `colorPrimary`、画布 `theme.node.activeStroke`），不要硬编码黑色作为主按钮或选中态。
+- 画布顶部工具栏、底部工具坞、缩放控件和节点悬浮工具条采用浮动玻璃胶囊：`liquid-glass rounded-full border`，内部按钮为圆形或胶囊，hover 只用 `theme.toolbar.itemHover` 轻微反馈。
+- 左侧画布面板等列表里的节点/元素缩略图容器，非图片类型（文本、配置、视频、音频等）不要使用 `theme.node.fill`（`#e8e8ed`/`#2c2c2e`）这类灰色背景，图标直接无背景展示，尽量不要给多余底色，保持干净。
+- 画布内的操作按钮（如面板里的「添加」「导出」「选择」等）默认用扁平无底色样式：透明背景、仅 `hover:bg-black/5 dark:hover:bg-white/10` 轻微反馈，靠图标+文字表达，不要用 `theme.toolbar.activeBg`或 `theme.node.fill` 之类的灰色作为按钮填充底色。灰色 `activeBg` 只允许用于「选中态」等需要表达状态的高亮，不要当普通装饰底色。
 - 图片节点尺寸逻辑要尊重原始比例，除非功能明确要求自由变形。
 - 批量生成、多图展示、助手面板等画布交互要尽量简洁，不要占用过多画布空间。
+
+## 桌面客户端规范
+
+- `desktop/` 是 WinUI 3 原生客户端（.NET 10、Windows App SDK、Win2D），新功能优先在这里实现；`web/` 只作为功能参考，不再同步维护。
+- 分层固定：`InfiniteCanvas.Core` 只放画布模型、规则、存储与模型家族，不引用 WinUI；`InfiniteCanvas.Providers` 只放服务商 HTTP 适配；`InfiniteCanvas.Agents` 只放 ACP 客户端与画布 MCP 工具；界面在 `InfiniteCanvas.App` 的 `Pages/`（页面）与 `Board/`（画布引擎、节点、生成面板、生成调度）。画布相关命名空间用 `Board`，不要再建名为 `Canvas` 的命名空间，避免遮住 WinUI 的 `Canvas` 类型。
+- 服务商一律使用各家原生协议（OpenAI Image/Responses、Gemini Interactions/Veo、方舟 Seedream/Seedance/Chat、xAI、DashScope），不要改走 OpenAI 兼容接口；修改适配前先阅读该服务商最新官方 API 参考，并在 `tests/InfiniteCanvas.Tests/ProviderTests.cs` 补请求与响应解析用例。
+- 本机 Agent 接入放在 `InfiniteCanvas.Agents`（不引用 WinUI）：与 Agent 对话一律走 ACP（Agent Client Protocol v1，stdio 子进程，`AcpClient`），不要为单个 Agent 写私有适配；客户端不声明 fs / terminal 能力，Agent 用自己的工具。画布能力只通过 `CanvasTools` 里的 MCP 工具提供，由 `CanvasMcpServer` 走按画布随机命名的管道，并以「客户端 exe + `--mcp-bridge`」作为 stdio MCP 声明交给 Agent；客户端外的 Agent 用不带管道名的 `--mcp-bridge` 连到按数据目录固定的共享管道（`SharedCanvasHost`，作用于当前打开的画布），管道一律 `PipeOptions.CurrentUserOnly`；新增或修改工具时在 `AgentTests.cs` 补用例，所有文档读写经 `ICanvasHost.OnUiAsync` 回到 UI 线程，一次 `canvas_apply_ops` 只记一步撤销。
+- 模型能力在 `desktop/src/InfiniteCanvas.Core/Models/ModelFamilies.cs` 按家族声明，不按完整型号精确匹配。
+- 画布里的媒体文件一律经 `ProjectStore.SaveAsset` / `ImportAsset` 按画布和种类编号（`图片-001.png`、`视频-002.mp4`、蒙版用 `蒙版-001.png`），节点标题在用户改名前跟随编号（`ProjectStore.TitleFromAsset`）；不要再用 GUID 或原文件名命名。
+- 一次生成多张的输出用 `Stacks` 叠成一摞（`NodeKeys.Stack` / `StackOpen`）：折叠时只显示第一个成员，对它的移动、删除、编组都作用于整摞（`CanvasView.WithStacks`）；新增针对选中节点的批量操作时要考虑折叠的摞。
+- 界面整体走 Windows 11 原生风格（Fluent），设计变量统一在 `App.xaml`：强调色跟随系统，圆角用 WinUI 默认（控件 `ControlCornerRadius` 4、浮层 `OverlayCornerRadius` 8），`CanvasBackgroundBrush` 半透明以透出窗口亚克力，`CardBrush` / `CardStrokeBrush` 为节点卡片，页面内容区用 `SectionCard`；按钮用 `ToolbarButton`（无底色，悬停才有填充）、`ActionButton`、`AccentActionButton`，页面标题用 `PageTitle`。不要在页面里另写颜色或圆角。
+- 配色要多彩：按节点种类使用 `App.xaml` 里各主题都定义的 `Kind*Brush`（图片蓝、视频紫、音频橙、文本绿、生成配置品红、分组青），XAML 用 `ThemeResource`，代码和 Win2D 通过 `Palette.Kind` 读取（随 `ActualThemeChanged` 重读）；节点图标块、工具栏图标、连线渐变、小地图和画布封面都用这套颜色，不要另起色板。
+- 动效统一走 `Motion`（合成层上的淡入淡出加轻微缩放，Fluent 减速曲线）：元素显隐用 `Motion.ShowHide`，新出现的元素用 `Motion.Appear`，视口移动用 `CanvasView.Glide`，节点位置过渡用 `CanvasView.Move`（逐帧改真实坐标，连线和阴影跟着走）；不要在组件里另写 Storyboard。`OpacityTransition` 等过渡属性不能用在设置了 `RenderTransformOrigin` 的元素上（会抛异常）；`Canvas.SetZIndex` 只接受有限范围，不要传 `int.MaxValue`。
+- 毛玻璃只用 `App.xaml` 的亚克力：画布上的浮动工具栏用 `GlassCapsule`（`GlassBrush`，通透），文字较多的面板和全屏预览用 `FloatingPanel` / `GlassThickBrush`，窗口背景是 `DesktopAcrylicBackdrop`，页面背景保持透明让它透出来。投影用 `ThemeShadow` 挂在圆角那一层并指定接收者；画布节点阴影统一在 Win2D 底层模糊绘制，不要给每个节点加 XAML 阴影。亚克力在窗口失焦时会切到半透明回退色，属正常行为。
+- 颜色用 `ThemeResource`，Win2D 绘制颜色随 `ActualTheme` 切换，不硬编码浅色或深色。
+- 只有图标的按钮必须设置 `AutomationProperties.Name`（与 ToolTip 一致），保证读屏和 UI 自动化能找到。
+- WinUI 3 的 `RoutedEventArgs` 没有 `Handled`，需要拦截事件时使用具体参数类型（如 `PointerRoutedEventArgs`）。
+- 代码里创建多行 `TextBox` 时，对象初始化器中先写 `AcceptsReturn = true` 再写 `Text`；顺序反了时单行模式会把第一个换行之后的内容直接丢掉。
+- 本机验证会在 `%LocalAppData%\InfiniteCanvas` 写入画布和设置；用户正在使用客户端时，不要关闭它或改动它的数据：把编译输出指到临时目录（`-p:BaseOutputPath=...`），并设置环境变量 `INFINITE_CANVAS_DATA` 让测试实例使用独立数据目录。测试结束后删除测试数据，并且只用本机模拟接口和测试 Key，不用真实账号。
 
 ## 文档规范
 
@@ -90,6 +113,8 @@
 ## 项目注意事项
 
 - 新增或调整超时、重试次数、大小限制、并发上限等会改变实际行为的边界值前，必须先向用户说明适用环节、默认值和失败后的处理方式，并取得确认；不要把经验值当成纯内部实现静默加入。
+- 模型能力（尺寸档位、比例、画质、数量、参考图上限、功能开关、视频时长/分辨率/协议）统一在 `web/src/lib/model-families.ts` 按模型家族声明；适配器和组件通过家族读取能力，不要按完整型号名精确匹配或写死快照日期，新型号优先补家族规则。
+- 渠道只有「服务商」（`ModelChannel.vendor`：openai / google / ark / xai）一个维度，由它决定图片、视频、文本、音频与模型列表的调用方式；不要再引入协议/兼容格式之类与服务商并列的路由字段。请求地址统一经 `channelApiBaseUrl` 拼接（Google 加 `v1beta`/`v1`，方舟加 `/api/v3`）。
 - 当前画布项目和“我的素材”主要保存在浏览器本地，不要在文档中误写成已支持云同步。
 - 当前 AI API Key 存在浏览器本地，并由前端直接请求 OpenAI 兼容接口；涉及安全说明时要写清楚。
 - Docker 静态资源路径目前仍是待办项，文档中不要过度承诺生产部署已经完全验证。

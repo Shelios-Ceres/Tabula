@@ -1,9 +1,9 @@
 import { getNodeSpec, NODE_DEFAULT_SIZE } from "@/constant/canvas";
 import { nodeSizeFromRatio } from "@/lib/canvas/canvas-node-size";
-import type { AiConfig } from "@/stores/use-config-store";
+import { snapshotImageNativeOptions, type AiConfig } from "@/stores/use-config-store";
 import type { UploadedImage } from "@/services/image-storage";
 import type { UploadedFile } from "@/services/file-storage";
-import type { ReferenceImage } from "@/types/image";
+import type { ImageResponseMetadata, ReferenceImage } from "@/types/image";
 import { CanvasNodeType, type CanvasImageGenerationType, type CanvasNodeData, type CanvasNodeMetadata, type CanvasNodeTypeId, type Position } from "@/types/canvas";
 
 export function createCanvasNode(type: CanvasNodeTypeId, position: Position, metadata?: CanvasNodeMetadata): CanvasNodeData {
@@ -24,8 +24,8 @@ export function createCanvasNode(type: CanvasNodeTypeId, position: Position, met
     };
 }
 
-export function imageMetadata(image: UploadedImage): CanvasNodeMetadata {
-    return { content: image.url, storageKey: image.storageKey, status: "success", naturalWidth: image.width, naturalHeight: image.height, bytes: image.bytes, mimeType: image.mimeType };
+export function imageMetadata(image: UploadedImage, imageResponse?: ImageResponseMetadata): CanvasNodeMetadata {
+    return { content: image.url, storageKey: image.storageKey, status: "success", naturalWidth: image.width, naturalHeight: image.height, bytes: image.bytes, mimeType: image.mimeType, imageResponse };
 }
 
 export function videoMetadata(video: UploadedFile): CanvasNodeMetadata {
@@ -40,13 +40,19 @@ export function referenceUrl(image: ReferenceImage) {
     return image.storageKey || image.url || (!image.dataUrl.startsWith("data:") ? image.dataUrl : undefined);
 }
 
-export function buildImageGenerationMetadata(type: CanvasImageGenerationType, config: AiConfig, count: number, references: ReferenceImage[]): CanvasNodeMetadata {
+export function buildImageGenerationMetadata(type: CanvasImageGenerationType, config: AiConfig, count: number, references: ReferenceImage[], mask?: ReferenceImage): CanvasNodeMetadata {
     return {
         generationType: type,
         model: config.model,
         size: config.size,
         quality: config.quality,
         ...(config.background ? { background: config.background } : {}),
+        outputFormat: config.outputFormat,
+        outputCompression: config.outputCompression,
+        moderation: config.moderation,
+        imageNative: snapshotImageNativeOptions(config, config.model),
+        imageRequestCount: count,
+        maskReference: mask ? referenceUrl(mask) : undefined,
         count,
         references: references.map(referenceUrl).filter((url): url is string => Boolean(url)),
     };

@@ -9,8 +9,10 @@ import type { CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
 import { clampVideoSeconds } from "@/lib/media-size";
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { useAssetStore } from "@/stores/use-asset-store";
-import { modelOptionLabel, modelOptionName, normalizeModelOptionValue, selectableModelsByCapability, useConfigStore } from "@/stores/use-config-store";
+import { modelOptionLabel, modelOptionName, normalizeModelOptionValue, resolveImageProvider, selectableModelsByCapability, snapshotImageNativeOptions, useConfigStore, type AiConfig } from "@/stores/use-config-store";
 import { useWorkbenchAgentStore } from "@/stores/use-workbench-agent-store";
+import { getImageModelCapabilities, getNativeImageCapabilities } from "@/lib/image-model-capabilities";
+import type { NativeImageOptions } from "@/types/image-generation";
 
 // Execute site-level Agent tools in the browser, including canvas lists, workbench generation, prompt search, and asset operations.
 // Their data lives locally in the browser through localforage and Zustand, so this module accesses the relevant stores directly.
@@ -149,41 +151,89 @@ function listCanvasProjects(input: SiteToolInput) {
 function getImageConfig() {
     const { config } = useConfigStore.getState();
     const model = config.imageModel || config.model;
+    const capabilities = getImageModelCapabilities(model);
+    const nativeCapabilities = getNativeImageCapabilities(resolveImageProvider(config, model), model);
+    const responsesMode = resolveImageProvider(config, model) === "openai" && config.imageNative?.openai?.api === "responses";
     return {
-        current: { model, modelName: modelOptionName(model), quality: config.quality || "auto", size: config.size || "1:1", count: config.count || "1" },
+        current: { model, modelName: modelOptionName(model), quality: config.quality || "auto", size: config.size || "1:1", count: config.count || "1", background: config.background, outputFormat: config.outputFormat, outputCompression: config.outputCompression, moderation: config.moderation, imageNative: structuredClone(config.imageNative || {}) },
         models: selectableModelsByCapability(config, "image").map((value) => ({ value, label: modelOptionLabel(config, value) })),
-        qualityOptions: imageQualityOptions,
+        qualityOptions: capabilities.qualities.map((value) => ({ value, label: imageQualityOptions.find((item) => item.value === value)?.label || value })),
         scaleOptions: imageScaleOptions,
         sizeOptions: imageAspectOptions,
-        countRange: { min: 1, max: 15 },
+        countRange: { min: 1, max: responsesMode ? 1 : nativeCapabilities.supported ? nativeCapabilities.maxImages : capabilities.maxImages },
+        nativeCapabilities,
     };
 }
 
 function runImageWorkbench(input: SiteToolInput, navigate: NavigateFunction) {
     const configStore = useConfigStore.getState();
+    const updates: Partial<AiConfig> = {};
     const applied: Record<string, unknown> = {};
     if (typeof input.model === "string" && input.model.trim()) {
         const value = normalizeModelOptionValue(input.model, configStore.config.channels) || input.model;
-        configStore.updateConfig("imageModel", value);
+        updates.imageModel = value;
         applied.model = value;
     }
+    const candidateModel = updates.imageModel || configStore.config.imageModel || configStore.config.model;
+    const capabilities = getImageModelCapabilities(candidateModel);
+    const provider = resolveImageProvider(configStore.config, candidateModel);
+    const nativeCapabilities = getNativeImageCapabilities(provider, candidateModel);
+    const candidateNative = structuredClone((input.imageNative ?? configStore.config.imageNative) || {}) as NativeImageOptions;
+    const responsesMode = provider === "openai" && candidateNative.openai?.api === "responses";
+    const effectiveMaxImages = responsesMode ? 1 : nativeCapabilities.supported ? nativeCapabilities.maxImages : capabilities.maxImages;
+    if (input.imageNative !== undefined) updates.imageNative = candidateNative;
     if (typeof input.quality === "string" && input.quality.trim()) {
-        configStore.updateConfig("quality", input.quality);
+        if (capabilities.isGptImage && !capabilities.qualities.includes(input.quality as never)) {
+            throw new Error(i18n.t("agent.siteTools.invalidImageQuality", { defaultValue: "模型 {{model}} 不支持质量 {{quality}}。", quality: input.quality, model: candidateModel }));
+        }
+        updates.quality = input.quality;
         applied.quality = input.quality;
     }
+    if (capabilities.isGptImage && !capabilities.qualities.includes((updates.quality || configStore.config.quality) as never)) {
+        throw new Error(i18n.t("agent.siteTools.invalidImageQuality", { defaultValue: "模型 {{model}} 不支持当前质量 {{quality}}。", quality: updates.quality || configStore.config.quality, model: candidateModel }));
+    }
     if (typeof input.size === "string" && input.size.trim()) {
-        configStore.updateConfig("size", input.size);
+        updates.size = input.size;
         applied.size = input.size;
     }
     if (input.count != null) {
-        const count = String(Math.max(1, Math.min(15, Math.floor(Number(input.count)) || 1)));
-        configStore.updateConfig("count", count);
+        const countNumber = Number(input.count);
+        if (!Number.isInteger(countNumber) || countNumber < 1 || countNumber > effectiveMaxImages) {
+            throw new Error(i18n.t("agent.siteTools.invalidImageCount", { defaultValue: "图片数量必须是 {{min}} 到 {{max}} 之间的整数。", min: 1, max: effectiveMaxImages }));
+        }
+        const count = String(countNumber);
+        updates.count = count;
         applied.count = count;
     }
+    if (capabilities.isGptImage) {
+        if (input.background !== undefined && !["auto", "opaque", "transparent"].includes(input.background as string)) throw new Error(i18n.t("agent.siteTools.invalidImageBackground", { defaultValue: "不支持的图像背景设置。" }));
+        if (input.outputFormat !== undefined && !["png", "jpeg", "webp"].includes(input.outputFormat as string)) throw new Error(i18n.t("agent.siteTools.invalidImageFormat", { defaultValue: "不支持的图像输出格式。" }));
+        if (input.outputCompression !== undefined && (!Number.isInteger(Number(input.outputCompression)) || Number(input.outputCompression) < 0 || Number(input.outputCompression) > 100)) throw new Error(i18n.t("agent.siteTools.invalidImageCompression", { defaultValue: "图像压缩必须是 0 到 100 之间的整数。" }));
+        if (input.moderation !== undefined && !["auto", "low"].includes(input.moderation as string)) throw new Error(i18n.t("agent.siteTools.invalidImageModeration", { defaultValue: "不支持的图像审核级别。" }));
+    }
+    for (const key of ["background", "outputFormat", "outputCompression", "moderation"] as const) {
+        if (input[key] !== undefined) {
+            updates[key] = input[key] as never;
+            applied[key] = input[key];
+        }
+    }
+    for (const [key, value] of Object.entries(updates) as Array<[keyof AiConfig, AiConfig[keyof AiConfig]]>) configStore.updateConfig(key, value as never);
     const prompt = typeof input.prompt === "string" ? input.prompt : undefined;
     const run = input.run !== false;
     navigate("/image");
-    const taskId = useWorkbenchAgentStore.getState().dispatchImage({ prompt, run });
+    const latest = useConfigStore.getState().config;
+    const imageConfigSnapshot = {
+        model: latest.imageModel || latest.model,
+        size: latest.size,
+        quality: latest.quality,
+        count: latest.count,
+        background: latest.background,
+        outputFormat: latest.outputFormat,
+        outputCompression: latest.outputCompression,
+        moderation: latest.moderation,
+        imageNative: snapshotImageNativeOptions(latest, latest.imageModel || latest.model),
+    };
+    const taskId = useWorkbenchAgentStore.getState().dispatchImage({ prompt, run, imageConfigSnapshot });
     return { ok: true, navigated: "/image", prompt, run, taskId, applied, note: siteText(run ? "imageGenerationStarted" : "imageConfigApplied") };
 }
 
@@ -194,7 +244,7 @@ function getVideoConfig() {
         current: {
             model,
             modelName: modelOptionName(model),
-            size: config.size || "1280x720",
+            videoSize: config.videoSize || "1280x720",
             seconds: config.videoSeconds || "6",
             resolution: config.vquality || "720",
             generateAudio: config.videoGenerateAudio !== "false",
@@ -220,9 +270,9 @@ function runVideoWorkbench(input: SiteToolInput, navigate: NavigateFunction) {
         configStore.updateConfig("videoModel", value);
         applied.model = value;
     }
-    if (typeof input.size === "string" && input.size.trim()) {
-        configStore.updateConfig("size", input.size);
-        applied.size = input.size;
+    if (typeof input.videoSize === "string" && input.videoSize.trim()) {
+        configStore.updateConfig("videoSize", input.videoSize);
+        applied.videoSize = input.videoSize;
     }
     if (input.seconds != null && String(input.seconds).trim()) {
         const seconds = clampVideoSeconds(String(input.seconds));

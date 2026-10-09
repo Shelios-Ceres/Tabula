@@ -4,14 +4,16 @@ import type { CanvasAgentOp } from "@/lib/canvas/canvas-agent-ops";
 import type { CanvasTheme } from "@/lib/canvas-theme";
 import type { CanvasConnection, CanvasNodeData, CanvasNodeMetadata } from "@/types/canvas";
 import type { CanvasResourceKind } from "@/lib/canvas/canvas-resource-references";
+import type { ImageConversation, ImageGenerationEvent, ImageOutputError, ImageSelection, NativeImageOptions } from "@/types/image-generation";
+import type { ImageGenerationResult } from "@/types/image";
 
 // Resource emitted when a plugin node is consumed as an upstream input.
 export type CanvasNodeResource = { kind: CanvasResourceKind; text?: string; url?: string };
 
 // AI generation capabilities injected by the host, reusing its model and credential configuration.
 export type GenerateOptions = { signal?: AbortSignal; references?: string[]; model?: string };
-export type GenerateImageOptions = GenerateOptions & { count?: number; size?: string };
-export type GenerateImageResult = { images: string[] };
+export type GenerateImageOptions = GenerateOptions & { count?: number; size?: string; quality?: string; background?: "auto" | "opaque" | "transparent"; outputFormat?: "png" | "jpeg" | "webp"; outputCompression?: number; moderation?: "auto" | "low"; imageNative?: NativeImageOptions; mask?: string; selections?: ImageSelection[]; conversation?: ImageConversation; onEvent?: (event: ImageGenerationEvent) => void };
+export type GenerateImageResult = { images: string[]; resources: ImageGenerationResult[]; texts: string[]; errors: ImageOutputError[]; outputOrder?: Array<{ kind: "image" | "text"; index: number }>; conversation?: ImageConversation; providerMetadata?: Record<string, unknown> };
 export type GenerateVideoOptions = GenerateOptions & { size?: string; seconds?: string };
 export type GenerateVideoResult = { url: string; mimeType: string; width?: number; height?: number; durationMs?: number };
 export type GenerateTextOptions = { signal?: AbortSignal; model?: string; system?: string; onDelta?: (text: string) => void };

@@ -1,3 +1,6 @@
+import type { ImageOutputFormat, ImageResponseMetadata } from "@/types/image";
+import type { ImageConversation, ImageLayer, ImageSelection, NativeImageOptions } from "@/types/image-generation";
+
 export type Position = {
     x: number;
     y: number;
@@ -35,6 +38,9 @@ export type CanvasNodeImage = {
     naturalHeight: number;
     bytes: number;
     mimeType: string;
+    imageResponse?: ImageResponseMetadata;
+    layer?: ImageLayer;
+    role?: "image" | "base" | "layer";
 };
 
 export type CanvasNodeText = {
@@ -58,6 +64,20 @@ export type CanvasNodeMetadata = {
     size?: string;
     quality?: string;
     background?: string;
+    outputFormat?: ImageOutputFormat;
+    outputCompression?: number;
+    moderation?: "auto" | "low";
+    imageResponse?: ImageResponseMetadata;
+    maskReference?: string;
+    imageNative?: NativeImageOptions;
+    imageRequestCount?: number;
+    imageConversation?: ImageConversation;
+    imageInputConversation?: ImageConversation;
+    imageTexts?: string[];
+    imageOutputOrder?: Array<{ kind: "image" | "text"; index: number }>;
+    imageSelections?: ImageSelection[];
+    imageLayer?: ImageLayer;
+    imageRole?: "mask";
     count?: number;
     textCount?: number;
     texts?: CanvasNodeText[];
@@ -82,7 +102,7 @@ export type CanvasNodeMetadata = {
     bytes?: number;
     durationMs?: number;
     videoTaskId?: string;
-    videoTaskProvider?: "openai" | "gemini";
+    videoTaskProvider?: "gemini" | "ark" | "xai";
     groupId?: string;
     interactive?: boolean; // Plugin node interaction/move state; see CanvasNodeDefinition.interactionToggle.
 };

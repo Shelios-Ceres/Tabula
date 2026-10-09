@@ -15,7 +15,19 @@
     --radius-lg: var(--radius);
     --radius-xl: calc(var(--radius) + 4px);
     --font-heading: var(--font-sans);
-    --font-sans: var(--font-sans);
+    --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "PingFang SC", "Helvetica Neue", "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+    /* Apple 系统冷灰：重定义 stone 色阶，全站 stone-* 类名统一切换为苹果中性灰 */
+    --color-stone-50: #fbfbfd;
+    --color-stone-100: #f5f5f7;
+    --color-stone-200: #e8e8ed;
+    --color-stone-300: #d2d2d7;
+    --color-stone-400: #a1a1a6;
+    --color-stone-500: #6e6e73;
+    --color-stone-600: #515154;
+    --color-stone-700: #3a3a3c;
+    --color-stone-800: #2c2c2e;
+    --color-stone-900: #1c1c1e;
+    --color-stone-950: #0b0b0c;
     --color-sidebar-ring: var(--sidebar-ring);
     --color-sidebar-border: var(--sidebar-border);
     --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -49,72 +61,76 @@
 }
 
 :root {
-    --radius: 0.625rem;
-    --border: oklch(0.922 0 0);
-    --ring: oklch(0.708 0 0);
-    --background: oklch(1 0 0);
-    --foreground: oklch(0.145 0 0);
-    --card: oklch(1 0 0);
-    --card-foreground: oklch(0.145 0 0);
-    --popover: oklch(1 0 0);
-    --popover-foreground: oklch(0.145 0 0);
-    --primary: oklch(0.205 0 0);
-    --primary-foreground: oklch(0.985 0 0);
-    --secondary: oklch(0.97 0 0);
-    --secondary-foreground: oklch(0.205 0 0);
-    --muted: oklch(0.97 0 0);
-    --muted-foreground: oklch(0.556 0 0);
-    --accent: oklch(0.97 0 0);
-    --accent-foreground: oklch(0.205 0 0);
-    --destructive: oklch(0.577 0.245 27.325);
-    --input: oklch(0.922 0 0);
-    --chart-1: oklch(0.87 0 0);
-    --chart-2: oklch(0.556 0 0);
-    --chart-3: oklch(0.439 0 0);
-    --chart-4: oklch(0.371 0 0);
-    --chart-5: oklch(0.269 0 0);
-    --sidebar: oklch(0.985 0 0);
-    --sidebar-foreground: oklch(0.145 0 0);
-    --sidebar-primary: oklch(0.205 0 0);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.97 0 0);
-    --sidebar-accent-foreground: oklch(0.205 0 0);
-    --sidebar-border: oklch(0.922 0 0);
-    --sidebar-ring: oklch(0.708 0 0);
+    /* Liquid Glass：染色、投影与常规档回退滤镜由 use-liquid-glass 按 LIQUID_GLASS_DEFAULTS 注入为 --liquid-* 变量，这里只放固定值 */
+    --liquid-fallback: blur(12px) saturate(150%);
+    --liquid-solid: rgba(255, 255, 255, 0.94);
+    --radius: 0.75rem;
+    --border: #d2d2d7;
+    --ring: #0071e3;
+    --background: #f5f5f7;
+    --foreground: #1d1d1f;
+    --card: #ffffff;
+    --card-foreground: #1d1d1f;
+    --popover: #ffffff;
+    --popover-foreground: #1d1d1f;
+    --primary: #0071e3;
+    --primary-foreground: #ffffff;
+    --secondary: #e8e8ed;
+    --secondary-foreground: #1d1d1f;
+    --muted: #f2f2f7;
+    --muted-foreground: #6e6e73;
+    --accent: #e8e8ed;
+    --accent-foreground: #1d1d1f;
+    --destructive: #ff3b30;
+    --input: #d2d2d7;
+    --chart-1: #0071e3;
+    --chart-2: #34c759;
+    --chart-3: #ff9500;
+    --chart-4: #af52de;
+    --chart-5: #ff2d55;
+    --sidebar: #f5f5f7;
+    --sidebar-foreground: #1d1d1f;
+    --sidebar-primary: #0071e3;
+    --sidebar-primary-foreground: #ffffff;
+    --sidebar-accent: #e8e8ed;
+    --sidebar-accent-foreground: #1d1d1f;
+    --sidebar-border: #d2d2d7;
+    --sidebar-ring: #0071e3;
 }
 
 .dark {
-    --background: oklch(0.145 0 0);
-    --foreground: oklch(0.985 0 0);
-    --border: oklch(1 0 0 / 10%);
-    --ring: oklch(0.556 0 0);
-    --card: oklch(0.205 0 0);
-    --card-foreground: oklch(0.985 0 0);
-    --popover: oklch(0.205 0 0);
-    --popover-foreground: oklch(0.985 0 0);
-    --primary: oklch(0.922 0 0);
-    --primary-foreground: oklch(0.205 0 0);
-    --secondary: oklch(0.269 0 0);
-    --secondary-foreground: oklch(0.985 0 0);
-    --muted: oklch(0.269 0 0);
-    --muted-foreground: oklch(0.708 0 0);
-    --accent: oklch(0.269 0 0);
-    --accent-foreground: oklch(0.985 0 0);
-    --destructive: oklch(0.704 0.191 22.216);
-    --input: oklch(1 0 0 / 15%);
-    --chart-1: oklch(0.87 0 0);
-    --chart-2: oklch(0.556 0 0);
-    --chart-3: oklch(0.439 0 0);
-    --chart-4: oklch(0.371 0 0);
-    --chart-5: oklch(0.269 0 0);
-    --sidebar: oklch(0.205 0 0);
-    --sidebar-foreground: oklch(0.985 0 0);
-    --sidebar-primary: oklch(0.488 0.243 264.376);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.269 0 0);
-    --sidebar-accent-foreground: oklch(0.985 0 0);
-    --sidebar-border: oklch(1 0 0 / 10%);
-    --sidebar-ring: oklch(0.556 0 0);
+    --liquid-solid: rgba(36, 36, 38, 0.94);
+    --background: #000000;
+    --foreground: #f5f5f7;
+    --border: rgba(255, 255, 255, 0.12);
+    --ring: #0a84ff;
+    --card: #1c1c1e;
+    --card-foreground: #f5f5f7;
+    --popover: #1c1c1e;
+    --popover-foreground: #f5f5f7;
+    --primary: #0a84ff;
+    --primary-foreground: #ffffff;
+    --secondary: #2c2c2e;
+    --secondary-foreground: #f5f5f7;
+    --muted: #1c1c1e;
+    --muted-foreground: #98989d;
+    --accent: #2c2c2e;
+    --accent-foreground: #f5f5f7;
+    --destructive: #ff453a;
+    --input: rgba(255, 255, 255, 0.16);
+    --chart-1: #0a84ff;
+    --chart-2: #30d158;
+    --chart-3: #ff9f0a;
+    --chart-4: #bf5af2;
+    --chart-5: #ff375f;
+    --sidebar: #1c1c1e;
+    --sidebar-foreground: #f5f5f7;
+    --sidebar-primary: #0a84ff;
+    --sidebar-primary-foreground: #ffffff;
+    --sidebar-accent: #2c2c2e;
+    --sidebar-accent-foreground: #f5f5f7;
+    --sidebar-border: rgba(255, 255, 255, 0.12);
+    --sidebar-ring: #0a84ff;
 }
 
 @layer base {
@@ -141,6 +157,30 @@
 }
 
 @layer utilities {
+    /* Liquid Glass（材质见 use-liquid-glass）：Chromium 下 --lg-filter 计算折射、色散与边光，染色在滤镜内完成（--lg-bg 置透明）；其他浏览器回退为 CSS 模糊 + 染色。默认是通透档 */
+    .liquid-glass {
+        background: var(--lg-bg, var(--liquid-tint));
+        border-color: transparent;
+        box-shadow: var(--liquid-shadow);
+        -webkit-backdrop-filter: var(--liquid-fallback);
+        backdrop-filter: var(--lg-filter, var(--liquid-fallback));
+    }
+
+    /* 常规档：面板、弹窗、菜单等文字较多的地方，更强的模糊和染色保证可读 */
+    .liquid-glass.liquid-glass-regular {
+        background: var(--lg-bg, var(--liquid-regular-tint));
+        box-shadow: var(--liquid-regular-shadow);
+        -webkit-backdrop-filter: var(--liquid-regular-fallback);
+        backdrop-filter: var(--lg-filter, var(--liquid-regular-fallback));
+    }
+
+    /* 静态玻璃：贴边栏（data-glass-edge）和页面里的面板（liquid-glass-static）背后是纯色背景，只叠 use-liquid-glass 算出的边光，不用 backdrop-filter */
+    .liquid-glass:is(.liquid-glass-static, [data-glass-edge]) {
+        background: var(--lg-light, none) border-box 0 0 / 100% 100% no-repeat, var(--liquid-regular-tint);
+        -webkit-backdrop-filter: none;
+        backdrop-filter: none;
+    }
+
     .ai-title-aurora {
         background: linear-gradient(90deg, #111827 0%, #111827 36%, #6b7280 54%, #111827 72%, #111827 100%);
         background-size: 220% 100%;
@@ -151,7 +191,7 @@
     }
 
     .dark .ai-title-aurora {
-        background: linear-gradient(90deg, #fafaf9 0%, #fafaf9 36%, #a8a29e 54%, #fafaf9 72%, #fafaf9 100%);
+        background: linear-gradient(90deg, #f5f5f7 0%, #f5f5f7 36%, #98989d 54%, #f5f5f7 72%, #f5f5f7 100%);
         background-size: 220% 100%;
         -webkit-background-clip: text;
         background-clip: text;
@@ -165,7 +205,7 @@
         }
         50% {
             background-position: 100% 50%;
-            filter: drop-shadow(0 12px 28px rgba(28, 25, 23, 0.08));
+            filter: drop-shadow(0 12px 28px rgba(0, 0, 0, 0.08));
         }
     }
 
@@ -181,9 +221,9 @@
     .prompt-filter-tag.ant-tag-checkable {
         margin: 0;
         border: 1px solid transparent;
-        border-radius: 6px;
-        padding: 5px 10px;
-        color: #57534e;
+        border-radius: 999px;
+        padding: 6px 12px;
+        color: #515154;
         font-size: 14px;
         line-height: 1;
         transition:
@@ -194,20 +234,20 @@
     }
 
     .prompt-filter-tag.ant-tag-checkable:hover {
-        background: rgba(28, 25, 23, 0.06);
-        color: #1c1917;
+        background: rgba(120, 120, 128, 0.12);
+        color: #1d1d1f;
     }
 
     .prompt-filter-tag.ant-tag-checkable.is-active,
     .prompt-filter-tag.ant-tag-checkable-checked {
-        background: #111111;
-        border-color: #111111;
+        background: #0071e3;
+        border-color: #0071e3;
         color: #ffffff;
         font-weight: 600;
     }
 
     .dark .prompt-filter-tag.ant-tag-checkable {
-        color: #e7e5e4;
+        color: #e5e5ea;
     }
 
     .dark .prompt-filter-tag.ant-tag-checkable:hover {
@@ -217,17 +257,14 @@
 
     .dark .prompt-filter-tag.ant-tag-checkable.is-active,
     .dark .prompt-filter-tag.ant-tag-checkable-checked {
-        background: rgba(250, 250, 249, 0.96);
-        border-color: rgba(255, 255, 255, 0.88);
-        box-shadow:
-            0 0 0 1px rgba(255, 255, 255, 0.18),
-            0 6px 18px rgba(0, 0, 0, 0.22);
-        color: #0c0a09 !important;
-        font-weight: 700;
+        background: #0a84ff;
+        border-color: #0a84ff;
+        color: #ffffff !important;
+        font-weight: 600;
     }
 
     .thin-scrollbar {
-        scrollbar-color: rgba(120, 113, 108, 0.45) transparent;
+        scrollbar-color: rgba(120, 120, 128, 0.45) transparent;
         scrollbar-width: thin;
     }
 
@@ -237,7 +274,7 @@
     }
 
     .thin-scrollbar::-webkit-scrollbar-thumb {
-        background: rgba(120, 113, 108, 0.45);
+        background: rgba(120, 120, 128, 0.45);
         border-radius: 999px;
     }
 
@@ -247,7 +284,7 @@
     }
 
     .hover-scrollbar:hover {
-        scrollbar-color: rgba(120, 113, 108, 0.5) transparent;
+        scrollbar-color: rgba(120, 120, 128, 0.5) transparent;
     }
 
     .hover-scrollbar::-webkit-scrollbar {
@@ -261,12 +298,12 @@
     }
 
     .hover-scrollbar:hover::-webkit-scrollbar-track {
-        background: rgba(120, 113, 108, 0.12);
+        background: rgba(120, 120, 128, 0.12);
         border-radius: 999px;
     }
 
     .hover-scrollbar:hover::-webkit-scrollbar-thumb {
-        background: rgba(120, 113, 108, 0.5);
+        background: rgba(120, 120, 128, 0.5);
     }
 
     .hover-scrollbar-hint {
@@ -274,7 +311,7 @@
     }
 
     .hover-scrollbar-hint::after {
-        background: rgba(120, 113, 108, 0.42);
+        background: rgba(120, 120, 128, 0.42);
         border-radius: 999px;
         bottom: 4px;
         content: "";
@@ -293,7 +330,7 @@
 
     .canvas-control-select.ant-select .ant-select-selector,
     .canvas-control-number.ant-input-number {
-        border-color: rgba(120, 113, 108, 0.32) !important;
+        border-color: rgba(120, 120, 128, 0.32) !important;
         box-shadow: none !important;
     }
 
@@ -387,23 +424,17 @@
 
     .canvas-control-select.ant-select-focused .ant-select-selector,
     .canvas-control-number.ant-input-number-focused {
-        border-color: #a8a29e !important;
+        border-color: #0071e3 !important;
     }
 
     .dark .canvas-control-select.ant-select .ant-select-selector,
     .dark .canvas-control-number.ant-input-number {
-        border-color: rgba(214, 211, 209, 0.2) !important;
+        border-color: rgba(235, 235, 245, 0.18) !important;
     }
 
     .dark .canvas-control-select.ant-select-focused .ant-select-selector,
     .dark .canvas-control-number.ant-input-number-focused {
-        border-color: #78716c !important;
-    }
-
-    .canvas-image-settings-popover .ant-popover-inner {
-        border-radius: 18px;
-        box-shadow: 0 18px 54px rgba(28, 25, 23, 0.16);
-        padding: 18px;
+        border-color: #0a84ff !important;
     }
 
     .canvas-image-settings-popover .ant-popover-inner-content {
@@ -418,10 +449,6 @@
 
     .canvas-image-settings-popover .ant-segmented-item {
         border-radius: 999px;
-    }
-
-    .dark .canvas-image-settings-popover .ant-popover-inner {
-        box-shadow: 0 18px 54px rgba(0, 0, 0, 0.45);
     }
 
     .canvas-node-info-modal .ant-modal-header {
@@ -453,6 +480,25 @@
         }
     }
 
+}
+
+/* antd 浮层统一为常规档液态玻璃，滤镜由 use-liquid-glass 自动挂载 */
+:root body :is(.ant-modal-container, .ant-popover-container, .ant-dropdown-menu, .ant-select-dropdown, .ant-drawer-section, .ant-message-notice) {
+    background: var(--lg-bg, var(--liquid-regular-tint));
+    box-shadow: var(--liquid-regular-shadow);
+    -webkit-backdrop-filter: var(--liquid-regular-fallback);
+    backdrop-filter: var(--lg-filter, var(--liquid-regular-fallback));
+}
+
+:root body .ant-tree-select-dropdown .ant-select-tree {
+    background: transparent;
+}
+
+/* 嵌在玻璃里的浮层取不到页面背景（backdrop root 限制），改用实色 */
+:root body :is(.liquid-glass, .ant-modal-container, .ant-popover-container, .ant-drawer-section) :is(.liquid-glass, .ant-dropdown-menu, .ant-select-dropdown) {
+    background: var(--liquid-solid);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
 }
 
 ::view-transition-old(root),
@@ -558,7 +604,7 @@
 
 [data-streamdown="link-safety-modal"] {
     padding: 1rem;
-    background: rgb(28 25 23 / 24%);
+    background: rgb(0 0 0 / 24%);
     backdrop-filter: blur(8px);
 }
 
@@ -568,7 +614,7 @@
     padding: 1.25rem;
     border-color: color-mix(in srgb, currentColor 12%, transparent);
     border-radius: 1rem;
-    box-shadow: 0 20px 60px rgb(28 25 23 / 18%);
+    box-shadow: 0 20px 60px rgb(0 0 0 / 18%);
 }
 
 [data-streamdown="link-safety-modal"] > div > button {

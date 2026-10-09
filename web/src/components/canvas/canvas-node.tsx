@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { ChevronRight, Copy, Download, Group, Image as ImageIcon, Music2, Puzzle, RefreshCw, Star, Trash2, Video } from "lucide-react";
+import { ChevronRight, Copy, Download, Group, Image as ImageIcon, LoaderCircle, Music2, Puzzle, RefreshCw, Star, Trash2, Video } from "lucide-react";
 
 import { canvasThemes } from "@/lib/canvas-theme";
 import { formatBytes } from "@/lib/image-utils";
@@ -15,9 +15,11 @@ import { useTranslation } from "react-i18next";
 
 type ResizeCorner = "top-left" | "top-right" | "bottom-left" | "bottom-right";
 const selectionBlue = "#2f80ff";
+export type CanvasImagePreview = { dataUrl: string; imageId?: string };
 
 type CanvasNodeProps = {
     data: CanvasNodeData;
+    imagePreview?: CanvasImagePreview;
     scale: number;
     isSelected: boolean;
     isRelated: boolean;
@@ -59,6 +61,7 @@ type CanvasNodeProps = {
 
 type NodeContentRendererProps = {
     node: CanvasNodeData;
+    imagePreview?: CanvasImagePreview;
     theme: (typeof canvasThemes)[keyof typeof canvasThemes];
     isEditingContent: boolean;
     textareaRef: React.RefObject<HTMLTextAreaElement | null>;
@@ -83,6 +86,7 @@ type NodeContentRendererProps = {
 
 export const CanvasNode = React.memo(function CanvasNode({
     data,
+    imagePreview,
     scale,
     isSelected,
     isRelated,
@@ -400,6 +404,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                 >
                     <NodeContent
                         node={data}
+                        imagePreview={imagePreview}
                         theme={theme}
                         isEditingContent={isEditingContent}
                         textareaRef={textareaRef}
@@ -442,14 +447,14 @@ export const CanvasNode = React.memo(function CanvasNode({
             {!referenceSelectionState && !isGroup ? <ConnectionHandleDot side="left" visible={hovered || isSelected || isConnecting} onMouseDown={(event) => onConnectStart(event, data.id, "target")} /> : null}
             {!referenceSelectionState && (definition?.hasSourceHandle ?? true) && data.type !== CanvasNodeType.Config ? <ConnectionHandleDot side="right" visible={hovered || isSelected || isConnecting} onMouseDown={(event) => onConnectStart(event, data.id, "source")} /> : null}
 
-            {showPanel && !isGroup && renderPanel ? <div className="absolute left-1/2 top-full z-[70] w-[600px] -translate-x-1/2 pt-4">{renderPanel(data)}</div> : null}
+            {showPanel && !isGroup && renderPanel ? <div data-canvas-node-panel className="absolute left-1/2 top-full z-[70] w-[600px] -translate-x-1/2 pt-4">{renderPanel(data)}</div> : null}
         </div>
     );
 });
 
 function NodeContent(props: NodeContentRendererProps) {
     if (props.node.type === CanvasNodeType.Config && props.renderNodeContent) return props.renderNodeContent(props.node);
-    if (props.isBatchRoot && props.node.type === CanvasNodeType.Image) return <ImageNodeContent {...props} />;
+    if (props.node.type === CanvasNodeType.Image && (props.isBatchRoot || props.imagePreview)) return <ImageNodeContent {...props} />;
     if (props.node.type === CanvasNodeType.Text && props.node.metadata?.texts?.length && (props.node.metadata.status !== "error" || props.node.metadata.texts.some((text) => text.content))) return <TextContent {...props} />;
     if (props.node.metadata?.status === "loading") return <LoadingContent theme={props.theme} />;
     if (props.node.metadata?.status === "error") return <ErrorContent node={props.node} theme={props.theme} onRetry={props.onRetry} />;
@@ -665,11 +670,12 @@ function TextSlotStatus({ text }: { text: CanvasNodeText }) {
 }
 
 function ImageNodeContent(props: NodeContentRendererProps) {
-    if (!props.node.metadata?.content && !props.isBatchRoot) return <EmptyImageContent {...props} />;
+    if (!props.node.metadata?.content && !props.isBatchRoot && !props.imagePreview) return <EmptyImageContent {...props} />;
 
     return (
         <ImageContent
             node={props.node}
+            imagePreview={props.imagePreview}
             batchExpanded={props.batchExpanded}
             onToggleBatch={props.onToggleBatch}
             onSetBatchPrimary={props.onSetBatchPrimary}
@@ -728,6 +734,7 @@ function AudioNodeContent({ node, theme }: NodeContentRendererProps) {
 
 function ImageContent({
     node,
+    imagePreview,
     batchExpanded,
     onToggleBatch,
     onSetBatchPrimary,
@@ -738,6 +745,7 @@ function ImageContent({
     onViewBatchImage,
 }: {
     node: CanvasNodeData;
+    imagePreview?: CanvasImagePreview;
     batchExpanded: boolean;
     onToggleBatch?: () => void;
     onSetBatchPrimary?: (imageId: string) => void;
@@ -754,14 +762,15 @@ function ImageContent({
     const isBatchRoot = batchCount > 1;
     const primaryImageId = node.metadata?.primaryImageId || images[0]?.id;
     const primaryImage = images.find((image) => image.id === primaryImageId);
-    const primaryContent = primaryImage?.content || node.metadata?.content;
+    const primaryPreview = imagePreview && (!imagePreview.imageId || imagePreview.imageId === primaryImageId) ? imagePreview.dataUrl : undefined;
+    const primaryContent = primaryPreview || primaryImage?.content || node.metadata?.content;
 
     return (
         <BatchFrame batchCount={batchCount} batchExpanded={batchExpanded}>
             {batchExpanded
                 ? images
                       .filter((image) => image.id !== primaryImageId)
-                      .map((image, index) => <ExpandedImageCard key={image.id} node={node} image={image} index={index} onView={() => onViewBatchImage?.(image.id)} onSetPrimary={() => onSetBatchPrimary?.(image.id)} onDuplicate={() => onDuplicateBatchImage?.(image.id)} onDownload={() => onDownloadBatchImage?.(image.id)} onRetry={() => onRetryBatchImage?.(image.id)} onDelete={() => onDeleteBatchImage?.(image.id)} />)
+                      .map((image, index) => <ExpandedImageCard key={image.id} node={node} image={image} previewUrl={imagePreview?.imageId === image.id ? imagePreview.dataUrl : undefined} index={index} onView={() => onViewBatchImage?.(image.id)} onSetPrimary={() => onSetBatchPrimary?.(image.id)} onDuplicate={() => onDuplicateBatchImage?.(image.id)} onDownload={() => onDownloadBatchImage?.(image.id)} onRetry={() => onRetryBatchImage?.(image.id)} onDelete={() => onDeleteBatchImage?.(image.id)} />)
                 : null}
             <div className="h-full w-full overflow-hidden rounded-3xl">
                 {primaryContent ? (
@@ -776,8 +785,9 @@ function ImageContent({
                     <ImageSlotStatus image={primaryImage} />
                 )}
             </div>
+            {primaryPreview ? <ImagePreviewStatus /> : null}
             {primaryImage?.status === "error" ? <BatchImageFailureActions placement="left" onRetry={() => onRetryBatchImage?.(primaryImage.id)} onDelete={() => onDeleteBatchImage?.(primaryImage.id)} /> : null}
-            {primaryImage?.content ? (
+            {primaryImage?.content && !primaryPreview ? (
                 <button type="button" className="absolute left-2.5 top-2.5 z-30 flex h-8 items-center gap-1 rounded-lg border px-2 text-[10px] font-medium shadow-[0_6px_18px_rgba(15,23,42,.16)] backdrop-blur-md transition hover:scale-[1.02]" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.toolbar.activeText }} title={t("common.download")} onClick={(event) => (event.stopPropagation(), onDownloadBatchImage?.(primaryImage.id))}>
                     <Download className="size-3" />
                     {t("common.download")}
@@ -804,9 +814,10 @@ function ImageContent({
     );
 }
 
-function ExpandedImageCard({ node, image, index, onView, onSetPrimary, onDuplicate, onDownload, onRetry, onDelete }: { node: CanvasNodeData; image: CanvasNodeImage; index: number; onView: () => void; onSetPrimary: () => void; onDuplicate: () => void; onDownload: () => void; onRetry: () => void; onDelete: () => void }) {
+function ExpandedImageCard({ node, image, previewUrl, index, onView, onSetPrimary, onDuplicate, onDownload, onRetry, onDelete }: { node: CanvasNodeData; image: CanvasNodeImage; previewUrl?: string; index: number; onView: () => void; onSetPrimary: () => void; onDuplicate: () => void; onDownload: () => void; onRetry: () => void; onDelete: () => void }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const { t } = useTranslation();
+    const content = previewUrl || image.content;
     const count = node.metadata?.images?.length || 0;
     const columns = Math.min(count, 4);
     const rows = Math.ceil(count / columns);
@@ -819,7 +830,7 @@ function ExpandedImageCard({ node, image, index, onView, onSetPrimary, onDuplica
 
     return (
         <div
-            className={`absolute z-20 overflow-hidden rounded-3xl ${image.content ? "" : "border shadow-[0_18px_50px_rgba(28,25,23,.18)]"}`}
+            className={`absolute z-20 overflow-hidden rounded-3xl ${content ? "" : "border shadow-[0_18px_50px_rgba(28,25,23,.18)]"}`}
             style={
                 {
                     left: x,
@@ -837,13 +848,14 @@ function ExpandedImageCard({ node, image, index, onView, onSetPrimary, onDuplica
             onMouseDown={(event) => event.stopPropagation()}
             onPointerDown={(event) => event.stopPropagation()}
             onDoubleClick={(event) => {
-                if (!image.content || (event.target instanceof Element && event.target.closest("button"))) return;
+                if (!image.content || previewUrl || (event.target instanceof Element && event.target.closest("button"))) return;
                 event.stopPropagation();
                 onView();
             }}
         >
-            {image.content ? <img src={image.content} alt={node.title} draggable={false} className="pointer-events-none h-full w-full select-none object-contain" /> : <ImageSlotStatus image={image} />}
-            {image.content ? (
+            {content ? <img src={content} alt={node.title} draggable={false} className="pointer-events-none h-full w-full select-none object-contain" /> : <ImageSlotStatus image={image} />}
+            {previewUrl ? <ImagePreviewStatus /> : null}
+            {image.content && !previewUrl ? (
                 <div className="absolute inset-x-2 top-2 flex items-center gap-1">
                     <button type="button" className="flex h-8 min-w-0 flex-1 items-center justify-center gap-1 rounded-lg border px-1.5 text-[10px] font-medium shadow-[0_6px_18px_rgba(15,23,42,.16)] backdrop-blur-md transition hover:scale-[1.02]" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.toolbar.activeText }} title={t("common.download")} onClick={(event) => (event.stopPropagation(), onDownload())}>
                         <Download className="size-3 shrink-0" />
@@ -862,6 +874,12 @@ function ExpandedImageCard({ node, image, index, onView, onSetPrimary, onDuplica
             {image.status === "error" ? <BatchImageFailureActions placement="right" onRetry={onRetry} onDelete={onDelete} /> : null}
         </div>
     );
+}
+
+function ImagePreviewStatus() {
+    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const { t } = useTranslation();
+    return <div className="liquid-glass liquid-glass-regular pointer-events-none absolute bottom-3 left-3 z-40 flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs" style={{ color: theme.node.text }}><LoaderCircle className="size-3 animate-spin" /><span>{t("canvas.node.generating")}</span></div>;
 }
 
 function BatchImageFailureActions({ placement, onRetry, onDelete }: { placement: "left" | "right"; onRetry: () => void; onDelete: () => void }) {

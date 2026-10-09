@@ -69,8 +69,43 @@ function sendJson(res, status, payload) {
     res.end(JSON.stringify(payload));
 }
 
+function diagnosticUrl(value) {
+    try {
+        const url = new URL(value);
+        url.username = "";
+        url.password = "";
+        url.search = "";
+        url.hash = "";
+        return url.href;
+    } catch {
+        return "[invalid target URL]";
+    }
+}
+
+function diagnosticMessage(value) {
+    return value.replace(/https?:\/\/[^\s<>"']+/gi, diagnosticUrl)
+        .replace(/\bBearer\s+[^\s"'<>]+/gi, "Bearer [redacted]")
+        .replace(/\bsk-[^\s"'<>]+/g, "[redacted]");
+}
+
+function forwardingError(error) {
+    const details = [];
+    const seen = new Set();
+    const collect = (value) => {
+        if (!(value instanceof Error) || seen.has(value)) return;
+        seen.add(value);
+        details.push({ message: diagnosticMessage(value.message), ...(typeof value.code === "string" ? { code: value.code } : {}) });
+        if (Array.isArray(value.errors)) value.errors.forEach(collect);
+        if (value.cause) collect(value.cause);
+    };
+    collect(error);
+    const code = details.find((detail) => detail.code)?.code;
+    const reason = details.map((detail) => [detail.code, detail.message].filter(Boolean).join(": ")).join(" | ") || "Proxy forwarding failed";
+    return { error: reason, ...(code ? { code } : {}), causes: details.slice(1) };
+}
+
 function logForward(method, target, outcome, startedAt) {
-    console.log(`${new Date().toLocaleTimeString()} ${method} ${target} -> ${outcome} ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
+    console.log(`${new Date().toLocaleTimeString()} ${method} ${diagnosticUrl(target)} -> ${outcome} ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
 }
 
 async function forward(req, res, target) {
@@ -106,13 +141,13 @@ export function createProxyServer() {
         forward(req, res, target)
             .then((status) => logForward(method, target, status, startedAt))
             .catch((error) => {
-                const reason = error instanceof Error ? error.message : String(error);
-                logForward(method, target, `failed (${reason})`, startedAt);
+                const diagnostic = forwardingError(error);
+                logForward(method, target, `failed (${diagnostic.error})`, startedAt);
                 if (res.headersSent) {
                     res.destroy();
                     return;
                 }
-                sendJson(res, 502, { error: reason });
+                sendJson(res, 502, diagnostic);
             });
     });
 }

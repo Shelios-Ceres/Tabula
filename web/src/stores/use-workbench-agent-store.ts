@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { NativeImageOptions } from "@/types/image-generation";
 
 // The Agent panel dispatches commands through this store to set workbench prompts and optionally start generation.
 // The panel writes model, quality, size, count, and other options to use-config-store, which workbench pages read directly.
@@ -9,6 +10,19 @@ export type WorkbenchCommand = {
     taskId?: string;
     prompt?: string;
     run: boolean;
+    imageConfigSnapshot?: ImageWorkbenchConfigSnapshot;
+};
+
+export type ImageWorkbenchConfigSnapshot = {
+    model: string;
+    size: string;
+    quality: string;
+    count: string;
+    background: string;
+    outputFormat: "png" | "jpeg" | "webp";
+    outputCompression: number;
+    moderation: "auto" | "low";
+    imageNative: NativeImageOptions;
 };
 
 export type WorkbenchGenerationTask = {

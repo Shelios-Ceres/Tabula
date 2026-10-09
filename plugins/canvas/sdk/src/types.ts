@@ -8,6 +8,22 @@
 
 import type { ComponentType, ReactNode } from "react";
 
+export type NativeImageOptions = {
+    stream?: boolean;
+    openai?: { api?: "images" | "responses"; mainModel?: string; store?: boolean; partialImages?: number };
+    google?: { imageSize?: "512" | "1K" | "2K" | "4K"; aspectRatio?: string; thinkingLevel?: "auto" | "minimal" | "medium" | "high"; webSearch?: boolean; imageSearch?: boolean; includeText?: boolean; store?: boolean };
+    ark?: { endpoint?: { id: string; model: string }; size?: string; sequential?: boolean; watermark?: boolean; optimizePrompt?: "standard" | "fast"; webSearch?: boolean; layerDecomposition?: boolean; transparent?: boolean };
+    xai?: { resolution?: "1k" | "1.5k" | "2k"; aspectRatio?: string };
+};
+export type ImageProvider = "openai" | "google" | "ark" | "xai";
+export type ImageProtocol = "openai-images" | "openai-responses" | "google-interactions" | "ark-images" | "xai-images";
+export type ImageConversation = { provider: ImageProvider; protocol: ImageProtocol; model: string; remoteId?: string; stored: boolean; createdAt: string; channelId?: string; baseUrl?: string; history?: unknown[] };
+export type ImageLayer = { zIndex: number; name?: string; description?: string; boundingBox?: { absolute?: [number, number, number, number]; normalized?: [number, number, number, number] } };
+export type ImageGenerationResult = { id: string; dataUrl: string; role?: "image" | "base" | "layer"; layer?: ImageLayer; storageKey?: string; width?: number; height?: number; bytes?: number; mimeType?: string; response?: Record<string, unknown> };
+export type ImageSelection = { kind: "point"; x: number; y: number; imageIndex?: number } | { kind: "rectangle"; x1: number; y1: number; x2: number; y2: number; imageIndex?: number };
+export type ImageOutputError = { index: number; message: string; code?: string };
+export type ImageGenerationEvent = { type: string; index?: number; image?: ImageGenerationResult; text?: string; error?: { index: number; message: string; code?: string }; result?: unknown };
+
 // ---------------------------------------------------------------------------
 // 画布基础几何与节点数据
 // ---------------------------------------------------------------------------
@@ -153,11 +169,27 @@ export type GenerateOptions = {
 export type GenerateImageOptions = GenerateOptions & {
     count?: number; // 期望生成张数(宿主会按模型上限裁剪)
     size?: string; // 形如 "1024x1024" / "auto";缺省用宿主当前配置
+    quality?: string;
+    background?: "auto" | "opaque" | "transparent";
+    outputFormat?: "png" | "jpeg" | "webp";
+    outputCompression?: number;
+    moderation?: "auto" | "low";
+    imageNative?: NativeImageOptions;
+    onEvent?: (event: ImageGenerationEvent) => void;
+    mask?: string;
+    selections?: ImageSelection[];
+    conversation?: ImageConversation;
 };
 
 export type GenerateImageResult = {
     // 生成图的 dataURL(已可直接作为 <img src> 或 three 纹理使用)
     images: string[];
+    resources: ImageGenerationResult[];
+    texts: string[];
+    errors: ImageOutputError[];
+    outputOrder?: Array<{ kind: "image" | "text"; index: number }>;
+    conversation?: ImageConversation;
+    providerMetadata?: Record<string, unknown>;
 };
 
 export type GenerateVideoOptions = GenerateOptions & {

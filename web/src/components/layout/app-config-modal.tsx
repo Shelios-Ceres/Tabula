@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { ModelPicker } from "@/components/model-picker";
+import { ImageSettingsPanel } from "@/components/image-settings-panel";
 import { ChannelEditorDrawer } from "@/components/layout/channel-editor-drawer";
 import { ConfigLocalProxy } from "@/components/layout/config-local-proxy";
 import { ConfigPromptSources } from "@/components/layout/config-prompt-sources";
@@ -14,7 +15,10 @@ import { exportAppConfig, importAppConfig } from "@/services/config-file";
 import { syncAppDataToWebdav, type AppSyncDomainKey, type AppSyncProgressEvent } from "@/services/app-sync";
 import { testWebdavConnection, WEBDAV_MANIFEST_FILE_NAME } from "@/services/webdav-sync";
 import { audioFormatOptions, audioVoiceOptions, normalizeAudioSpeedValue } from "@/lib/audio-generation";
-import { createModelChannel, modelOptionsFromChannels, normalizeModelOptionValue, selectableModelsByCapability, useConfigStore, type AiConfig, type ApiCallFormat, type ConfigTabKey, type ModelCapability, type ModelChannel } from "@/stores/use-config-store";
+import { canvasThemes } from "@/lib/canvas-theme";
+import { resolveNativeImageCount } from "@/lib/image-model-capabilities";
+import { useThemeStore } from "@/stores/use-theme-store";
+import { createModelChannel, modelOptionsFromChannels, normalizeModelOptionValue, resolveImageProvider, selectableModelsByCapability, useConfigStore, type AiConfig, type ConfigTabKey, type ModelCapability, type ModelChannel } from "@/stores/use-config-store";
 
 type ModelGroup = {
     capability: ModelCapability;
@@ -58,6 +62,7 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
     const [webdavSyncStatus, setWebdavSyncStatus] = useState("");
     const [webdavDomainProgress, setWebdavDomainProgress] = useState(createWebdavDomainProgress);
     const config = useConfigStore((state) => state.config);
+    const imageSettingsTheme = canvasThemes[useThemeStore((state) => state.theme)];
     const webdav = useConfigStore((state) => state.webdav);
     const updateConfig = useConfigStore((state) => state.updateConfig);
     const updateWebdavConfig = useConfigStore((state) => state.updateWebdavConfig);
@@ -67,6 +72,8 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
     const webdavReady = Boolean(webdav.url.trim());
     const editingChannel = config.channels.find((channel) => channel.id === editingChannelId) || null;
     const locale = i18n.resolvedLanguage as AppLocale;
+    const imageProvider = resolveImageProvider(config, config.imageModel);
+    const canvasImageCountMax = resolveNativeImageCount(imageProvider, config.imageModel, config.imageNative, Number.MAX_SAFE_INTEGER);
     useEffect(() => setActiveTab(initialTab), [initialTab]);
 
     const saveConfig = (nextConfig: AiConfig) => {
@@ -197,7 +204,7 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
                                             <div className="min-w-0">
                                                 <div className="truncate text-sm font-semibold">{channel.name || t("config.channels.unnamed")}</div>
                                                 <div className="mt-1 truncate text-xs text-stone-500">
-                                                    {apiFormatLabel(channel.apiFormat)} · {t("config.channels.modelCount", { count: channel.models.length })} · {channel.baseUrl || t("config.channels.missingUrl")}
+                                                    {t(`config.channelEditor.vendors.${channel.vendor}`)}{channel.vendor === "google" ? ` · ${channel.apiVersion || "v1beta"}` : ""} · {t("config.channels.modelCount", { count: channel.models.length })} · {channel.baseUrl || t("config.channels.missingUrl")}
                                                 </div>
                                             </div>
                                             <div className="flex shrink-0 gap-2">
@@ -230,16 +237,21 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
                                         </Form.Item>
                                     ))}
                                 </div>
+                                <div className="mb-5 rounded-xl border border-stone-200 p-4 dark:border-stone-800">
+                                    <div className="mb-4 text-sm font-semibold">{t("config.preferences.defaultImageSettings")}</div>
+                                    <ImageSettingsPanel config={{ ...config, model: config.imageModel }} model={config.imageModel} onConfigChange={(key, value) => updateConfig(key, value)} onNativeChange={(imageNative) => updateConfig("imageNative", imageNative)} theme={imageSettingsTheme} showTitle={false} className="space-y-4" maxCount={15} />
+                                </div>
                                 <div className="mb-2 text-sm font-semibold">{t("config.preferences.generation")}</div>
                                 <div className="grid gap-4 md:grid-cols-4">
-                                    <Form.Item label={t("config.preferences.canvasImageCount")} extra={t("config.preferences.canvasImageCountDescription")} className="mb-4">
+                                    <Form.Item label={t("config.preferences.canvasImageCount")} extra={t(canvasImageCountMax === 1 ? "config.preferences.canvasImageCountFixed" : "config.preferences.canvasImageCountDescription")} className="mb-4">
                                         <Input
                                             type="number"
                                             min={1}
-                                            max={15}
-                                            value={config.canvasImageCount}
+                                            max={canvasImageCountMax}
+                                            disabled={canvasImageCountMax === 1}
+                                            value={canvasImageCountMax === 1 ? "1" : config.canvasImageCount}
                                             onChange={(event) => updateConfig("canvasImageCount", event.target.value)}
-                                            onBlur={(event) => updateConfig("canvasImageCount", normalizeImageCount(event.target.value))}
+                                            onBlur={(event) => updateConfig("canvasImageCount", normalizeImageCount(event.target.value, canvasImageCountMax))}
                                         />
                                     </Form.Item>
                                     <Form.Item label={t("config.preferences.audioVoice")} className="mb-4">
@@ -369,7 +381,6 @@ function withChannels(config: AiConfig, channels: ModelChannel[]): AiConfig {
         models: modelOptionsFromChannels(channels),
         baseUrl: channels[0]?.baseUrl || config.baseUrl,
         apiKey: channels[0]?.apiKey || config.apiKey,
-        apiFormat: channels[0]?.apiFormat || config.apiFormat,
     };
     return {
         ...next,
@@ -386,13 +397,8 @@ function pickDefaultModel(config: AiConfig, capability: ModelCapability, current
     return options.includes(normalized) ? normalized : options[0] || "";
 }
 
-function normalizeImageCount(value: string) {
-    return String(Math.max(1, Math.min(15, Math.floor(Math.abs(Number(value)) || 3))));
-}
-
-function apiFormatLabel(apiFormat: ApiCallFormat) {
-    if (apiFormat === "gemini") return "Gemini";
-    return "OpenAI";
+function normalizeImageCount(value: string, max = 15) {
+    return String(Math.max(1, Math.min(max, Math.floor(Math.abs(Number(value)) || 3))));
 }
 
 function formatWebdavTime(value: string, locale: AppLocale) {

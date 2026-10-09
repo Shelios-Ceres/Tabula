@@ -4,8 +4,9 @@ import { useTranslation } from "react-i18next";
 
 import i18n from "@/i18n";
 import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/select";
+import { getImageModelCapabilities, getNativeImageCapabilities } from "@/lib/image-model-capabilities";
 import { cn } from "@/lib/utils";
-import { modelOptionLabel, modelOptionName, selectableModelsByCapability, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
+import { modelOptionLabel, modelOptionName, resolveImageProvider, selectableModelsByCapability, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
 
 type ModelPickerProps = {
     config: AiConfig;
@@ -61,7 +62,7 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
             </SelectTrigger>
             <SelectContent
                 data-canvas-no-zoom
-                className="z-[1200] w-80 max-w-[calc(100vw-24px)] rounded-xl border border-border/70 bg-popover p-1 shadow-xl"
+                className="liquid-glass liquid-glass-regular z-[1200] w-80 max-w-[calc(100vw-24px)] rounded-xl border p-1"
                 position="popper"
                 align="start"
                 side="bottom"
@@ -92,10 +93,15 @@ function emptyModelLabel(config: AiConfig, capability?: ModelCapability) {
 }
 
 function ModelLabel({ config, model }: { config: AiConfig; model: string }) {
+    const capabilities = getImageModelCapabilities(modelOptionName(model));
+    const provider = resolveImageProvider(config, model);
+    const native = getNativeImageCapabilities(provider, model);
+    const secondaryLabel = capabilities.labelKey ? i18n.t(capabilities.labelKey) : native.supported ? i18n.t(`nativeImage.providers.${provider}`) : "";
     return (
-        <span className="flex min-w-0 items-center gap-2">
+        <span className="flex min-w-0 flex-1 items-center gap-2">
             <ModelIcon model={model} />
             <span className="truncate">{modelOptionLabel(config, model)}</span>
+            {secondaryLabel ? <span className="ml-auto shrink-0 rounded-full border border-border/70 px-2 py-0.5 text-[11px] text-muted-foreground">{secondaryLabel}</span> : null}
         </span>
     );
 }

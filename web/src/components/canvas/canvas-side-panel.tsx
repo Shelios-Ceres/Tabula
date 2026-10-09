@@ -92,11 +92,12 @@ export function CanvasSidePanel({ nodes, selectedNodeIds, onFocusNode, onPreview
             style={{ overflow: "clip", pointerEvents: panelClosing ? "none" : undefined }}
         >
             <motion.aside
-                className="relative flex h-full shrink-0 flex-col overflow-hidden border-r"
+                className="liquid-glass liquid-glass-regular relative flex h-full shrink-0 flex-col overflow-hidden border-r"
+                data-glass-edge="right"
                 initial={{ x: -48 }}
                 animate={{ x: panelClosing ? -28 : 0 }}
                 transition={{ duration: resizing ? 0 : PANEL_MOTION_SECONDS, ease: PANEL_EASE }}
-                style={{ width, background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }}
+                style={{ width, color: theme.node.text }}
                 data-canvas-no-zoom
             >
                 <div className="flex items-center gap-5 px-4 pt-3.5">

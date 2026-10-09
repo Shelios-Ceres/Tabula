@@ -25,9 +25,9 @@ export function ConnectionCreateMenu({
     const { t } = useTranslation();
     return (
         <div
-            className="absolute z-[120] w-[300px] rounded-[18px] border p-3 shadow-2xl backdrop-blur"
+            className="liquid-glass liquid-glass-regular absolute z-[120] w-[300px] rounded-[22px] border p-3"
             data-connection-create-menu
-            style={{ left: pending.position.x, top: pending.position.y, background: theme.node.panel, borderColor: theme.node.stroke, color: theme.node.text }}
+            style={{ left: pending.position.x, top: pending.position.y, color: theme.node.text }}
             onMouseDown={(event) => event.stopPropagation()}
             onPointerDown={(event) => event.stopPropagation()}
         >
@@ -92,9 +92,9 @@ export function NodeCreateMenu({ position, onCreate, onClose }: { position: Posi
     return (
         <div
             ref={menuRef}
-            className="absolute z-[120] max-h-[70vh] w-[300px] overflow-y-auto rounded-[18px] border p-3 shadow-2xl backdrop-blur thin-scrollbar"
+            className="liquid-glass liquid-glass-regular thin-scrollbar absolute z-[120] max-h-[70vh] w-[300px] overflow-y-auto rounded-[22px] border p-3"
             data-canvas-no-zoom
-            style={{ left: position.x, top: position.y, background: theme.node.panel, borderColor: theme.node.stroke, color: theme.node.text }}
+            style={{ left: position.x, top: position.y, color: theme.node.text }}
             onPointerDown={(event) => event.stopPropagation()}
         >
             <div className="mb-2 flex items-center justify-between px-1">
