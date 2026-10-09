@@ -171,6 +171,16 @@
                         </StackPanel>
                     </StackPanel>
                 </Border>
+
+                <Border Style="{StaticResource SectionCard}">
+                    <StackPanel Orientation="Horizontal" Spacing="14">
+                        <Image Source="ms-appx:///Assets/Logo.png" Width="48" Height="48" VerticalAlignment="Center" />
+                        <StackPanel Spacing="2" VerticalAlignment="Center">
+                            <TextBlock x:Name="ProductText" Style="{StaticResource BodyStrongTextBlockStyle}" />
+                            <TextBlock x:Name="VersionText" Style="{StaticResource SecondaryCaption}" IsTextSelectionEnabled="True" />
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
             </StackPanel>
         </ScrollViewer>
     </Grid>

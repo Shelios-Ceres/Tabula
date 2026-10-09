@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Reflection;
 using InfiniteCanvas.Core.Canvas;
 using InfiniteCanvas.Core.Models;
 using InfiniteCanvas.Core.Settings;
@@ -37,6 +38,10 @@ public sealed partial class SettingsPage : Page
             VendorMenu.Items.Add(item);
         }
         DataPath.Text = ProjectStore.Root;
+        var assembly = typeof(App).Assembly;
+        var version = assembly.GetName().Version!;
+        ProductText.Text = $"{assembly.GetCustomAttribute<AssemblyProductAttribute>()?.Product} {version.Major}.{version.Minor}";
+        VersionText.Text = $"版本 {version.ToString(3)}";
         SystemPromptBox.Text = Settings.SystemPrompt;
         BuildAgents();
         ExternalAgentsSwitch.IsOn = Settings.ExternalAgents;

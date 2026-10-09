@@ -3,6 +3,8 @@
     <LangVersion>12</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <Version>0.1.0</Version>
+    <!-- Release version and codename; the About card in settings and the exe details read them from the assembly. -->
+    <Version>1.0.0</Version>
+    <Product>无限画布 Ceres</Product>
   </PropertyGroup>
 </Project>
