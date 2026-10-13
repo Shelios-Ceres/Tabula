@@ -34,9 +34,17 @@ internal static class ResponsesApi
                 text.Append(delta);
                 onDelta?.Invoke(text.ToString());
             }
-            if (type == "response.output_text.done" && text.Length == 0 && Http.Str(data["text"]) is { } done) text.Append(done);
-            if (type == "response.completed") usage?.Invoke(data["response"]?["usage"]);
+            if (type == "response.output_text.done" && text.Length == 0 && Http.Str(data["text"]) is { } done)
+            {
+                text.Append(done);
+                onDelta?.Invoke(text.ToString());
+            }
+            if (type == "response.completed")
+            {
+                usage?.Invoke(data["response"]?["usage"]);
+                return text.ToString();
+            }
         }
-        return text.ToString();
+        throw new ApiException("文本响应在完成前中断，已保留收到的部分内容，请重试");
     }
 }

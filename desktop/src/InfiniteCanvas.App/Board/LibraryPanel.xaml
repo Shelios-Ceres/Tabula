@@ -55,7 +55,10 @@
             <TextBlock x:Name="EmptyText" Grid.Row="2" TextWrapping="Wrap" TextAlignment="Center" VerticalAlignment="Center" Margin="16,0"
                        Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                        Text="把常用的图片、视频或音频拖到这里，或点右上角 + 导入。&#x0a;之后可以直接拖到画布上使用。" />
-            <TextBlock x:Name="UsageHint" Grid.Row="3" Style="{StaticResource SecondaryCaption}" TextWrapping="Wrap" Margin="4,0" Text="双击放到画布中央，或拖到画布任意位置" />
+            <StackPanel Grid.Row="3" Spacing="6">
+                <TextBlock x:Name="UsageHint" Style="{StaticResource SecondaryCaption}" TextWrapping="Wrap" Margin="4,0" Text="双击放到画布中央，或拖到画布任意位置" />
+                <TextBlock x:Name="ImportStatus" Style="{StaticResource SecondaryCaption}" TextWrapping="Wrap" Margin="4,0" Visibility="Collapsed" AutomationProperties.LiveSetting="Polite" />
+            </StackPanel>
         </Grid>
     </Border>
 </UserControl>

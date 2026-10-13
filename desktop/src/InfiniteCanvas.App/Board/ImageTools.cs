@@ -117,8 +117,8 @@ public static class ImageTools
         {
             var dialog = new SplitDialog(bitmap);
             if (await Dialogs.ShowAsync(dialog) != ContentDialogResult.Primary) return;
-            var (rows, columns) = (dialog.Rows, dialog.Columns);
             var (width, height) = ((int)bitmap.SizeInPixels.Width, (int)bitmap.SizeInPixels.Height);
+            var (rows, columns) = (Math.Min(dialog.Rows, height), Math.Min(dialog.Columns, width));
             var tiles = ImageGeometry.Split(width, height, rows, columns);
             var mime = node.MimeType ?? Media.MimeOf(node.Content!);
             var cut = new List<(byte[] Bytes, string Mime, PixelRect Box)>();
@@ -128,17 +128,17 @@ public static class ImageTools
                 cut.Add((tileBytes, tileMime, tile));
             }
             view.History.Record();
-            // Tiles keep the picture's layout: the same grid, at the source node's scale, with a small gap.
+            // One scale keeps every tile's aspect and the grid spacing consistent, even when small tiles need enlarging.
             const double gap = 16;
-            var scale = node.Width / width;
+            var scale = Math.Max(node.Width / width, tiles.Max(tile => Math.Max(60d / tile.Width, 40d / tile.Height)));
             var origin = (X: node.Right + 80, Y: node.Y);
             var nodes = new List<CanvasNode>();
             for (var i = 0; i < cut.Count; i++)
             {
                 var (bytes, type, box) = cut[i];
                 var tile = ImageNode(view, bytes, type, box.Width, box.Height, $"{node.Title} · {i / columns + 1}-{i % columns + 1}");
-                tile.Width = Math.Max(60, box.Width * scale);
-                tile.Height = Math.Max(40, box.Height * scale);
+                tile.Width = box.Width * scale;
+                tile.Height = box.Height * scale;
                 tile.X = origin.X + box.X * scale + i % columns * gap;
                 tile.Y = origin.Y + box.Y * scale + i / columns * gap;
                 nodes.Add(tile);

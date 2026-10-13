@@ -188,6 +188,10 @@
                             <TextBlock x:Name="DataPath" VerticalAlignment="Center" IsTextSelectionEnabled="True" Style="{StaticResource CaptionTextBlockStyle}" />
                             <Button Style="{StaticResource ActionButton}" Content="打开文件夹" Click="OpenData_Click" />
                         </StackPanel>
+                        <ToggleSwitch x:Name="WaitingAnimationsSwitch" Header="播放生成等待动画" OnContent="开启" OffContent="关闭" Toggled="WaitingAnimations_Toggled" />
+                        <TextBlock TextWrapping="Wrap" Style="{StaticResource SecondaryCaption}"
+                                   Text="图片生成时，节点里会随机播放文件夹中的一幅网页动画（.html），默认是客户端自带的 6 幅。可以自己增删，子文件夹里的不会播放；关闭动画或清空文件夹后显示转圈。" />
+                        <Button Style="{StaticResource ActionButton}" Content="打开等待动画文件夹" Click="OpenLoaders_Click" />
                     </StackPanel>
                 </Border>
 

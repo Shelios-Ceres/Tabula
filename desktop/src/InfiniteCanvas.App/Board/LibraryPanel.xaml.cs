@@ -114,11 +114,35 @@ public sealed partial class LibraryPanel : UserControl
 
     private async void Import_Click(object sender, RoutedEventArgs e)
     {
-        var picker = new FileOpenPicker { SuggestedStartLocation = PickerLocationId.PicturesLibrary };
-        foreach (var ext in new[] { ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".mp4", ".mov", ".webm", ".mp3", ".wav", ".m4a", ".aac", ".flac" }) picker.FileTypeFilter.Add(ext);
-        WinRT.Interop.InitializeWithWindow.Initialize(picker, WinRT.Interop.WindowNative.GetWindowHandle(App.Window));
-        var files = await picker.PickMultipleFilesAsync();
-        if (files.Count > 0) await LibraryStore.AddAsync(files.Select(f => f.Path).ToList());
+        try
+        {
+            var picker = new FileOpenPicker { SuggestedStartLocation = PickerLocationId.PicturesLibrary };
+            foreach (var ext in new[] { ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".mp4", ".mov", ".webm", ".mp3", ".wav", ".m4a", ".aac", ".flac" }) picker.FileTypeFilter.Add(ext);
+            WinRT.Interop.InitializeWithWindow.Initialize(picker, WinRT.Interop.WindowNative.GetWindowHandle(App.Window));
+            await ImportAsync(await picker.PickMultipleFilesAsync());
+        }
+        catch (Exception ex) { ImportFailed(ex); }
+    }
+
+    private async Task ImportAsync(IReadOnlyList<IStorageItem> items)
+    {
+        if (items.Count == 0) return;
+        SetImportStatus($"正在导入 {items.Count} 项…");
+        var added = await LibraryStore.AddAsync(items.OfType<StorageFile>().Select(f => f.Path).ToList());
+        var skipped = items.Count - added;
+        SetImportStatus($"已导入 {added} 项，跳过 {skipped} 项" + (skipped > 0 ? "（不支持的类型或文件无法读取）" : ""));
+    }
+
+    private void SetImportStatus(string text)
+    {
+        ImportStatus.Text = text;
+        ImportStatus.Visibility = Visibility.Visible;
+    }
+
+    private void ImportFailed(Exception ex)
+    {
+        App.Log(ex);
+        SetImportStatus($"导入未完成：{ex.Message}");
     }
 
     private void OpenFolder_Click(object sender, RoutedEventArgs e)
@@ -140,7 +164,7 @@ public sealed partial class LibraryPanel : UserControl
     {
         if (!e.DataView.Contains(StandardDataFormats.StorageItems) || e.DataView.Contains(CanvasView.LibraryFormat)) return;
         e.Handled = true;
-        var items = await e.DataView.GetStorageItemsAsync();
-        await LibraryStore.AddAsync(items.OfType<StorageFile>().Select(f => f.Path).ToList());
+        try { await ImportAsync(await e.DataView.GetStorageItemsAsync()); }
+        catch (Exception ex) { ImportFailed(ex); }
     }
 }

@@ -46,6 +46,7 @@ public sealed partial class SettingsPage : Page
         SystemPromptBox.Text = Settings.SystemPrompt;
         BuildAgents();
         ExternalAgentsSwitch.IsOn = Settings.ExternalAgents;
+        WaitingAnimationsSwitch.IsOn = Settings.WaitingAnimations;
         BridgeCommand.Text = $"\"{Environment.ProcessPath}\" {Agents.McpBridge.Argument}";
         RefreshChannels(Settings.Channels.FirstOrDefault());
         App.Window.SetCaption("设置");
@@ -452,6 +453,19 @@ public sealed partial class SettingsPage : Page
     {
         Directory.CreateDirectory(ProjectStore.Root);
         Process.Start(new ProcessStartInfo("explorer.exe", $"\"{ProjectStore.Root}\"") { UseShellExecute = true });
+    }
+
+    private void OpenLoaders_Click(object sender, RoutedEventArgs e)
+    {
+        Board.Loaders.EnsureInitialized();
+        Process.Start(new ProcessStartInfo("explorer.exe", $"\"{Board.Loaders.Folder}\"") { UseShellExecute = true });
+    }
+
+    private void WaitingAnimations_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (Settings.WaitingAnimations == WaitingAnimationsSwitch.IsOn) return;
+        Settings.WaitingAnimations = WaitingAnimationsSwitch.IsOn;
+        Save();
     }
 
     private void Back_Click(object sender, RoutedEventArgs e)

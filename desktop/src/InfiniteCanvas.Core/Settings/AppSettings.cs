@@ -131,6 +131,8 @@ public sealed class AppSettings
     public string Agent { get; set; } = "claude";
     public bool AgentOpen { get; set; }
     public bool MiniMapOpen { get; set; } = true;
+    /// <summary>Play local HTML waiting animations while images generate; off keeps the progress ring.</summary>
+    public bool WaitingAnimations { get; set; } = true;
     /// <summary>Serve the canvas tools on the fixed per-user pipe, so agents outside the client (Claude Code, terminal CLIs) can operate the open canvas.</summary>
     public bool ExternalAgents { get; set; } = true;
 

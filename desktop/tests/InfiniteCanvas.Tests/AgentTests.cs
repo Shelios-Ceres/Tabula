@@ -18,15 +18,17 @@ public class AgentTests
         public List<string> Selected { get; } = [];
         public List<string> Generated { get; } = [];
         public int Records { get; private set; }
+        private CanvasHistory? _history;
+        public CanvasHistory History => _history ??= new CanvasHistory(Document);
         public IReadOnlyCollection<string> Selection => Selected;
         public Viewport Viewport { get; set; } = new(0, 0, 1);
         public (double X, double Y) ViewCenter => (500, 400);
         public Task<T> OnUiAsync<T>(Func<T> action) => Task.FromResult(action());
-        public void RecordHistory() => Records++;
+        public void RecordHistory() { Records++; History.Record(); }
         public void Select(IEnumerable<string> ids) { Selected.Clear(); Selected.AddRange(ids); }
         public void Delete(IEnumerable<string> ids)
         {
-            var set = ids.ToHashSet();
+            var set = Stacks.Expand(Document, ids);
             foreach (var node in Document.Nodes.Where(n => set.Contains(n.Id)).ToList()) Document.Nodes.Remove(node);
             foreach (var c in Document.Connections.Where(c => set.Contains(c.From) || set.Contains(c.To)).ToList()) Document.Connections.Remove(c);
         }
@@ -46,6 +48,7 @@ public class AgentTests
         }
         public void Ungroup(IReadOnlyCollection<string> ids)
         {
+            ids = Stacks.Expand(Document, ids);
             foreach (var node in Document.Nodes.Where(n => ids.Contains(n.Id) || n.GroupId is not null && ids.Contains(n.GroupId))) node.GroupId = null;
         }
         public List<string> Imported { get; } = [];
@@ -100,6 +103,40 @@ public class AgentTests
         Assert.All(host.Document.Nodes.Where(n => n.Kind == NodeKind.Text), n => Assert.Null(n.GroupId));
         var single = Parse(CanvasTools.Apply(host, [new CanvasOp { Type = "group", Ids = [host.Document.Nodes.Last().Id] }]));
         Assert.Contains("至少要有两个节点", single.GetProperty("results")[0].GetProperty("error").GetString());
+    }
+
+    [Theory]
+    [InlineData("delete_nodes", false)]
+    [InlineData("delete_nodes", true)]
+    [InlineData("ungroup", false)]
+    [InlineData("ungroup", true)]
+    public void Apply_ops_expand_collapsed_stacks_but_keep_open_members_independent(string operation, bool open)
+    {
+        var host = new FakeHost();
+        var first = CanvasNode.Create(NodeKind.Image, 0, 0);
+        var second = CanvasNode.Create(NodeKind.Image, 0, 0);
+        first.GroupId = second.GroupId = "group-1";
+        Stacks.Form([first, second]);
+        foreach (var node in new[] { first, second })
+        {
+            node.SetOption(NodeKeys.StackOpen, open ? "true" : null);
+            host.Document.Nodes.Add(node);
+        }
+
+        CanvasTools.Apply(host, [new CanvasOp { Type = operation, Ids = [first.Id] }]);
+
+        Assert.Equal(1, host.Records);
+        if (operation == "delete_nodes")
+            Assert.Equal(open ? new[] { second.Id } : [], host.Document.Nodes.Select(n => n.Id).ToArray());
+        else
+        {
+            Assert.Null(first.GroupId);
+            Assert.Equal(open ? "group-1" : null, second.GroupId);
+        }
+        Assert.True(host.History.Undo());
+        Assert.Equal(new[] { first.Id, second.Id }, host.Document.Nodes.Select(n => n.Id).ToArray());
+        Assert.All(host.Document.Nodes, node => Assert.Equal("group-1", node.GroupId));
+        Assert.False(host.History.CanUndo);
     }
 
     [Fact]
@@ -197,6 +234,82 @@ public class AgentTests
         Assert.Equal("好的", handler.Updates.Single().GetProperty("content").GetProperty("text").GetString());
         Assert.Equal(["allow", "reject"], handler.Asked.Select(o => o.OptionId));
         agentRpc.Dispose();
+    }
+
+    private sealed class WaitingAgent
+    {
+        public TaskCompletionSource<string> Received { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource<object> Result { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public string? CancelledSession { get; private set; }
+
+        private Task<object> Wait(string method) { Received.TrySetResult(method); return Result.Task; }
+
+        [JsonRpcMethod("initialize", UseSingleObjectParameterDeserialization = true)]
+        public Task<object> Initialize(JsonElement p) => Wait("initialize");
+        [JsonRpcMethod("authenticate", UseSingleObjectParameterDeserialization = true)]
+        public Task<object> Authenticate(JsonElement p) => Wait("authenticate");
+        [JsonRpcMethod("session/new", UseSingleObjectParameterDeserialization = true)]
+        public Task<object> NewSession(JsonElement p) => Wait("session/new");
+        [JsonRpcMethod("session/prompt", UseSingleObjectParameterDeserialization = true)]
+        public Task<object> Prompt(JsonElement p) => Wait("session/prompt");
+        [JsonRpcMethod("session/cancel", UseSingleObjectParameterDeserialization = true)]
+        public void Cancel(JsonElement p)
+        {
+            CancelledSession = p.GetProperty("sessionId").GetString();
+            Result.TrySetResult(new { stopReason = "cancelled" });
+        }
+    }
+
+    [Theory]
+    [InlineData("initialize")]
+    [InlineData("authenticate")]
+    [InlineData("session/new")]
+    [InlineData("session/prompt")]
+    public async Task Acp_waits_can_be_cancelled_before_the_agent_replies(string method)
+    {
+        var (clientSide, agentSide) = FullDuplexStream.CreatePair();
+        var agent = new WaitingAgent();
+        using var rpc = new JsonRpc(new NewLineDelimitedMessageHandler(agentSide, agentSide, new SystemTextJsonFormatter()));
+        rpc.AddLocalRpcTarget(agent);
+        rpc.StartListening();
+        await using var client = new AcpClient(clientSide, clientSide, new Handler());
+        using var stop = new CancellationTokenSource();
+        Task pending = method switch
+        {
+            "initialize" => client.InitializeAsync(stop.Token),
+            "authenticate" => client.AuthenticateAsync("login", stop.Token),
+            "session/new" => client.NewSessionAsync("C:\\work", [], stop.Token),
+            _ => client.PromptAsync("sess-1", [], stop.Token),
+        };
+        Assert.Equal(method, await agent.Received.Task);
+        stop.Cancel();
+        try { await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending); }
+        finally { agent.Result.TrySetResult(new { protocolVersion = 1, sessionId = "late-session", stopReason = "end_turn" }); }
+    }
+
+    [Fact]
+    public async Task Acp_cancel_ends_a_live_turn_with_the_protocol_notification()
+    {
+        var (clientSide, agentSide) = FullDuplexStream.CreatePair();
+        var agent = new WaitingAgent();
+        using var rpc = new JsonRpc(new NewLineDelimitedMessageHandler(agentSide, agentSide, new SystemTextJsonFormatter()));
+        rpc.AddLocalRpcTarget(agent);
+        rpc.StartListening();
+        await using var client = new AcpClient(clientSide, clientSide, new Handler());
+        var pending = client.PromptAsync("sess-1", []);
+        await agent.Received.Task;
+        await client.CancelAsync("sess-1");
+        Assert.Equal("cancelled", await pending);
+        Assert.Equal("sess-1", agent.CancelledSession);
+    }
+
+    [Fact]
+    public async Task Acp_cancelled_start_never_resolves_or_launches_a_command()
+    {
+        using var stop = new CancellationTokenSource();
+        stop.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            AcpClient.StartAsync("definitely-not-an-agent-command", Path.GetTempPath(), new Handler(), stop.Token));
     }
 
     [Fact]

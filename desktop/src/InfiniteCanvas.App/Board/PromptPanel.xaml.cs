@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using InfiniteCanvas.App.Pages;
 using InfiniteCanvas.Core.Canvas;
 using InfiniteCanvas.Core.Models;
@@ -36,6 +37,8 @@ public sealed partial class PromptPanel : UserControl
         Shell.PointerWheelChanged += (_, e) => e.Handled = true;
         Shell.DoubleTapped += (_, e) => e.Handled = true;
         Shell.RightTapped += (_, e) => e.Handled = true;
+        Loaded += (_, _) => Bind(_node);
+        Unloaded += (_, _) => { if (_node is not null) _node.PropertyChanged -= Node_PropertyChanged; };
     }
 
     public CanvasNode? Node => _node;
@@ -59,8 +62,10 @@ public sealed partial class PromptPanel : UserControl
             ParamsFlyout.Hide();
             _library?.Hide();
         }
+        if (_node is not null) _node.PropertyChanged -= Node_PropertyChanged;
         _node = node;
         if (node is null) return;
+        node.PropertyChanged += Node_PropertyChanged;
         _loading = true;
         ModeBar.Visibility = node.Kind == NodeKind.Config ? Visibility.Visible : Visibility.Collapsed;
         ModeBar.SelectedItem = ModeBar.Items.FirstOrDefault(item => (string)item.Tag == node.Mode.ToString());
@@ -73,6 +78,19 @@ public sealed partial class PromptPanel : UserControl
         };
         _loading = false;
         Refresh();
+    }
+
+    private void Node_PropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName != nameof(CanvasNode.Prompt) || _node is null) return;
+        var text = NodeView.BoxText(_node.Prompt);
+        // Local typing already matches; only external edits replace the text, without moving the caret unnecessarily.
+        if (PromptBox.Text == text) return;
+        var start = Math.Min(PromptBox.SelectionStart, text.Length);
+        var length = Math.Min(PromptBox.SelectionLength, text.Length - start);
+        PromptBox.Text = text;
+        PromptBox.Select(start, length);
+        ShowEstimate();
     }
 
     /// <summary>Re-read everything that depends on settings, connections or running state.</summary>
@@ -164,7 +182,8 @@ public sealed partial class PromptPanel : UserControl
 
     private async void OpenSettings_Click(object sender, RoutedEventArgs e)
     {
-        if (await _host.ConfirmLeaveAsync()) App.Window.Frame.Navigate(typeof(SettingsPage), null, new Microsoft.UI.Xaml.Media.Animation.DrillInNavigationTransitionInfo());
+        if (App.Window.Frame.Content is CanvasPage page && await page.PrepareLeaveAsync())
+            App.Window.Frame.Navigate(typeof(SettingsPage), null, new Microsoft.UI.Xaml.Media.Animation.DrillInNavigationTransitionInfo());
     }
 
     /// <summary>Count, size and ratio of an image on the parameters button, defaulted the way the flyout shows them.</summary>

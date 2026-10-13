@@ -23,7 +23,11 @@ public sealed partial class AgentPanel : UserControl, IAcpClientHandler
     private AcpClient? _client;
     private AgentConfig? _clientAgent;
     private string? _session;
-    private bool _busy;
+    private bool _busy, _prompting, _resetting, _shuttingDown, _cancelRequested;
+    private CancellationTokenSource? _turnStop;
+    private Task _turnTask = Task.CompletedTask, _stopTask = Task.CompletedTask;
+    private bool _followMessages = true;
+    private double _scrollOffset;
     private TextBlock? _reply, _thought;
     private StackPanel? _plan;
     private readonly Dictionary<string, (Expander Card, TextBlock Title, TextBlock Status, TextBlock Detail)> _tools = [];
@@ -32,6 +36,7 @@ public sealed partial class AgentPanel : UserControl, IAcpClientHandler
     public AgentPanel()
     {
         InitializeComponent();
+        Messages.SizeChanged += (_, _) => ScrollToEnd();
         RefreshAgents();
     }
 
@@ -71,21 +76,55 @@ public sealed partial class AgentPanel : UserControl, IAcpClientHandler
 
     private async void NewChat_Click(object sender, RoutedEventArgs e)
     {
-        if (_busy && _client is not null && _session is not null) await _client.CancelAsync(_session);
+        if (_resetting || _shuttingDown) return;
+        if (_busy) await StopTurnAsync();
+        else CancelChoices();
         _session = null;
         Messages.Children.Clear();
         _tools.Clear();
         _reply = _thought = null;
         _plan = null;
+        _followMessages = true;
+        LatestButton.Visibility = Visibility.Collapsed;
         EmptyText.Visibility = Visibility.Visible;
     }
 
     /// <summary>Leaving the canvas ends the agent process and the tool pipe.</summary>
     public async Task ShutdownAsync()
     {
-        await StopAgentAsync();
+        _shuttingDown = true;
+        await StopTurnAsync();
         if (_mcp is not null) await _mcp.DisposeAsync();
         _mcp = null;
+    }
+
+    /// <summary>A failed final save keeps the page open; call only after ShutdownAsync has finished.</summary>
+    public void ResumeAfterCancelledLeave()
+    {
+        if (!_shuttingDown) return;
+        _shuttingDown = _resetting = _cancelRequested = false;
+        SetBusy(false);
+        if (Messages.Children.Count > 0) AddNote("离开已取消。Agent 已停止，下一条消息将开始新对话。");
+    }
+
+    private Task StopTurnAsync() => _stopTask.IsCompleted ? _stopTask = StopTurnCoreAsync() : _stopTask;
+
+    private async Task StopTurnCoreAsync()
+    {
+        _resetting = true;
+        SetBusy(_busy);
+        var turn = _turnTask;
+        _turnStop?.Cancel();
+        try
+        {
+            await StopAgentAsync();
+            await turn;
+        }
+        finally
+        {
+            _resetting = false;
+            SetBusy(_busy);
+        }
     }
 
     private async Task StopAgentAsync()
@@ -110,10 +149,17 @@ public sealed partial class AgentPanel : UserControl, IAcpClientHandler
 
     private async void Send_Click(object sender, RoutedEventArgs e)
     {
+        if (_resetting || _shuttingDown) return;
         if (_busy)
         {
-            if (_client is not null && _session is not null) await _client.CancelAsync(_session);
+            _cancelRequested = true;
             CancelChoices();
+            if (_prompting && _client is { } client && _session is { } session)
+            {
+                try { await client.CancelAsync(session); }
+                catch { await StopTurnAsync(); }
+            }
+            else await StopTurnAsync();
             return;
         }
         var text = InputBox.Text.Trim();
@@ -127,22 +173,33 @@ public sealed partial class AgentPanel : UserControl, IAcpClientHandler
         AddBubble(text);
         // Tool call IDs only need to be unique within a turn: a new turn never updates an earlier card.
         _tools.Clear();
+        _cancelRequested = false;
+        _turnStop = new CancellationTokenSource();
         SetBusy(true);
+        _turnTask = SendAsync(agent, text, _turnStop.Token);
+        await _turnTask;
+    }
+
+    private async Task SendAsync(AgentConfig agent, string text, CancellationToken ct)
+    {
         try
         {
-            await EnsureSessionAsync(agent);
+            await EnsureSessionAsync(agent, ct);
+            ct.ThrowIfCancellationRequested();
             var prompt = new List<object>();
             if (Context() is { } context) prompt.Add(new { type = "text", text = context });
             prompt.Add(new { type = "text", text });
             string stop;
             // Some agents (Claude's adapter) only report a missing login on the first prompt, not at session/new.
-            try { stop = await _client!.PromptAsync(_session!, prompt); }
+            try { stop = await PromptAsync(prompt, ct); }
             catch (AcpException ex) when (ex.AuthRequired)
             {
-                await LoginAsync(agent);
-                await EnsureSessionAsync(agent);
-                stop = await _client!.PromptAsync(_session!, prompt);
+                if (_cancelRequested) { AddNote("已停止"); return; }
+                await LoginAsync(agent, ct);
+                await EnsureSessionAsync(agent, ct);
+                stop = await PromptAsync(prompt, ct);
             }
+            ct.ThrowIfCancellationRequested();
             if (stop != "end_turn")
                 AddNote(stop switch
                 {
@@ -152,6 +209,10 @@ public sealed partial class AgentPanel : UserControl, IAcpClientHandler
                     "refusal" => "Agent 拒绝了这个请求",
                     _ => $"已结束：{stop}",
                 });
+        }
+        catch (Exception) when (ct.IsCancellationRequested)
+        {
+            if (!_shuttingDown) AddNote("已停止");
         }
         catch (AcpException ex)
         {
@@ -164,9 +225,19 @@ public sealed partial class AgentPanel : UserControl, IAcpClientHandler
         }
         finally
         {
+            _turnStop?.Dispose();
+            _turnStop = null;
             _reply = _thought = null;
             SetBusy(false);
         }
+    }
+
+    private async Task<string> PromptAsync(IReadOnlyList<object> prompt, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        _prompting = true;
+        try { return await _client!.PromptAsync(_session!, prompt, ct); }
+        finally { _prompting = false; }
     }
 
     private void SetBusy(bool busy)
@@ -175,7 +246,8 @@ public sealed partial class AgentPanel : UserControl, IAcpClientHandler
         SendIcon.Glyph = busy ? "" : "";
         ToolTipService.SetToolTip(SendButton, busy ? "停止" : "发送");
         AutomationProperties.SetName(SendButton, busy ? "停止" : "发送");
-        AgentPicker.IsEnabled = !busy && Agents.Count > 0;
+        AgentPicker.IsEnabled = !busy && !_resetting && !_shuttingDown && Agents.Count > 0;
+        SendButton.IsEnabled = NewChatButton.IsEnabled = !_resetting && !_shuttingDown;
     }
 
     /// <summary>Selected nodes travel with each message, so "this picture" means something to the agent.</summary>
@@ -197,39 +269,47 @@ public sealed partial class AgentPanel : UserControl, IAcpClientHandler
         }
     }
 
-    private async Task EnsureSessionAsync(AgentConfig agent)
+    private async Task EnsureSessionAsync(AgentConfig agent, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
         _mcp ??= new CanvasMcpServer(new CanvasAgentHost(_board!));
         if (_client is null)
         {
             var status = AddNote($"正在启动 {agent.Name}…（首次启动可能需要下载，稍等片刻）");
-            try { await StartClientAsync(agent); }
+            try { await StartClientAsync(agent, ct); }
             finally { Messages.Children.Remove(status); }
         }
+        ct.ThrowIfCancellationRequested();
         if (_session is not null) return;
-        try { _session = await _client!.NewSessionAsync(Workspace, [_mcp.Declaration(Environment.ProcessPath!)]); }
+        string session;
+        try { session = await _client!.NewSessionAsync(Workspace, [_mcp.Declaration(Environment.ProcessPath!)], ct); }
         catch (AcpException ex) when (ex.AuthRequired)
         {
-            await LoginAsync(agent);
-            _session = await _client!.NewSessionAsync(Workspace, [_mcp.Declaration(Environment.ProcessPath!)]);
+            await LoginAsync(agent, ct);
+            ct.ThrowIfCancellationRequested();
+            session = await _client!.NewSessionAsync(Workspace, [_mcp.Declaration(Environment.ProcessPath!)], ct);
         }
+        ct.ThrowIfCancellationRequested();
+        _session = session;
     }
 
     /// <summary>
     /// ACP logins: "agent" methods run inside the agent (authenticate); "terminal" methods rerun the agent command
     /// with extra arguments in a console window, after which the agent is restarted.
     /// </summary>
-    private async Task LoginAsync(AgentConfig agent)
+    private async Task LoginAsync(AgentConfig agent, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
         var methods = _client!.AuthMethods;
         if (methods.Count == 0) throw new AcpException($"{agent.Name} 需要登录，请先在终端里运行它完成登录");
         var chosen = methods.Count == 1 ? methods[0].Id
             : await AskAsync($"{agent.Name} 需要登录，选择登录方式", methods.Select(m => (m.Id, m.Name, m == methods[0])).ToList());
+        ct.ThrowIfCancellationRequested();
         if (methods.FirstOrDefault(m => m.Id == chosen) is not { } method) throw new AcpException("已取消登录");
         if (method.Type != "terminal")
         {
             AddNote($"正在通过「{method.Name}」登录 {agent.Name}，请按提示在浏览器或弹出窗口里完成");
-            await _client.AuthenticateAsync(method.Id);
+            await _client.AuthenticateAsync(method.Id, ct);
             return;
         }
         var (file, args) = CommandLine.Parse(agent.Command);
@@ -239,17 +319,31 @@ public sealed partial class AgentPanel : UserControl, IAcpClientHandler
         AddNote($"已打开 {agent.Name} 的登录窗口，完成后会自动继续");
         using (var login = Process.Start(info) ?? throw new AcpException("无法打开登录窗口"))
         {
-            await login.WaitForExitAsync();
+            ChildProcessJob.Add(login);
+            try { await login.WaitForExitAsync(ct); }
+            catch (OperationCanceledException)
+            {
+                try { if (!login.HasExited) login.Kill(entireProcessTree: true); }
+                catch (InvalidOperationException) { /* Login exited as cancellation arrived. */ }
+                await login.WaitForExitAsync();
+                throw;
+            }
+            ct.ThrowIfCancellationRequested();
             if (login.ExitCode != 0) throw new AcpException($"{agent.Name} 登录没有完成（退出码 {login.ExitCode}）");
         }
         await StopAgentAsync();
-        await StartClientAsync(agent);
+        await StartClientAsync(agent, ct);
     }
 
-    private async Task StartClientAsync(AgentConfig agent)
+    private async Task StartClientAsync(AgentConfig agent, CancellationToken ct)
     {
         var cwd = Workspace;
-        var client = await Task.Run(() => AcpClient.StartAsync(agent.Command, cwd, this));
+        var client = await Task.Run(() => AcpClient.StartAsync(agent.Command, cwd, this, ct));
+        if (ct.IsCancellationRequested)
+        {
+            await client.DisposeAsync();
+            ct.ThrowIfCancellationRequested();
+        }
         _client = client;
         _clientAgent = agent;
         client.Disconnected += () => DispatcherQueue.TryEnqueue(() =>
@@ -267,7 +361,7 @@ public sealed partial class AgentPanel : UserControl, IAcpClientHandler
 
     public void OnSessionUpdate(string sessionId, JsonElement update) => DispatcherQueue.TryEnqueue(() =>
     {
-        if (sessionId != _session) return;
+        if (_shuttingDown || _resetting || _turnStop?.IsCancellationRequested == true || sessionId != _session) return;
         var kind = Str(update, "sessionUpdate");
         switch (kind)
         {
@@ -292,8 +386,13 @@ public sealed partial class AgentPanel : UserControl, IAcpClientHandler
     public Task<string?> RequestPermissionAsync(string sessionId, JsonElement toolCall, IReadOnlyList<AcpPermissionOption> options)
     {
         var done = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
-        DispatcherQueue.TryEnqueue(async () =>
+        if (!DispatcherQueue.TryEnqueue(async () =>
         {
+            if (_shuttingDown || !_busy || _cancelRequested || _turnStop?.IsCancellationRequested != false || sessionId != _session)
+            {
+                done.TrySetResult(null);
+                return;
+            }
             var title = Str(toolCall, "title") ?? (Str(toolCall, "toolCallId") is { } id && _tools.TryGetValue(id, out var tool) ? tool.Title.Text : null) ?? "执行一个操作";
             var labels = options.Select(o => (o.OptionId, o.Kind switch
             {
@@ -304,7 +403,7 @@ public sealed partial class AgentPanel : UserControl, IAcpClientHandler
                 _ => o.Name,
             }, o.Kind == "allow_once")).ToList();
             done.TrySetResult(await AskAsync($"{_clientAgent?.Name ?? "Agent"} 想要：{title}", labels));
-        });
+        })) done.TrySetResult(null);
         return done.Task;
     }
 
@@ -464,5 +563,24 @@ public sealed partial class AgentPanel : UserControl, IAcpClientHandler
         ScrollToEnd();
     }
 
-    private void ScrollToEnd() => DispatcherQueue.TryEnqueue(() => Scroller.ChangeView(null, Scroller.ScrollableHeight, null, true));
+    private void Scroller_ViewChanged(object sender, ScrollViewerViewChangedEventArgs e)
+    {
+        var offset = Scroller.VerticalOffset;
+        if (offset < _scrollOffset) _followMessages = false;
+        if (offset >= Scroller.ScrollableHeight) _followMessages = true;
+        _scrollOffset = offset;
+        LatestButton.Visibility = _followMessages ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    private void Latest_Click(object sender, RoutedEventArgs e)
+    {
+        _followMessages = true;
+        LatestButton.Visibility = Visibility.Collapsed;
+        ScrollToEnd();
+    }
+
+    private void ScrollToEnd() => DispatcherQueue.TryEnqueue(() =>
+    {
+        if (_followMessages) Scroller.ChangeView(null, Scroller.ScrollableHeight, null, true);
+    });
 }

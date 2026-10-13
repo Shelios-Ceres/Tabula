@@ -49,6 +49,8 @@ public sealed partial class CanvasView : UserControl
     public CanvasGenerator Generator { get; private set; } = null!;
     public event Action? Changed;
     public event Action? ViewportChanged;
+    public bool IsClosing { get; private set; }
+    private readonly HashSet<Task> _localTasks = [];
 
     private readonly Dictionary<string, NodeView> _views = [];
     private readonly HashSet<CanvasNode> _tracked = [];
@@ -146,8 +148,30 @@ public sealed partial class CanvasView : UserControl
     }
 
     /// <summary>Leaving stops running generations, so ask first; OpenAI Responses image tasks resume on the next open.</summary>
-    public async Task<bool> ConfirmLeaveAsync() => Generator.RunningCount == 0
-        || await Dialogs.ConfirmAsync("离开画布？", $"有 {Generator.RunningCount} 个生成任务仍在进行，离开会中断它们（OpenAI Responses 生图任务下次打开画布会继续查询）。", "离开", destructive: true);
+    public async Task<bool> ConfirmLeaveAsync() => Generator.RunningCount == 0 && _localTasks.Count == 0
+        || await Dialogs.ConfirmAsync("离开画布？", $"有 {Generator.RunningCount} 个生成任务、{_localTasks.Count} 个本地操作仍在进行。离开前会保存已完成的结果并等待导入结束；生成会中断，OpenAI Responses 生图任务下次打开画布会继续查询。", "保存并离开", destructive: true);
+
+    public Task PrepareLeaveAsync()
+    {
+        IsClosing = true;
+        return Task.WhenAll(_localTasks.Append(Generator.ShutdownAsync()).ToArray());
+    }
+
+    public void ResumeAfterCancelledLeave()
+    {
+        IsClosing = false;
+        Generator.ResumeAfterCancelledLeave();
+    }
+
+    private async Task<T> TrackLocalAsync<T>(Func<Task<T>> action)
+    {
+        var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _localTasks.Add(done.Task);
+        try { return await action(); }
+        finally { _localTasks.Remove(done.Task); done.SetResult(); }
+    }
+
+    private Task TrackLocalAsync(Func<Task> action) => TrackLocalAsync(async () => { await action(); return true; });
 
     private void RaiseChanged() => Changed?.Invoke();
 
@@ -388,18 +412,12 @@ public sealed partial class CanvasView : UserControl
         foreach (var view in _views.Values)
         {
             var members = Stacks.Of(view.Node) is { } id && stacks.TryGetValue(id, out var list) && list.Count > 1 && list[0] == view.Node ? list : null;
-            view.SetStack(members?.Count ?? 0, Stacks.IsOpen(view.Node), members?.Any(n => n.Status == NodeStatus.Error && !n.HasContent) == true);
+            view.SetStack(members?.Count ?? 0, Stacks.IsOpen(view.Node), members?.Count(n => n.Status == NodeStatus.Success && n.HasContent) ?? 0, members?.Count(n => n.Status == NodeStatus.Error) ?? 0);
         }
     }
 
     /// <summary>The ids plus every member of a collapsed stack whose lead is among them: moving, deleting or grouping the lead acts on the whole stack.</summary>
-    private HashSet<string> WithStacks(IEnumerable<string> ids)
-    {
-        var result = ids.ToHashSet();
-        foreach (var node in Doc.Nodes.Where(n => result.Contains(n.Id) && Stacks.Of(n) is not null && !Stacks.IsOpen(n)).ToList())
-            foreach (var member in Stacks.Members(Doc, Stacks.Of(node)!)) result.Add(member.Id);
-        return result;
-    }
+    private HashSet<string> WithStacks(IEnumerable<string> ids) => Stacks.Expand(Doc, ids);
 
     /// <summary>Spread a collapsed stack into a grid, or gather an opened one back under its lead, gliding the cards. One undo step.</summary>
     public void ToggleStack(CanvasNode node)
@@ -512,17 +530,7 @@ public sealed partial class CanvasView : UserControl
         Add("同宽高", "宽和高都统一为基准节点", () => MatchSize(true, true));
         Divider();
         Add("编组", "把选中节点放进一个分组 (Ctrl+G)", Group);
-        var bar = new Border { Style = (Style)Application.Current.Resources["GlassCapsule"], Child = row, Visibility = Visibility.Collapsed };
-        var shadow = new ThemeShadow();
-        shadow.Receivers.Add(Backdrop);
-        bar.Shadow = shadow;
-        bar.Translation = new Vector3(0, 0, 24);
-        // Clicks on the bar must not start canvas gestures underneath.
-        bar.PointerPressed += (_, e) => e.Handled = true;
-        bar.DoubleTapped += (_, e) => e.Handled = true;
-        bar.RightTapped += (_, e) => e.Handled = true;
-        bar.SizeChanged += (_, _) => PositionSelectionBar();
-        return bar;
+        return FloatingBar(row, PositionSelectionBar);
     }
 
     /// <summary>The single selected image that has a picture, or null.</summary>
@@ -539,7 +547,7 @@ public sealed partial class CanvasView : UserControl
             button.Click += async (_, _) =>
             {
                 if (ImageBarNode() is not { } node) return;
-                try { await action(node); }
+                try { if (!IsClosing) await TrackLocalAsync(() => action(node)); }
                 catch (Exception ex)
                 {
                     App.Log(ex);
@@ -549,7 +557,7 @@ public sealed partial class CanvasView : UserControl
             row.Children.Add(button);
             return button;
         }
-        _imageMarkButton = Add("", "局部编辑", EditMarksAsync);
+        _imageMarkButton = Add("", "局部编辑", EditMarksCoreAsync);
         Add("", "裁剪", node => ImageTools.CropAsync(this, node));
         Add("", "拆分", node => ImageTools.SplitAsync(this, node));
         Add("", "多角度", node => ImageTools.AngleAsync(this, node));
@@ -562,15 +570,27 @@ public sealed partial class CanvasView : UserControl
             Process.Start(new ProcessStartInfo(ProjectStore.AssetPath(Doc.Id, node.Content!)) { UseShellExecute = true });
             return Task.CompletedTask;
         });
-        var bar = new Border { Style = (Style)Application.Current.Resources["GlassCapsule"], Child = row, Visibility = Visibility.Collapsed };
+        return FloatingBar(row, PositionImageBar);
+    }
+
+    /// <summary>
+    /// A floating glass capsule over the canvas: the show / hide animation goes on the outer wrapper and the shadow's Z translation on
+    /// the inner capsule, like the prompt panel. With both on one element its hit-test bounds no longer matched where it was drawn,
+    /// so clicks on its buttons fell through to the canvas and cleared the selection.
+    /// </summary>
+    private Border FloatingBar(UIElement content, Action reposition)
+    {
+        var capsule = new Border { Style = (Style)Application.Current.Resources["GlassCapsule"], Child = content };
         var shadow = new ThemeShadow();
         shadow.Receivers.Add(Backdrop);
-        bar.Shadow = shadow;
-        bar.Translation = new Vector3(0, 0, 24);
+        capsule.Shadow = shadow;
+        capsule.Translation = new Vector3(0, 0, 24);
+        var bar = new Border { Child = capsule, Visibility = Visibility.Collapsed };
+        // Clicks on the bar must not start canvas gestures underneath.
         bar.PointerPressed += (_, e) => e.Handled = true;
         bar.DoubleTapped += (_, e) => e.Handled = true;
         bar.RightTapped += (_, e) => e.Handled = true;
-        bar.SizeChanged += (_, _) => PositionImageBar();
+        bar.SizeChanged += (_, _) => reposition();
         return bar;
     }
 
@@ -679,13 +699,39 @@ public sealed partial class CanvasView : UserControl
         return (a, a + new Vector2(dx, 0), d - new Vector2(dx, 0), d);
     }
 
-    /// <summary>Resolve every connection's endpoints through one id index instead of scanning the node list per connection.</summary>
-    private IEnumerable<(CanvasConnection Connection, CanvasNode From, CanvasNode To)> Links()
+    /// <summary>
+    /// Where each connection is drawn (null when an end is missing). A batch's members share their inputs, so an input the stack's lead
+    /// also has is drawn once, to the lead; members hidden under a collapsed lead draw from / to the lead. Only the drawing changes:
+    /// every member keeps its own connections for generation and retries.
+    /// </summary>
+    private Func<CanvasConnection, (CanvasNode From, CanvasNode To)?> LinkEnds()
     {
         var byId = new Dictionary<string, CanvasNode>();
-        foreach (var node in Doc.Nodes) byId.TryAdd(node.Id, node);
+        var leads = new Dictionary<string, CanvasNode>();
+        foreach (var node in Doc.Nodes)
+        {
+            byId.TryAdd(node.Id, node);
+            if (Stacks.Of(node) is { } stack) leads.TryAdd(stack, node);
+        }
+        var hidden = Stacks.Hidden(Doc);
+        var pairs = Doc.Connections.Select(c => (c.From, c.To)).ToHashSet();
+        CanvasNode Shown(CanvasNode node) => hidden.Contains(node) ? leads[Stacks.Of(node)!] : node;
+        return connection =>
+        {
+            if (!byId.TryGetValue(connection.From, out var from) || !byId.TryGetValue(connection.To, out var to)) return null;
+            var end = Shown(to);
+            if (Stacks.Of(to) is { } stack && leads[stack] is var lead && end != lead && pairs.Contains((connection.From, lead.Id))) end = lead;
+            return (Shown(from), end);
+        };
+    }
+
+    /// <summary>The lines on screen: one per distinct pair of drawn ends, keeping the first connection as its representative.</summary>
+    private IEnumerable<(CanvasConnection Connection, CanvasNode From, CanvasNode To)> Links()
+    {
+        var ends = LinkEnds();
+        var drawn = new HashSet<(CanvasNode, CanvasNode)>();
         foreach (var connection in Doc.Connections)
-            if (byId.TryGetValue(connection.From, out var from) && byId.TryGetValue(connection.To, out var to)) yield return (connection, from, to);
+            if (ends(connection) is { } line && line.From != line.To && drawn.Add(line)) yield return (connection, line.From, line.To);
     }
 
     /// <summary>Box around a curve's control points (the curve always lies inside it), grown by <paramref name="pad"/>.</summary>
@@ -746,10 +792,12 @@ public sealed partial class CanvasView : UserControl
         var colors = new Dictionary<NodeKind, Color>();
         Color KindColor(NodeKind kind) => colors.TryGetValue(kind, out var c) ? c : colors[kind] = Alpha(Palette.Kind(kind, ActualTheme), 190);
         var visible = new Rect(-V.X / V.K, -V.Y / V.K, (sender.ActualWidth - V.X) / V.K, (sender.ActualHeight - V.Y) / V.K);
+        // A batch's shared inputs end at its lead, so selecting any member lights them up too.
+        var selectedStacks = Doc.Nodes.Where(n => _selected.Contains(n.Id)).Select(Stacks.Of).OfType<string>().ToHashSet();
         foreach (var (connection, from, to) in Links())
         {
             if (!visible.Intersects(Hull(Out(from), In(to), stroke * 2))) continue;
-            var highlighted = connection.Id == _selectedConnection || _selected.Contains(from.Id) || _selected.Contains(to.Id);
+            var highlighted = connection.Id == _selectedConnection || _selected.Contains(from.Id) || _selected.Contains(to.Id) || Stacks.Of(to) is { } stack && selectedStacks.Contains(stack);
             using var geometry = Bezier(sender, Out(from), In(to));
             if (highlighted) ds.DrawGeometry(geometry, _accent, stroke * 1.5f);
             else
@@ -1070,7 +1118,10 @@ public sealed partial class CanvasView : UserControl
         if (_selectedConnection is { } connectionId)
         {
             History.Record();
-            if (Doc.Connections.FirstOrDefault(c => c.Id == connectionId) is { } connection) Doc.Connections.Remove(connection);
+            // One line on screen can stand for the same input of every member in a batch; deleting it removes them all.
+            var ends = LinkEnds();
+            if (Doc.Connections.FirstOrDefault(c => c.Id == connectionId) is { } connection && ends(connection) is { } line)
+                foreach (var same in Doc.Connections.Where(c => ends(c) is { } other && other == line).ToList()) Doc.Connections.Remove(same);
             _selectedConnection = null;
             return;
         }
@@ -1082,6 +1133,7 @@ public sealed partial class CanvasView : UserControl
     /// <summary>Remove nodes with their connections and group membership, stopping their generations; the caller records history.</summary>
     public void DeleteNodes(IReadOnlyCollection<string> nodeIds)
     {
+        nodeIds = WithStacks(nodeIds);
         var removed = Doc.Nodes.Where(n => nodeIds.Contains(n.Id)).ToList();
         if (removed.Count == 0) return;
         Batch(() =>
@@ -1173,6 +1225,7 @@ public sealed partial class CanvasView : UserControl
     /// <summary>Release the members of groups among the ids, and the ids that sit in a group; empty groups go away. The caller records history.</summary>
     public List<CanvasNode> UngroupNodes(IReadOnlyCollection<string> ids)
     {
+        ids = WithStacks(ids);
         var groups = Doc.Nodes.Where(n => ids.Contains(n.Id) && n.Kind == NodeKind.Group).Select(n => n.Id).ToHashSet();
         var released = Doc.Nodes.Where(n => n.GroupId is not null && (groups.Contains(n.GroupId) || ids.Contains(n.Id))).ToList();
         var old = released.Select(n => n.GroupId!).Concat(groups).ToHashSet();
@@ -1265,7 +1318,10 @@ public sealed partial class CanvasView : UserControl
             _selectedConnection = connection.Id;
             Backdrop.Invalidate();
             var connectionMenu = new MenuFlyout();
-            connectionMenu.Items.Add(Item("删除连线", "", DeleteSelection, "Delete"));
+            var ends = LinkEnds();
+            var line = ends(connection);
+            var count = Doc.Connections.Count(c => line is not null && ends(c) == line);
+            connectionMenu.Items.Add(Item(count > 1 ? $"删除这一批的输入（{count} 条连线）" : "删除连线", "", DeleteSelection, "Delete"));
             connectionMenu.ShowAt(Root, new FlyoutShowOptions { Position = position });
             return;
         }
@@ -1305,13 +1361,13 @@ public sealed partial class CanvasView : UserControl
             menu.Items.Add(Item("在资源管理器中显示", "", () => Process.Start("explorer.exe", $"/select,\"{path}\"")));
             if (node.Kind == NodeKind.Image && MarkSupport(node) is var (mask, points) && (mask || points))
                 menu.Items.Insert(0, Item(mask ? "局部重绘（涂抹蒙版）…" : "局部编辑（点选 / 框选）…", "", () => EditMarksAsync(node)));
-            if (node.Kind == NodeKind.Image) menu.Items.Add(Item("本地放大…", "", () => UpscaleAsync(node)));
+            if (node.Kind == NodeKind.Image) menu.Items.Add(Item("本地放大…", "", () => TrackLocalAsync(() => UpscaleAsync(node))));
             if (node.Kind == NodeKind.Image)
             {
-                menu.Items.Add(Item("裁剪…", "\uE7A8", () => ImageTools.CropAsync(this, node)));
-                menu.Items.Add(Item("拆分…", "\uF0E2", () => ImageTools.SplitAsync(this, node)));
-                menu.Items.Add(Item("多角度…", "\uE89E", () => ImageTools.AngleAsync(this, node)));
-                menu.Items.Add(Item("反推提示词", "\uE8FD", () => ImageTools.ReversePromptAsync(this, node)));
+                menu.Items.Add(Item("裁剪…", "\uE7A8", () => TrackLocalAsync(() => ImageTools.CropAsync(this, node))));
+                menu.Items.Add(Item("拆分…", "\uF0E2", () => TrackLocalAsync(() => ImageTools.SplitAsync(this, node))));
+                menu.Items.Add(Item("多角度…", "\uE89E", () => TrackLocalAsync(() => ImageTools.AngleAsync(this, node))));
+                menu.Items.Add(Item("反推提示词", "\uE8FD", () => TrackLocalAsync(() => ImageTools.ReversePromptAsync(this, node))));
             }
             menu.Items.Add(Item("另存为…", "", () => SaveAsAsync(node, path)));
             menu.Items.Add(Item("加入资料库", "", () => AddToLibraryAsync(node, path)));
@@ -1533,6 +1589,7 @@ public sealed partial class CanvasView : UserControl
 
     private async Task PasteAsync(Point world)
     {
+        if (IsClosing) return;
         // The clipboard can be locked by another app; read everything before adding a node so a failure leaves none behind.
         try
         {
@@ -1544,25 +1601,28 @@ public sealed partial class CanvasView : UserControl
             }
             else if (content.Contains(StandardDataFormats.Bitmap))
             {
-                var reference = await content.GetBitmapAsync();
-                using var source = await reference.OpenReadAsync();
-                // Bitmaps from Win32 apps (screenshots, browsers, Office) usually arrive as BMP; re-encode so the bytes match image/png.
-                var decoder = await BitmapDecoder.CreateAsync(source);
-                using var pixels = await decoder.GetSoftwareBitmapAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Straight);
-                using var png = new InMemoryRandomAccessStream();
-                var encoder = await BitmapEncoder.CreateAsync(BitmapEncoder.PngEncoderId, png);
-                encoder.SetSoftwareBitmap(pixels);
-                await encoder.FlushAsync();
-                using var memory = new MemoryStream();
-                await png.GetInputStreamAt(0).AsStreamForRead().CopyToAsync(memory);
-                var bytes = memory.ToArray();
-                var asset = ProjectStore.SaveAsset(Doc.Id, bytes, "image/png");
-                await FillMediaAsync(AddNode(NodeKind.Image, world), asset, "image/png", bytes);
+                await TrackLocalAsync(async () =>
+                {
+                    var reference = await content.GetBitmapAsync();
+                    using var source = await reference.OpenReadAsync();
+                    // Bitmaps from Win32 apps (screenshots, browsers, Office) usually arrive as BMP; re-encode so the bytes match image/png.
+                    var decoder = await BitmapDecoder.CreateAsync(source);
+                    using var pixels = await decoder.GetSoftwareBitmapAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Straight);
+                    using var png = new InMemoryRandomAccessStream();
+                    var encoder = await BitmapEncoder.CreateAsync(BitmapEncoder.PngEncoderId, png);
+                    encoder.SetSoftwareBitmap(pixels);
+                    await encoder.FlushAsync();
+                    using var memory = new MemoryStream();
+                    await png.GetInputStreamAt(0).AsStreamForRead().CopyToAsync(memory);
+                    var bytes = memory.ToArray();
+                    var asset = ProjectStore.SaveAsset(Doc.Id, bytes, "image/png");
+                    await FillMediaAsync(AddNode(NodeKind.Image, world), asset, "image/png", bytes);
+                });
             }
             else if (content.Contains(StandardDataFormats.Text))
             {
                 var text = await content.GetTextAsync();
-                AddNode(NodeKind.Text, world).Content = text;
+                if (!IsClosing) AddNode(NodeKind.Text, world).Content = text;
             }
         }
         catch (Exception ex)
@@ -1592,22 +1652,29 @@ public sealed partial class CanvasView : UserControl
         };
         foreach (var ext in extensions) picker.FileTypeFilter.Add(ext);
         WinRT.Interop.InitializeWithWindow.Initialize(picker, WinRT.Interop.WindowNative.GetWindowHandle(App.Window));
-        if (await picker.PickSingleFileAsync() is not { } file) return;
-        var (id, path) = (Doc.Id, file.Path);
-        string asset;
-        try { asset = await Task.Run(() => ProjectStore.ImportAsset(id, path)); }
-        catch (Exception ex)
+        if (await picker.PickSingleFileAsync() is not { } file || IsClosing || Doc.Find(node.Id) != node) return;
+        await TrackLocalAsync(async () =>
         {
-            App.Log(ex);
-            await Dialogs.MessageAsync("导入失败", ex.Message);
-            return;
-        }
-        History.Record();
-        await FillMediaAsync(node, asset, Media.MimeOf(path), null);
+            var (id, path) = (Doc.Id, file.Path);
+            string asset;
+            try { asset = await Task.Run(() => ProjectStore.ImportAsset(id, path)); }
+            catch (Exception ex)
+            {
+                App.Log(ex);
+                await Dialogs.MessageAsync("导入失败", ex.Message);
+                return;
+            }
+            if (Doc.Find(node.Id) != node) return;
+            History.Record();
+            await FillMediaAsync(node, asset, Media.MimeOf(path), null);
+        });
     }
 
     /// <summary>Import media files as new nodes from a world point; returns the new node IDs.</summary>
-    public async Task<List<string>> ImportFilesAsync(IReadOnlyList<string> paths, Point world)
+    public Task<List<string>> ImportFilesAsync(IReadOnlyList<string> paths, Point world) => IsClosing
+        ? Task.FromResult(new List<string>()) : TrackLocalAsync(() => ImportFilesCoreAsync(paths, world));
+
+    private async Task<List<string>> ImportFilesCoreAsync(IReadOnlyList<string> paths, Point world)
     {
         var id = Doc.Id;
         var failed = new List<string>();
@@ -1673,7 +1740,9 @@ public sealed partial class CanvasView : UserControl
         return (resolved.Channel.Vendor == Vendor.OpenAI && family?.Mask == true, family?.Interactive == true);
     }
 
-    public async Task EditMarksAsync(CanvasNode node)
+    public Task EditMarksAsync(CanvasNode node) => IsClosing ? Task.CompletedTask : TrackLocalAsync(() => EditMarksCoreAsync(node));
+
+    private async Task EditMarksCoreAsync(CanvasNode node)
     {
         var (allowMask, allowPoints) = MarkSupport(node);
         if (!allowMask && !allowPoints)

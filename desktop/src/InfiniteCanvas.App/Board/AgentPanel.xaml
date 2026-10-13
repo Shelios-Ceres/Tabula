@@ -16,13 +16,15 @@
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <ComboBox x:Name="AgentPicker" HorizontalAlignment="Stretch" SelectionChanged="AgentPicker_SelectionChanged" AutomationProperties.Name="选择 Agent" />
-                <Button Grid.Column="1" Style="{StaticResource ToolbarButton}" Padding="9,7" Click="NewChat_Click" ToolTipService.ToolTip="新对话" AutomationProperties.Name="新对话">
+                <Button x:Name="NewChatButton" Grid.Column="1" Style="{StaticResource ToolbarButton}" Padding="9,7" Click="NewChat_Click" ToolTipService.ToolTip="新对话" AutomationProperties.Name="新对话">
                     <FontIcon Glyph="&#xE710;" FontSize="13" />
                 </Button>
             </Grid>
-            <ScrollViewer x:Name="Scroller" Grid.Row="1" HorizontalScrollMode="Disabled" VerticalScrollBarVisibility="Auto" Padding="0,0,6,0" Margin="0,0,-6,0">
+            <ScrollViewer x:Name="Scroller" Grid.Row="1" HorizontalScrollMode="Disabled" VerticalScrollBarVisibility="Auto" Padding="0,0,6,0" Margin="0,0,-6,0" ViewChanged="Scroller_ViewChanged">
                 <StackPanel x:Name="Messages" Spacing="10" Padding="0,4" />
             </ScrollViewer>
+            <Button x:Name="LatestButton" Grid.Row="1" HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,8"
+                    Style="{StaticResource ActionButton}" Visibility="Collapsed" Content="回到最新" Click="Latest_Click" />
             <TextBlock x:Name="EmptyText" Grid.Row="1" TextWrapping="Wrap" TextAlignment="Center" VerticalAlignment="Center" Margin="20,0"
                        Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                        Text="让本机的 Agent 直接操作这张画布：读节点、加节点、连线、出图。&#x0a;例如：「把选中的图做成 3 个不同风格的版本」。" />

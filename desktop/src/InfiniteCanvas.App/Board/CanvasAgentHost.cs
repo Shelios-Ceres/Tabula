@@ -12,11 +12,12 @@ public sealed class CanvasAgentHost(CanvasView view) : ICanvasHost
 {
     public async Task<T> OnUiAsync<T>(Func<T> action)
     {
-        if (view.DispatcherQueue.HasThreadAccess) return action();
+        T Run() => view.IsClosing ? throw new McpException("画布正在关闭，请稍后重试") : action();
+        if (view.DispatcherQueue.HasThreadAccess) return Run();
         var done = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
         var queued = view.DispatcherQueue.TryEnqueue(() =>
         {
-            try { done.SetResult(action()); }
+            try { done.SetResult(Run()); }
             catch (Exception ex) { done.SetException(ex); }
         });
         if (!queued) throw new McpException("画布已经关闭");

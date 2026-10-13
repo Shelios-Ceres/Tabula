@@ -60,8 +60,9 @@ public sealed class AcpClient : IAsyncDisposable
     }
 
     /// <summary>Launch the agent from its command line and run the initialize handshake.</summary>
-    public static async Task<AcpClient> StartAsync(string commandLine, string cwd, IAcpClientHandler handler)
+    public static async Task<AcpClient> StartAsync(string commandLine, string cwd, IAcpClientHandler handler, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         var (file, args) = CommandLine.Parse(commandLine);
         var path = CommandLine.Resolve(file) ?? throw new AcpException($"找不到命令「{file}」，请确认已安装并在 PATH 中，或在设置里修改启动命令。");
         var info = new ProcessStartInfo(path)
@@ -80,7 +81,8 @@ public sealed class AcpClient : IAsyncDisposable
         _ = client.ReadStderrAsync(process.StandardError);
         try
         {
-            await client.InitializeAsync();
+            await client.InitializeAsync(ct);
+            ct.ThrowIfCancellationRequested();
             return client;
         }
         catch
@@ -90,7 +92,7 @@ public sealed class AcpClient : IAsyncDisposable
         }
     }
 
-    public async Task InitializeAsync()
+    public async Task InitializeAsync(CancellationToken ct = default)
     {
         var result = await CallAsync("initialize", new
         {
@@ -103,7 +105,7 @@ public sealed class AcpClient : IAsyncDisposable
                 auth = new { terminal = true },
             },
             clientInfo = new { name = "infinite-canvas", title = "无限画布", version = "0.1.0" },
-        });
+        }, ct);
         if (result.TryGetProperty("protocolVersion", out var version) && version.GetInt32() != ProtocolVersion)
             throw new AcpException($"Agent 使用的 ACP 协议版本 {version.GetInt32()} 不受支持（客户端支持版本 {ProtocolVersion}）");
         AgentCapabilities = result.TryGetProperty("agentCapabilities", out var capabilities) ? capabilities.Clone() : default;
@@ -116,19 +118,19 @@ public sealed class AcpClient : IAsyncDisposable
             : [];
     }
 
-    public Task AuthenticateAsync(string methodId) => CallAsync("authenticate", new { methodId });
+    public Task AuthenticateAsync(string methodId, CancellationToken ct = default) => CallAsync("authenticate", new { methodId }, ct);
 
     /// <summary>Create a session rooted at an absolute working directory, with MCP servers the agent should connect to.</summary>
-    public async Task<string> NewSessionAsync(string cwd, IEnumerable<object> mcpServers)
+    public async Task<string> NewSessionAsync(string cwd, IEnumerable<object> mcpServers, CancellationToken ct = default)
     {
-        var result = await CallAsync("session/new", new { cwd, mcpServers = mcpServers.ToArray() });
+        var result = await CallAsync("session/new", new { cwd, mcpServers = mcpServers.ToArray() }, ct);
         return Str(result, "sessionId") ?? throw new AcpException("Agent 没有返回会话 ID");
     }
 
     /// <summary>Run one prompt turn; updates stream through the handler meanwhile. Returns the stop reason.</summary>
-    public async Task<string> PromptAsync(string sessionId, IReadOnlyList<object> prompt)
+    public async Task<string> PromptAsync(string sessionId, IReadOnlyList<object> prompt, CancellationToken ct = default)
     {
-        var result = await CallAsync("session/prompt", new { sessionId, prompt });
+        var result = await CallAsync("session/prompt", new { sessionId, prompt }, ct);
         return Str(result, "stopReason") ?? "end_turn";
     }
 
@@ -140,9 +142,11 @@ public sealed class AcpClient : IAsyncDisposable
         get { lock (_stderr) return string.Join("\n", _stderr); }
     }
 
-    private async Task<JsonElement> CallAsync(string method, object parameters)
+    private async Task<JsonElement> CallAsync(string method, object parameters, CancellationToken ct = default)
     {
-        try { return await _rpc.InvokeWithParameterObjectAsync<JsonElement>(method, parameters); }
+        ct.ThrowIfCancellationRequested();
+        // Cancels this wait only; the panel disposes interrupted setup, and live turns use session/cancel.
+        try { return await _rpc.InvokeWithParameterObjectAsync<JsonElement>(method, parameters).WaitAsync(ct); }
         catch (RemoteInvocationException ex) { throw new AcpException(ex.Message, ex.ErrorCode); }
         catch (ConnectionLostException)
         {

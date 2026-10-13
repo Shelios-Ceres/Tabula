@@ -95,6 +95,56 @@ public class ProviderTests
         Assert.Equal("简短", (string?)json["instructions"]);
     }
 
+    [Theory]
+    [InlineData(Vendor.OpenAI, false)]
+    [InlineData(Vendor.OpenAI, true)]
+    [InlineData(Vendor.XAI, false)]
+    [InlineData(Vendor.XAI, true)]
+    public async Task Responses_text_requires_completed_even_after_done_or_eof(Vendor vendor, bool done)
+    {
+        var events = new List<string> { """data: {"type":"response.output_text.delta","delta":"尚未完成"}""" };
+        if (done) events.Add("data: [DONE]");
+        var (provider, _) = Create(vendor, (_, _) => Sse(events.ToArray()));
+        var deltas = new List<string>();
+        var error = await Assert.ThrowsAsync<ApiException>(() => provider.GenerateTextAsync(new TextRequest("text-model", "继续", []), deltas.Add, default));
+        Assert.Contains("完成前中断", error.Message);
+        Assert.Equal(["尚未完成"], deltas);
+        Assert.Equal(default(TokenUsage), provider.Tokens);
+    }
+
+    [Theory]
+    [InlineData(Vendor.OpenAI)]
+    [InlineData(Vendor.XAI)]
+    public async Task Responses_empty_stream_is_not_a_success(Vendor vendor)
+    {
+        var (provider, _) = Create(vendor, (_, _) => Sse());
+        await Assert.ThrowsAsync<ApiException>(() => provider.GenerateTextAsync(new TextRequest("text-model", "继续", []), null, default));
+    }
+
+    [Theory]
+    [InlineData(Vendor.OpenAI)]
+    [InlineData(Vendor.XAI)]
+    public async Task Responses_text_done_is_preserved_if_the_response_never_completes(Vendor vendor)
+    {
+        var (provider, _) = Create(vendor, (_, _) => Sse("""data: {"type":"response.output_text.done","text":"已收到的正文"}"""));
+        var deltas = new List<string>();
+        await Assert.ThrowsAsync<ApiException>(() => provider.GenerateTextAsync(new TextRequest("text-model", "继续", []), deltas.Add, default));
+        Assert.Equal(["已收到的正文"], deltas);
+    }
+
+    [Theory]
+    [InlineData(Vendor.OpenAI)]
+    [InlineData(Vendor.XAI)]
+    public async Task Responses_completed_finishes_without_waiting_for_stream_eof(Vendor vendor)
+    {
+        var (provider, _) = Create(vendor, (_, _) => Sse(
+            """data: {"type":"response.output_text.delta","delta":"完成"}""",
+            """data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":2,"output_tokens":3}}}""",
+            """data: {"type":"error","message":"完成后的无关数据"}"""));
+        Assert.Equal("完成", await provider.GenerateTextAsync(new TextRequest("text-model", "继续", []), null, default));
+        Assert.Equal(new TokenUsage(2, 3), provider.Tokens);
+    }
+
     [Fact]
     public async Task Google_interactions_wraps_user_input_and_reads_steps()
     {
@@ -139,6 +189,33 @@ public class ProviderTests
         var result = await provider.GenerateImageAsync(Image("doubao-seedream-5-0-260128", count: 2, options: new() { Stream = true }), null, default);
         Assert.Single(result.Images);
         Assert.Equal(["失败"], result.Errors);
+    }
+
+    [Fact]
+    public async Task Ark_stream_delivers_finished_images_before_a_later_failure()
+    {
+        var (provider, _) = Create(Vendor.Ark, (_, _) => Sse(
+            $$"""data: {"type":"image_generation.partial_succeeded","image_index":0,"b64_json":"{{Png}}"}""",
+            """data: {"type":"error","error":{"message":"后续图片失败"}}"""));
+        var events = new List<ImageEvent>();
+        await Assert.ThrowsAsync<ApiException>(() => provider.GenerateImageAsync(Image("doubao-seedream-5-0-260128", count: 2, options: new() { Stream = true }), new SyncProgress<ImageEvent>(events.Add), default));
+        var output = Assert.Single(events);
+        Assert.Equal(0, output.Index);
+        Assert.Null(output.Preview);
+        Assert.Equal(Convert.FromBase64String(Png), output.Output!.Bytes);
+    }
+
+    [Fact]
+    public async Task Ark_stream_keeps_the_finished_image_event_when_the_batch_is_cancelled()
+    {
+        var (provider, _) = Create(Vendor.Ark, (_, _) => Sse(
+            $$"""data: {"type":"image_generation.partial_succeeded","image_index":0,"b64_json":"{{Png}}"}""",
+            """data: {"type":"image_generation.completed"}"""));
+        using var stop = new CancellationTokenSource();
+        var events = new List<ImageEvent>();
+        var progress = new SyncProgress<ImageEvent>(value => { events.Add(value); if (value.Output is not null) stop.Cancel(); });
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => provider.GenerateImageAsync(Image("doubao-seedream-5-0-260128", count: 2, options: new() { Stream = true }), progress, stop.Token));
+        Assert.Equal(Convert.FromBase64String(Png), Assert.Single(events).Output!.Bytes);
     }
 
     [Fact]

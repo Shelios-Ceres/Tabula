@@ -22,13 +22,14 @@ public sealed partial class NodeView : UserControl
     public CanvasNode Node { get; }
     private readonly CanvasView _host;
     private bool _selected, _hover, _mediaRequested;
-    private (int Count, bool Open, bool Failed) _stack;
+    private (int Count, bool Open, int Completed, int Failed) _stack;
 
     private Image? _image, _previewImage;
     private FrameworkElement? _placeholder;
     private TextBlock? _configPrompt;
     private TextBox? _textBox;
     private MediaPlayerElement? _player;
+    private WebView2? _loader;
 
     public NodeView(CanvasNode node, CanvasView host)
     {
@@ -60,18 +61,18 @@ public sealed partial class NodeView : UserControl
     }
 
     /// <summary>Batch stack chrome: the deck and member count on a collapsed lead, 收起 on an opened lead, nothing on other cards.</summary>
-    public void SetStack(int count, bool open, bool failed)
+    public void SetStack(int count, bool open, int completed, int failed)
     {
         // Called on every realize (each pan frame); only real changes touch the visuals.
-        if (_stack == (count, open, failed)) return;
-        _stack = (count, open, failed);
+        if (_stack == (count, open, completed, failed)) return;
+        _stack = (count, open, completed, failed);
         var collapsed = count > 1 && !open;
         DeckBack1.Visibility = collapsed ? Visibility.Visible : Visibility.Collapsed;
         DeckBack2.Visibility = collapsed && count > 2 ? Visibility.Visible : Visibility.Collapsed;
         StackBadge.Visibility = count > 1 ? Visibility.Visible : Visibility.Collapsed;
-        StackIcon.Glyph = failed ? "" : collapsed ? "" : "";
-        StackText.Text = collapsed ? $"{count} 张" : "收起";
-        var tip = collapsed ? $"这一批共 {count} 个结果{(failed ? "，有失败的" : "")}，点击卡片展开" : "收起这一批";
+        StackIcon.Glyph = failed > 0 ? "" : collapsed ? "" : "";
+        StackText.Text = collapsed ? $"{completed}/{count} 完成" + (failed > 0 ? $" · {failed} 失败" : "") : "收起";
+        var tip = $"这一批共 {count} 个结果，已完成 {completed} 个，失败 {failed} 个；" + (collapsed ? "点击卡片展开" : "点击收起这一批");
         ToolTipService.SetToolTip(StackBadge, tip);
         AutomationProperties.SetName(StackBadge, tip);
     }
@@ -114,8 +115,50 @@ public sealed partial class NodeView : UserControl
 
     private bool IsMedia => Node.Kind is NodeKind.Image or NodeKind.Video;
 
+    /// <summary>Start a random waiting animation in the body (once per run); false when there is none to show.</summary>
+    private bool ShowLoader()
+    {
+        if (_loader is not null) return true;
+        if (Loaders.Pick() is not { } page) return false;
+        var view = _loader = new WebView2 { IsHitTestVisible = false, Margin = new Thickness(6), DefaultBackgroundColor = Microsoft.UI.Colors.Transparent };
+        Body.Children.Add(view);
+        _ = LoadAsync(view, page);
+        return true;
+    }
+
+    private async Task LoadAsync(WebView2 view, string page)
+    {
+        try
+        {
+            await view.EnsureCoreWebView2Async(await Loaders.Environment);
+            if (view != _loader) return;
+            view.CoreWebView2.SetVirtualHostNameToFolderMapping(Loaders.Host, Loaders.Folder, Microsoft.Web.WebView2.Core.CoreWebView2HostResourceAccessKind.Allow);
+            view.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
+            view.CoreWebView2.Settings.AreDevToolsEnabled = false;
+            view.Source = new Uri($"https://{Loaders.Host}/{Uri.EscapeDataString(page)}");
+        }
+        catch (Exception ex) when (view == _loader)
+        {
+            // No WebView2 runtime or a broken profile: log once and go back to the progress ring for every card.
+            App.Log(ex);
+            Loaders.Unavailable = true;
+            HideLoader();
+            SyncStatus();
+        }
+        catch (Exception) { /* Closed before it finished starting. */ }
+    }
+
+    private void HideLoader()
+    {
+        if (_loader is not { } view) return;
+        _loader = null;
+        Body.Children.Remove(view);
+        view.Close();
+    }
+
     public void Detach()
     {
+        HideLoader();
         Node.PropertyChanged -= Node_PropertyChanged;
         if (_player is not null)
         {
@@ -223,6 +266,7 @@ public sealed partial class NodeView : UserControl
         TitleText.Text = FloatingTitle.Text = Node.Title;
         SyncStatus();
         SyncContent();
+        SyncPreview();
         SyncConfig();
         UpdateChrome();
     }
@@ -263,8 +307,11 @@ public sealed partial class NodeView : UserControl
         var loading = Node.Status == NodeStatus.Loading;
         var failed = Node.Status == NodeStatus.Error && !string.IsNullOrEmpty(Node.Error);
         var paused = Node.Error is CanvasGenerator.Stopped or CanvasGenerator.Interrupted;
+        // An image being generated paints a waiting animation from the local loaders folder, with the small corner chip still spinning.
+        var painting = loading && Node.Kind == NodeKind.Image && !Node.HasContent && Node.Preview is null && ShowLoader();
+        if (!painting) HideLoader();
         // Empty cards explain the state in the middle; cards with content or a preview keep only the small corner chip.
-        var center = (loading || failed) && !Node.HasContent && Node.Preview is null;
+        var center = (loading || failed) && !Node.HasContent && Node.Preview is null && !painting;
         StatusView.Visibility = center ? Visibility.Visible : Visibility.Collapsed;
         BigBusy.IsActive = center && loading;
         BigBusy.Visibility = center && loading ? Visibility.Visible : Visibility.Collapsed;

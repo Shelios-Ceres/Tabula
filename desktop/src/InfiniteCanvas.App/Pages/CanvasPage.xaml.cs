@@ -16,7 +16,7 @@ public sealed partial class CanvasPage : Page
 {
     private CanvasDocument _doc = new();
     private DispatcherQueueTimer? _saveTimer;
-    private bool _dirty, _confirmingClose;
+    private bool _dirty, _confirmingClose, _preparedToLeave;
 
     public CanvasPage()
     {
@@ -137,27 +137,63 @@ public sealed partial class CanvasPage : Page
 
     private async void Window_Closing(AppWindow sender, AppWindowClosingEventArgs args)
     {
-        if (Board.Generator.RunningCount == 0) return;
+        if (_preparedToLeave) return;
         args.Cancel = true;
         // Repeated close clicks while the dialog is open must not queue more copies; a minimized window shows it only once restored.
         if (_confirmingClose) return;
-        _confirmingClose = true;
         if (sender.Presenter is OverlappedPresenter { State: OverlappedPresenterState.Minimized } presenter) presenter.Restore();
-        try { if (!await Board.ConfirmLeaveAsync()) return; }
-        finally { _confirmingClose = false; }
-        sender.Closing -= Window_Closing;
-        App.Window.Close();
+        if (await PrepareLeaveAsync()) App.Window.Close();
     }
 
-    /// <summary>Stop generations and save; then, only when nothing can still write a result, drop asset files no node uses — the undo history that could bring them back ends here.</summary>
+    /// <summary>Keep the page and its save subscription alive until all writers settle and the final save succeeds.</summary>
+    public async Task<bool> PrepareLeaveAsync()
+    {
+        if (_preparedToLeave) return true;
+        if (_confirmingClose) return false;
+        _confirmingClose = true;
+        try
+        {
+            if (!SaveNow()) { await ShowSaveFailureAsync(); return false; }
+            if (!await Board.ConfirmLeaveAsync()) return false;
+            IsEnabled = false;
+            _saveTimer?.Stop();
+            SaveState.Text = "正在保存并结束当前操作…";
+            SharedCanvasHost.Open = null;
+            await Task.WhenAll(Board.PrepareLeaveAsync(), Agent.ShutdownAsync());
+            if (!SaveNow()) { await ShowSaveFailureAsync(); return false; }
+            _preparedToLeave = true;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            App.Log(ex);
+            await Dialogs.MessageAsync("暂时无法离开画布", ex.Message);
+            return false;
+        }
+        finally
+        {
+            if (!_preparedToLeave)
+            {
+                IsEnabled = true;
+                if (Board.IsClosing)
+                {
+                    Board.ResumeAfterCancelledLeave();
+                    Agent.ResumeAfterCancelledLeave();
+                }
+                SharedCanvasHost.Open = new CanvasAgentHost(Board);
+            }
+            _confirmingClose = false;
+        }
+    }
+
+    private static Task ShowSaveFailureAsync() => Dialogs.MessageAsync("画布尚未保存", "保存失败，画布仍为你保留。请检查磁盘空间和文件权限，然后点击保存状态重试；保存成功后再离开。");
+
+    /// <summary>Only prune after the final save and all pending writers, including imports, have finished.</summary>
     private void Leave()
     {
         _saveTimer?.Stop();
-        // Ends the agent process tree synchronously before the first await, so no agent outlives the canvas or the app.
-        _ = Agent.ShutdownAsync();
         SharedCanvasHost.Open = null;
-        Board.Generator.Shutdown();
-        if (SaveNow() && Board.Generator.RunningCount == 0 && _doc.Nodes.All(n => n.TaskId is null)) ProjectStore.PruneAssets(_doc);
+        if (_preparedToLeave && _doc.Nodes.All(n => n.TaskId is null)) ProjectStore.PruneAssets(_doc);
     }
 
     private void Board_Changed()
@@ -165,7 +201,7 @@ public sealed partial class CanvasPage : Page
         _dirty = true;
         SaveState.Text = "未保存";
         _saveTimer?.Stop();
-        _saveTimer?.Start();
+        if (!Board.IsClosing) _saveTimer?.Start();
         UpdateUndo();
     }
 
@@ -197,9 +233,14 @@ public sealed partial class CanvasPage : Page
 
     private async void Back_Click(object sender, RoutedEventArgs e)
     {
-        if (!await Board.ConfirmLeaveAsync()) return;
+        if (!await PrepareLeaveAsync()) return;
         if (Frame.CanGoBack) Frame.GoBack();
         else Frame.Navigate(typeof(ProjectsPage));
+    }
+
+    private async void Save_Click(object sender, RoutedEventArgs e)
+    {
+        if (!SaveNow()) await ShowSaveFailureAsync();
     }
 
     private async void Rename_Click(object sender, RoutedEventArgs e)

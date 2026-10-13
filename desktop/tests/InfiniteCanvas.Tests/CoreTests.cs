@@ -14,6 +14,21 @@ internal static class TestEnvironment
 
 public class CoreTests
 {
+    [Fact]
+    public void Collapsed_stack_selection_expands_all_members_but_open_members_stay_independent()
+    {
+        var doc = new CanvasDocument();
+        var first = CanvasNode.Create(NodeKind.Image, 0, 0);
+        var second = CanvasNode.Create(NodeKind.Image, 0, 0);
+        var other = CanvasNode.Create(NodeKind.Image, 0, 0);
+        foreach (var node in new[] { first, second, other }) doc.Nodes.Add(node);
+        Stacks.Form([first, second]);
+        Assert.True(Stacks.Expand(doc, [first.Id]).SetEquals([first.Id, second.Id]));
+        Assert.True(Stacks.Expand(doc, [second.Id, other.Id]).SetEquals([first.Id, second.Id, other.Id]));
+        foreach (var node in new[] { first, second }) node.SetOption(NodeKeys.StackOpen, "true");
+        Assert.True(Stacks.Expand(doc, [first.Id]).SetEquals([first.Id]));
+    }
+
     [Theory]
     [InlineData("default::gpt-image-2.5-flare", "gpt-image-2.5-flare")]
     [InlineData("models/gemini-3-pro-image-preview", "gemini-3-pro-image")]

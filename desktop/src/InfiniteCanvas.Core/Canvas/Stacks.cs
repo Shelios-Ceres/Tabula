@@ -13,6 +13,15 @@ public static class Stacks
 
     public static List<CanvasNode> Members(CanvasDocument doc, string id) => doc.Nodes.Where(n => n.Option(NodeKeys.Stack) == id).ToList();
 
+    /// <summary>Selection operations on a collapsed stack include every member; opened members remain independent.</summary>
+    public static HashSet<string> Expand(CanvasDocument doc, IEnumerable<string> ids)
+    {
+        var result = ids.ToHashSet();
+        foreach (var node in doc.Nodes.Where(n => result.Contains(n.Id) && Of(n) is not null && !IsOpen(n)).ToList())
+            foreach (var member in Members(doc, Of(node)!)) result.Add(member.Id);
+        return result;
+    }
+
     /// <summary>Members of collapsed stacks other than their lead, in one pass over the document.</summary>
     public static HashSet<CanvasNode> Hidden(CanvasDocument doc)
     {

@@ -21,22 +21,61 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
     public const string Stopped = "已停止生成", Interrupted = "生成已中断";
 
     private readonly Dictionary<string, CancellationTokenSource> _running = [];
-    private readonly HashSet<string> _starting = [];
+    private readonly Dictionary<CancellationTokenSource, TaskCompletionSource> _pending = [];
     private bool _shuttingDown;
 
     public event Action? RunningChanged;
     /// <summary>Raised once new output nodes are placed and running, before the request is sent.</summary>
     public event Action<IReadOnlyList<CanvasNode>>? TargetsPrepared;
     /// <summary>Distinct generations in flight; a batch shares one token across its source and outputs.</summary>
-    public int RunningCount => _running.Values.Distinct().Count();
-    public bool IsRunning(string nodeId) => _running.ContainsKey(nodeId) || _starting.Contains(nodeId);
+    public int RunningCount => _pending.Count;
+    public bool IsRunning(string nodeId) => _running.ContainsKey(nodeId);
     public void Cancel(string nodeId) { if (_running.TryGetValue(nodeId, out var cts)) cts.Cancel(); }
 
     /// <summary>Leaving the canvas: stop requests but keep vendor task IDs so polling resumes next time.</summary>
     public void Shutdown()
     {
         _shuttingDown = true;
-        foreach (var cts in _running.Values) cts.Cancel();
+        foreach (var cts in _pending.Keys.ToList()) cts.Cancel();
+    }
+
+    /// <summary>Wait for preprocessing, cancelled requests and received results to finish before the page's final save.</summary>
+    public Task ShutdownAsync()
+    {
+        Shutdown();
+        return Task.WhenAll(_pending.Values.Select(done => done.Task));
+    }
+
+    public void ResumeAfterCancelledLeave()
+    {
+        _shuttingDown = false;
+        ResumeTasks();
+    }
+
+    private CancellationTokenSource Begin(params CanvasNode[] nodes)
+    {
+        var cts = new CancellationTokenSource();
+        _pending.Add(cts, new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously));
+        foreach (var node in nodes) _running[node.Id] = cts;
+        RunningChanged?.Invoke();
+        return cts;
+    }
+
+    private void Finish(CancellationTokenSource cts)
+    {
+        var done = _pending[cts];
+        foreach (var id in _running.Where(pair => pair.Value == cts).Select(pair => pair.Key).ToList()) _running.Remove(id);
+        _pending.Remove(cts);
+        try
+        {
+            RunningChanged?.Invoke();
+            changed();
+        }
+        finally
+        {
+            cts.Dispose();
+            done.TrySetResult();
+        }
     }
 
     public static Capability CapabilityOf(CanvasNode node) => node.Kind switch
@@ -92,7 +131,7 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
 
     private async Task RunAsync(CanvasNode source, CanvasNode? retry)
     {
-        if (IsRunning(source.Id) || retry is not null && IsRunning(retry.Id) || !CanGenerate(source)) return;
+        if (_shuttingDown || doc.Find(source.Id) != source || IsRunning(source.Id) || retry is not null && IsRunning(retry.Id) || !CanGenerate(source)) return;
         var capability = CapabilityOf(source);
         var settings = SettingsStore.Current;
         source.Model = settings.ModelFor(capability, source.Model);
@@ -125,53 +164,59 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
             await Dialogs.MessageAsync("请先输入要朗读的文字", "在提示词框里输入要朗读的文字，或连接文本节点作为输入。");
             return;
         }
-        // A missing or unreadable reference stops here, before anything is recorded or any output node is created.
-        var images = new List<MediaInput>();
-        // Decoding yields the UI thread, so the node counts as running until it is registered below.
-        _starting.Add(source.Id);
-        var shrunk = new List<string>();
-        try
-        {
-            List<GenerationResource> references = audio ? [] : resources.Where(r => r.Type == NodeKind.Image).ToList();
-            var limit = ReferenceLimits.For(channel.Vendor);
-            for (var i = 0; i < references.Count; i++)
-            {
-                var (input, note) = await LoadAsync(references[i].Node, limit, references.Count);
-                images.Add(input);
-                if (note is not null) shrunk.Add($"图片{i + 1}：{note}");
-            }
-        }
-        catch (Exception ex)
-        {
-            App.Log(ex);
-            await Dialogs.MessageAsync("读取参考图片失败", $"上游图片文件丢失、无法读取或无法压缩到服务商上限内：{ex.Message}");
-            return;
-        }
-        finally { _starting.Remove(source.Id); }
-        // Layer decomposition (Seedream 5.0 pro / flash only) always yields one base image plus its layers.
-        var layers = capability == Capability.Image && source.Option("layers") == "true" && ModelFamilies.FindImage(channel.Vendor, model.Name)?.Layers == true;
-        var count = capability != Capability.Image || layers ? 1 : Math.Clamp(source.Count, 1, 15);
-
-        recordHistory();
-        var targets = retry is null ? PrepareTargets(source, capability, count) : [Restart(retry)];
-        var inputNote = shrunk.Count > 0 ? $"超过服务商上限的参考图已压缩后发送（原图未改动）：{string.Join("；", shrunk)}" : null;
-        foreach (var target in targets) target.SetOption(NodeKeys.InputNote, inputNote);
-        // The whole batch shares one token: every output shows 停止, and stopping or deleting any of them cancels the batch.
-        var cts = new CancellationTokenSource();
-        _running[source.Id] = cts;
-        foreach (var target in targets) _running[target.Id] = cts;
-        RunningChanged?.Invoke();
-        if (targets.Any(t => t != source)) TargetsPrepared?.Invoke(targets);
-        changed();
+        // Keep this request's settings independent of edits made while references or the provider are still working.
+        var snapshot = source.Clone();
+        var systemPrompt = settings.SystemPrompt;
+        var imageOptions = ImageOptionsOf(snapshot, ModelFamilies.FindImage(channel.Vendor, model.Name), channel);
+        var references = audio ? [] : resources.Where(r => r.Type == NodeKind.Image).Select(r => r.Node.Clone()).ToList();
         var provider = AiProvider.For(channel, App.Http);
-        var started = DateTime.Now;
+        var cts = retry is null ? Begin(source) : Begin(source, retry);
+        var targets = new List<CanvasNode>();
+        var images = new List<MediaInput>();
+        var shrunk = new List<string>();
+        DateTime? started = null;
         try
         {
+            // A missing reference stops before history or output nodes are created; preprocessing is cancellable too.
+            try
+            {
+                var limit = ReferenceLimits.For(channel.Vendor);
+                for (var i = 0; i < references.Count; i++)
+                {
+                    var (input, note) = await LoadAsync(references[i], limit, references.Count, cts.Token);
+                    images.Add(input);
+                    if (note is not null) shrunk.Add($"图片{i + 1}：{note}");
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                App.Log(ex);
+                if (!cts.IsCancellationRequested)
+                    await Dialogs.MessageAsync("读取参考图片失败", $"上游图片文件丢失、无法读取或无法压缩到服务商上限内：{ex.Message}");
+                return;
+            }
+            cts.Token.ThrowIfCancellationRequested();
+            if (_shuttingDown || doc.Find(source.Id) != source || retry is not null && doc.Find(retry.Id) != retry) return;
+            // Layer decomposition yields one base image plus its layers.
+            var count = capability != Capability.Image || imageOptions.LayerDecomposition ? 1 : Math.Clamp(snapshot.Count, 1, 15);
+            recordHistory();
+            targets = retry is null ? PrepareTargets(source, snapshot, capability, count) : [Restart(retry)];
+            if (retry is not null) CopySettings(snapshot, retry);
+            var inputNote = shrunk.Count > 0 ? $"超过服务商上限的参考图已压缩后发送（原图未改动）：{string.Join("；", shrunk)}" : null;
+            foreach (var target in targets)
+            {
+                target.SetOption(NodeKeys.InputNote, inputNote);
+                _running[target.Id] = cts;
+            }
+            RunningChanged?.Invoke();
+            if (targets.Any(t => t != source)) TargetsPrepared?.Invoke(targets);
+            changed();
+            started = DateTime.Now;
             switch (capability)
             {
-                case Capability.Image: await RunImageAsync(provider, channel, model, source, prompt, images, targets, cts.Token); break;
-                case Capability.Audio: await RunAudioAsync(provider, model, source, prompt, targets[0], cts.Token); break;
-                default: await RunTextAsync(provider, channel, model, source, prompt, images, targets[0], cts.Token); break;
+                case Capability.Image: await RunImageAsync(provider, channel, model, snapshot, imageOptions, prompt, images, targets, cts.Token); break;
+                case Capability.Audio: await RunAudioAsync(provider, model, snapshot, prompt, targets[0], cts.Token); break;
+                default: await RunTextAsync(provider, channel, model, snapshot, systemPrompt, prompt, images, targets[0], cts.Token); break;
             }
         }
         catch (OperationCanceledException)
@@ -179,7 +224,7 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
             if (!_shuttingDown) CancelTasks(provider, targets);
             Fail(targets, _shuttingDown ? Interrupted : Stopped, keepTask: _shuttingDown);
         }
-        catch (Exception ex) when (targets[0].TaskId is not null && Http.Transient(ex))
+        catch (Exception ex) when (targets.FirstOrDefault()?.TaskId is not null && Http.Transient(ex))
         {
             KeepTask(targets[0], ErrorText(ex, null));
         }
@@ -189,16 +234,15 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
         }
         finally
         {
-            _running.Remove(source.Id);
-            foreach (var target in targets) _running.Remove(target.Id);
-            // The local usage ledger counts only results that arrived (including the finished part of a stopped batch), plus every token the vendor reported.
-            var success = targets.Count(t => t.Status == NodeStatus.Success);
-            UsageStore.Record(channel.Id, model.Name, capability, success, provider.Tokens);
-            // Image runs also tell the pre-generation estimate what one picture with these settings cost; Responses reports only the mainline model's tokens.
-            if (capability == Capability.Image && success > 0 && provider.Tokens.Total > 0 && source.Option("openaiApi", "images") != "responses")
-                UsageStore.RememberImage(Prices.ImageKey(model.Name, source), provider.Tokens.Per(success));
-            RunningChanged?.Invoke();
-            changed();
+            try
+            {
+                // Count finished pictures even when the rest of their batch was stopped.
+                var success = targets.Count(t => t.Status == NodeStatus.Success);
+                UsageStore.Record(channel.Id, model.Name, capability, success, provider.Tokens);
+                if (capability == Capability.Image && success > 0 && provider.Tokens.Total > 0 && snapshot.Option("openaiApi", "images") != "responses")
+                    UsageStore.RememberImage(Prices.ImageKey(model.Name, snapshot), provider.Tokens.Per(success));
+            }
+            finally { Finish(cts); }
         }
     }
 
@@ -206,7 +250,7 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
     /// An empty node of the right kind receives the result itself and the rest become its siblings;
     /// otherwise outputs go to new nodes on the right, connected from the source.
     /// </summary>
-    private List<CanvasNode> PrepareTargets(CanvasNode source, Capability capability, int count)
+    private List<CanvasNode> PrepareTargets(CanvasNode source, CanvasNode settings, Capability capability, int count)
     {
         var kind = NodeSpec.KindOf(capability);
         var targets = new List<CanvasNode>();
@@ -219,11 +263,11 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
         while (targets.Count < count)
         {
             var node = CanvasNode.Create(kind, 0, 0);
-            CopySettings(source, node);
-            if (sibling) node.Prompt = source.Prompt;
+            CopySettings(settings, node);
+            if (sibling) node.Prompt = settings.Prompt;
             if (kind == NodeKind.Image)
             {
-                var aspect = ModelFamilies.AspectOf(source.Ratio is null or "auto" ? "1:1" : source.Ratio);
+                var aspect = ModelFamilies.AspectOf(settings.Ratio is null or "auto" ? "1:1" : settings.Ratio);
                 node.Height = Math.Clamp(node.Width / aspect, 120, 640);
             }
             node.Y = y;
@@ -303,7 +347,8 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
     /// </summary>
     private static string ErrorText(Exception ex, DateTime? started)
     {
-        if (ex is ApiException) return ex.Message;
+        if (ex is ApiException api)
+            return string.Join("\n", new[] { api.Message, api.Status > 0 ? $"HTTP {api.Status}" : null, api.RequestId is { Length: > 0 } id ? $"Request ID：{id}" : null }.OfType<string>());
         App.Log(ex);
         if (ex is not (HttpRequestException or IOException)) return ex.Message;
         var causes = new List<string>();
@@ -319,9 +364,9 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
     /// A picture over the vendor's documented byte or pixel limit is re-encoded just under it: JPEG 95 at full size first,
     /// a smaller size only when that is still too big. Returns a note describing any shrinking.
     /// </summary>
-    private async Task<(MediaInput Input, string? Note)> LoadAsync(CanvasNode node, ReferenceLimit limit, int count)
+    private async Task<(MediaInput Input, string? Note)> LoadAsync(CanvasNode node, ReferenceLimit limit, int count, CancellationToken ct)
     {
-        // Synchronous read: a PNG / JPEG / WebP within limits never yields, so the run registers in _running without a gap for a second click.
+        ct.ThrowIfCancellationRequested();
         var bytes = File.ReadAllBytes(ProjectStore.AssetPath(doc.Id, node.Content!));
         var mime = node.MimeType ?? Media.MimeOf(node.Content!);
         var (budget, pixelBudget) = (ReferenceLimits.Budget(limit, count), ReferenceLimits.PixelBudget(limit));
@@ -329,21 +374,25 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
         if (supported && bytes.Length <= budget && pixelBudget == long.MaxValue) return (new(bytes, mime), null);
         using var input = new MemoryStream(bytes);
         var decoder = await BitmapDecoder.CreateAsync(input.AsRandomAccessStream());
+        ct.ThrowIfCancellationRequested();
         var (width, height) = ((int)decoder.OrientedPixelWidth, (int)decoder.OrientedPixelHeight);
         if (!supported)
         {
             using var pixels = await decoder.GetSoftwareBitmapAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Straight);
+            ct.ThrowIfCancellationRequested();
             using var output = new MemoryStream();
             var encoder = await BitmapEncoder.CreateAsync(BitmapEncoder.PngEncoderId, output.AsRandomAccessStream());
+            ct.ThrowIfCancellationRequested();
             encoder.SetSoftwareBitmap(pixels);
             await encoder.FlushAsync();
+            ct.ThrowIfCancellationRequested();
             (bytes, mime) = (output.ToArray(), "image/png");
         }
         if (bytes.Length <= budget && (long)width * height <= pixelBudget) return (new(bytes, mime), null);
         var scale = Math.Min(1, Math.Sqrt((double)pixelBudget / ((long)width * height)));
         for (var attempt = 0; attempt < 8; attempt++)
         {
-            var jpeg = await EncodeJpegAsync(decoder, scale);
+            var jpeg = await EncodeJpegAsync(decoder, scale, ct);
             if (jpeg.Length <= budget)
             {
                 var resized = scale < 1 ? $"{width}×{height} → {(int)Math.Round(width * scale)}×{(int)Math.Round(height * scale)}" : "分辨率不变";
@@ -355,7 +404,7 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
         throw new InvalidOperationException($"压缩后仍超过 {budget / 1e6:0.0}MB 上限");
     }
 
-    private static async Task<byte[]> EncodeJpegAsync(BitmapDecoder decoder, double scale)
+    private static async Task<byte[]> EncodeJpegAsync(BitmapDecoder decoder, double scale, CancellationToken ct)
     {
         var transform = new BitmapTransform
         {
@@ -364,16 +413,20 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
             InterpolationMode = BitmapInterpolationMode.Fant,
         };
         using var pixels = await decoder.GetSoftwareBitmapAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied, transform, ExifOrientationMode.RespectExifOrientation, ColorManagementMode.ColorManageToSRgb);
+        ct.ThrowIfCancellationRequested();
         using var output = new MemoryStream();
         var quality = new BitmapPropertySet { ["ImageQuality"] = new BitmapTypedValue(0.95f, Windows.Foundation.PropertyType.Single) };
         var encoder = await BitmapEncoder.CreateAsync(BitmapEncoder.JpegEncoderId, output.AsRandomAccessStream(), quality);
+        ct.ThrowIfCancellationRequested();
         encoder.SetSoftwareBitmap(pixels);
         await encoder.FlushAsync();
+        ct.ThrowIfCancellationRequested();
         return output.ToArray();
     }
 
     private async Task FillAsync(CanvasNode node, byte[] bytes, string mimeType)
     {
+        if (doc.Find(node.Id) != node) return;
         var previous = node.Content;
         node.Content = ProjectStore.SaveAsset(doc.Id, bytes, mimeType);
         ProjectStore.TitleFromAsset(node, previous);
@@ -381,6 +434,7 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
         // Match the node to the real frame, e.g. an adaptive-ratio video or a ratio the model did not support.
         var (width, height) = mimeType.StartsWith("image/") ? await ImageSizeAsync(bytes)
             : mimeType.StartsWith("video/") ? await VideoSizeAsync(ProjectStore.AssetPath(doc.Id, node.Content)) : (0, 0);
+        if (doc.Find(node.Id) != node) return;
         if (width > 0 && height > 0)
         {
             node.NaturalWidth = width;
@@ -453,11 +507,34 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
         Seed = long.TryParse(node.Option("seed"), out var seed) ? seed : null,
     };
 
-    private async Task RunImageAsync(AiProvider provider, ModelChannel channel, ChannelModel model, CanvasNode source, string prompt, List<MediaInput> images, List<CanvasNode> targets, CancellationToken ct)
+    /// <summary>Serialize provider events on the UI thread; draining also waits for final images to reach disk.</summary>
+    private sealed class ImageProgress(DispatcherQueue ui, Func<ImageEvent, Task> apply) : IProgress<ImageEvent>
+    {
+        private readonly object _gate = new();
+        private Task _pending = Task.CompletedTask;
+
+        public Task DrainAsync() { lock (_gate) return _pending; }
+
+        public void Report(ImageEvent value)
+        {
+            lock (_gate)
+            {
+                var previous = _pending;
+                var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                _pending = done.Task;
+                if (!ui.TryEnqueue(async () =>
+                {
+                    try { await previous; await apply(value); done.TrySetResult(); }
+                    catch (Exception ex) { done.TrySetException(ex); }
+                })) done.TrySetException(new InvalidOperationException("画布已关闭，无法保存生成结果"));
+            }
+        }
+    }
+
+    private async Task RunImageAsync(AiProvider provider, ModelChannel channel, ChannelModel model, CanvasNode source, ImageOptions options, string prompt, List<MediaInput> images, List<CanvasNode> targets, CancellationToken ct)
     {
         var started = DateTime.Now;
         var family = ModelFamilies.FindImage(channel.Vendor, model.Name);
-        var options = ImageOptionsOf(source, family, channel);
         // Editing an image node: its own marks travel with the request (mask for GPT Image, points / boxes for Seedream).
         var editing = source.Kind == NodeKind.Image && source.HasContent;
         var mask = editing && channel.Vendor == Vendor.OpenAI && source.Option(NodeKeys.Mask) is { Length: > 0 } maskAsset && File.Exists(ProjectStore.AssetPath(doc.Id, maskAsset))
@@ -479,7 +556,7 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
         var groups = targets.Chunk(perRequest).ToList();
         await Task.WhenAll(groups.Select(async group =>
         {
-            var progress = new Progress<ImageEvent>(e =>
+            var progress = new ImageProgress(ui, async e =>
             {
                 // An OpenAI Responses background task: saved with the canvas so reopening it keeps polling.
                 if (e.TaskId is { } taskId && group[0].Status == NodeStatus.Loading)
@@ -489,12 +566,16 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
                     changed();
                 }
                 if (e.Preview is { } preview && group[0].Status == NodeStatus.Loading) group[0].Preview = preview.Bytes;
-                if (e.Output is { } output && e.Index >= 0 && e.Index < group.Length && group[e.Index].Status == NodeStatus.Loading) group[e.Index].Preview = output.Bytes;
+                // Output is a finished picture, unlike a preview: retain it even if later pictures fail or are cancelled.
+                if (e.Output is { } output && e.Index >= 0 && e.Index < group.Length && group[e.Index].Status == NodeStatus.Loading)
+                    await FillAsync(group[e.Index], output.Bytes, output.MimeType);
             });
             try
             {
                 var request = new ImageRequest(model.Name, prompt, images, mask, group.Length, options, model.EndpointId, selections, previousId.Length > 0 ? previousId : null);
-                var result = await provider.GenerateImageAsync(request, progress, ct);
+                ImageResult result;
+                try { result = await provider.GenerateImageAsync(request, progress, ct); }
+                finally { await progress.DrainAsync(); }
                 for (var i = 0; i < group.Length; i++)
                 {
                     if (i >= result.Images.Count)
@@ -507,14 +588,18 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                Fail(group, ErrorText(ex, started), false);
+                foreach (var node in group.Where(n => n.Status == NodeStatus.Loading))
+                    if (node.TaskId is not null && Http.Transient(ex)) KeepTask(node, ErrorText(ex, started));
+                    else Fail([node], ErrorText(ex, started), false);
             }
         }));
     }
 
     private async Task FillImageAsync(CanvasNode node, ImageResult result, int index, string? model)
     {
-        await FillAsync(node, result.Images[index].Bytes, result.Images[index].MimeType);
+        if (doc.Find(node.Id) != node) return;
+        if (node.Status == NodeStatus.Loading) await FillAsync(node, result.Images[index].Bytes, result.Images[index].MimeType);
+        if (node.Status != NodeStatus.Success) return;
         node.TaskId = null;
         // Remember where this image came from so the next edit can continue the same conversation.
         node.SetOption(NodeKeys.ConversationId, result.ConversationId);
@@ -563,7 +648,7 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
     /// </summary>
     public async Task UpscaleAsync(CanvasNode source, string model, int factor)
     {
-        if (!source.HasContent) return;
+        if (_shuttingDown || !source.HasContent || doc.Find(source.Id) != source) return;
         recordHistory();
         var target = CanvasNode.Create(NodeKind.Image, 0, 0);
         target.Title = $"放大 {factor}×";
@@ -576,26 +661,20 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
         target.Status = NodeStatus.Loading;
         doc.Nodes.Add(target);
         doc.Connections.Add(CanvasConnection.Create(source.Id, target.Id));
-        var cts = new CancellationTokenSource();
-        _running[target.Id] = cts;
-        RunningChanged?.Invoke();
+        var cts = Begin(target);
         TargetsPrepared?.Invoke([target]);
         changed();
         try { await FillAsync(target, await Upscaler.RunAsync(ProjectStore.AssetPath(doc.Id, source.Content!), model, factor, cts.Token), "image/png"); }
         catch (OperationCanceledException) { Fail([target], _shuttingDown ? Interrupted : Stopped, false); }
         catch (Exception ex) { Fail([target], ErrorText(ex, null), false); }
-        finally
-        {
-            _running.Remove(target.Id);
-            RunningChanged?.Invoke();
-            changed();
-        }
+        finally { Finish(cts); }
     }
 
     /// <summary>Resume background image tasks left running when the canvas was last closed; a video task from an earlier version is no longer polled.</summary>
     public void ResumeTasks()
     {
-        foreach (var node in doc.Nodes.Where(n => n.TaskId is not null && !n.HasContent).ToList())
+        if (_shuttingDown) return;
+        foreach (var node in doc.Nodes.Where(n => n.TaskId is not null && !n.HasContent && !IsRunning(n.Id)).ToList())
         {
             if (node.Kind == NodeKind.Image) _ = ResumeAsync(node);
             else (node.TaskId, node.Status, node.Error) = (null, NodeStatus.Error, "这个版本不支持生成视频，未完成的视频任务已停止查询");
@@ -622,11 +701,10 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
     /// <summary>One output node working outside a normal generation (a resumed task), with the same stop and failure handling.</summary>
     private async Task TrackAsync(CanvasNode node, AiProvider provider, Func<CancellationToken, Task> work)
     {
-        var cts = new CancellationTokenSource();
-        _running[node.Id] = cts;
+        if (_shuttingDown || IsRunning(node.Id) || doc.Find(node.Id) != node) return;
+        var cts = Begin(node);
         node.Status = NodeStatus.Loading;
         node.Error = null;
-        RunningChanged?.Invoke();
         changed();
         try { await work(cts.Token); }
         catch (OperationCanceledException)
@@ -636,29 +714,33 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
         }
         catch (Exception ex) when (node.TaskId is not null && Http.Transient(ex)) { KeepTask(node, ErrorText(ex, null)); }
         catch (Exception ex) { Fail([node], ErrorText(ex, null), false); }
-        finally
-        {
-            _running.Remove(node.Id);
-            RunningChanged?.Invoke();
-            changed();
-        }
+        finally { Finish(cts); }
     }
 
-    private async Task RunTextAsync(AiProvider provider, ModelChannel channel, ChannelModel model, CanvasNode source, string prompt, List<MediaInput> images, CanvasNode target, CancellationToken ct)
+    private async Task RunTextAsync(AiProvider provider, ModelChannel channel, ChannelModel model, CanvasNode source, string? systemPrompt, string prompt, List<MediaInput> images, CanvasNode target, CancellationToken ct)
     {
         // Only Ark text models can be bound to an ep- endpoint; the request then targets the endpoint instead of the model ID.
         var name = channel.Vendor == Vendor.Ark && !string.IsNullOrWhiteSpace(model.EndpointId) ? model.EndpointId.Trim() : model.Name;
-        var request = new TextRequest(name, prompt, images, SettingsStore.Current.SystemPrompt, source.Option("reasoning", "auto"));
+        var request = new TextRequest(name, prompt, images, systemPrompt, source.Option("reasoning", "auto"));
         // Each delta carries the whole text so far: keep only the newest and queue at most one UI update, so a busy UI thread never piles up stale copies.
         string? latest = null;
-        var text = await provider.GenerateTextAsync(request, delta =>
+        try
         {
-            if (Interlocked.Exchange(ref latest, delta) is null)
-                ui.TryEnqueue(() => { if (Interlocked.Exchange(ref latest, null) is { } current && target.Status == NodeStatus.Loading) target.Content = current; });
-        }, ct);
-        target.Content = text;
-        target.Status = NodeStatus.Success;
-        target.Error = null;
+            var text = await provider.GenerateTextAsync(request, delta =>
+            {
+                if (Interlocked.Exchange(ref latest, delta) is null)
+                    ui.TryEnqueue(() => { if (Interlocked.Exchange(ref latest, null) is { } current && target.Status == NodeStatus.Loading && doc.Find(target.Id) == target) target.Content = current; });
+            }, ct);
+            if (doc.Find(target.Id) != target) return;
+            target.Content = text;
+            target.Status = NodeStatus.Success;
+            target.Error = null;
+        }
+        finally
+        {
+            // The last UI delta may still be queued when EOF / cancellation arrives; preserve it before marking the node failed.
+            if (Interlocked.Exchange(ref latest, null) is { } current && target.Status == NodeStatus.Loading && doc.Find(target.Id) == target) target.Content = current;
+        }
     }
 
     private async Task RunAudioAsync(AiProvider provider, ChannelModel model, CanvasNode source, string prompt, CanvasNode target, CancellationToken ct)
