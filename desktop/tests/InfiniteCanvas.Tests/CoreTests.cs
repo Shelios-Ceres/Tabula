@@ -485,19 +485,19 @@ public class CoreTests
     }
 
     [Fact]
-    public void Prune_assets_keeps_referenced_files_only()
+    public void Prune_removes_unused_masks_but_keeps_media_deleted_from_the_canvas()
     {
         var doc = new CanvasDocument();
-        var image = new CanvasNode { Kind = NodeKind.Image, Content = "a.png" };
-        image.SetOption(NodeKeys.Mask, "m.png");
+        var image = new CanvasNode { Kind = NodeKind.Image, Content = "图片-001.png" };
+        image.SetOption(NodeKeys.Mask, "蒙版-001.png");
         doc.Nodes.Add(image);
         var dir = ProjectStore.AssetsDir(doc.Id);
         Directory.CreateDirectory(dir);
         try
         {
-            foreach (var name in new[] { "a.png", "m.png", "orphan.png" }) File.WriteAllText(Path.Combine(dir, name), "");
-            ProjectStore.PruneAssets(doc);
-            Assert.Equal(["a.png", "m.png"], Directory.GetFiles(dir).Select(f => Path.GetFileName(f)).Order());
+            foreach (var name in new[] { "图片-001.png", "图片-002.png", "蒙版-001.png", "蒙版-002.png" }) File.WriteAllText(Path.Combine(dir, name), "");
+            ProjectStore.PruneMasks(doc);
+            Assert.Equal(["图片-001.png", "图片-002.png", "蒙版-001.png"], Directory.GetFiles(dir).Select(f => Path.GetFileName(f)).Order(StringComparer.Ordinal));
         }
         finally { Directory.Delete(Path.GetDirectoryName(dir)!, true); }
     }

@@ -19,6 +19,8 @@ public static class ProjectStore
     public static string AssetsDir(string id) => Path.Combine(ProjectsDir, id, "assets");
     public static string AssetPath(string id, string name) => Path.Combine(AssetsDir(id), name);
     public static string LibraryDir(string id) => Path.Combine(ProjectsDir, id, "library");
+    /// <summary>Masks are numbered like media (蒙版-001.png) but belong to their node's marks, not to the canvas's files.</summary>
+    public const string MaskPrefix = "蒙版";
 
     public static List<ProjectInfo> List()
     {
@@ -108,21 +110,27 @@ public static class ProjectStore
     }
 
     /// <summary>
-    /// Delete asset files that no node's content or option references.
-    /// Only safe once the canvas is closed: its undo history is gone and nothing still generates into it.
+    /// Delete mask files that no node references any more. Pictures, videos and audio stay after their nodes are deleted from the canvas;
+    /// only deleting them from the canvas's files in the side panel removes them. Only safe once the canvas is closed: its undo history is gone.
     /// </summary>
-    public static void PruneAssets(CanvasDocument doc)
+    public static void PruneMasks(CanvasDocument doc)
     {
         try
         {
             var dir = AssetsDir(doc.Id);
             if (!Directory.Exists(dir)) return;
-            var used = doc.Nodes.SelectMany(n => n.Options.Values.Append(n.Content ?? "")).ToHashSet();
-            foreach (var file in Directory.GetFiles(dir).Where(f => !used.Contains(Path.GetFileName(f))))
+            var used = doc.Nodes.SelectMany(n => n.Options.Values).ToHashSet();
+            foreach (var file in Directory.GetFiles(dir, MaskPrefix + "-*").Where(f => !used.Contains(Path.GetFileName(f))))
                 try { File.Delete(file); }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { /* Still open elsewhere: the next prune retries. */ }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { /* Unreadable folder: keep everything. */ }
+    }
+
+    /// <summary>Removed files go to the recycle bin; cancelling the shell dialog returns silently.</summary>
+    public static void Recycle(string path)
+    {
+        if (File.Exists(path)) FileSystem.DeleteFile(path, UIOption.OnlyErrorDialogs, RecycleOption.SendToRecycleBin, UICancelOption.DoNothing);
     }
 
     private static string? Cover(CanvasDocument doc)

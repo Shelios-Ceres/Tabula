@@ -1140,10 +1140,10 @@ public sealed partial class CanvasView : UserControl
         DeleteNodes(WithStacks(_selected));
     }
 
-    /// <summary>Remove nodes with their connections and group membership, stopping their generations; the caller records history.</summary>
-    public void DeleteNodes(IReadOnlyCollection<string> nodeIds)
+    /// <summary>Remove nodes with their connections and group membership, stopping their generations; the caller records history. A collapsed stack's lead takes its whole stack along unless <paramref name="wholeStacks"/> is false.</summary>
+    public void DeleteNodes(IReadOnlyCollection<string> nodeIds, bool wholeStacks = true)
     {
-        nodeIds = WithStacks(nodeIds);
+        if (wholeStacks) nodeIds = WithStacks(nodeIds);
         var removed = Doc.Nodes.Where(n => nodeIds.Contains(n.Id)).ToList();
         if (removed.Count == 0) return;
         Batch(() =>
@@ -1694,7 +1694,8 @@ public sealed partial class CanvasView : UserControl
             var done = new List<(string Path, string Asset)>();
             foreach (var path in paths.Where(p => Media.KindOf(p) is not null))
             {
-                try { done.Add((path, ProjectStore.ImportAsset(id, path))); }
+                // A file already in this canvas's folder (dragged back from 画布文件) is placed as it is, not copied again.
+                try { done.Add((path, string.Equals(Path.GetDirectoryName(Path.GetFullPath(path)), ProjectStore.AssetsDir(id), StringComparison.OrdinalIgnoreCase) ? Path.GetFileName(path) : ProjectStore.ImportAsset(id, path))); }
                 catch (Exception ex)
                 {
                     App.Log(ex);
@@ -1775,7 +1776,7 @@ public sealed partial class CanvasView : UserControl
             var dialog = new ImageMarkDialog(path, width, height, mask, NodeKeys.SelectionsOf(node), allowMask, allowPoints);
             if (await Dialogs.ShowAsync(dialog) != ContentDialogResult.Primary) return;
             History.Record();
-            node.SetOption(NodeKeys.Mask, dialog.MaskPng is { } png ? ProjectStore.SaveAsset(Doc.Id, png, "image/png", "蒙版") : null);
+            node.SetOption(NodeKeys.Mask, dialog.MaskPng is { } png ? ProjectStore.SaveAsset(Doc.Id, png, "image/png", ProjectStore.MaskPrefix) : null);
             NodeKeys.SetSelections(node, dialog.Selections);
             RaiseChanged();
             _panel.Refresh();

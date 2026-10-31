@@ -189,12 +189,12 @@ public sealed partial class CanvasPage : Page
 
     private static Task ShowSaveFailureAsync() => Dialogs.MessageAsync("画布尚未保存", "保存失败，画布仍为你保留。请检查磁盘空间和文件权限，然后点击保存状态重试；保存成功后再离开。");
 
-    /// <summary>Only prune after the final save and all pending writers, including imports, have finished.</summary>
+    /// <summary>Only prune masks after the final save and all pending writers, including imports, have finished.</summary>
     private void Leave()
     {
         _saveTimer?.Stop();
         SharedCanvasHost.Open = null;
-        if (_preparedToLeave && _doc.Nodes.All(n => n.TaskId is null)) ProjectStore.PruneAssets(_doc);
+        if (_preparedToLeave && _doc.Nodes.All(n => n.TaskId is null)) ProjectStore.PruneMasks(_doc);
     }
 
     private void Board_Changed()

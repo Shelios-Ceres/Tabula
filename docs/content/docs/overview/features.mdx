@@ -54,6 +54,15 @@ Canvas plugins can contribute node types, rendering, inspectors, serialization, 
 
 See [Third-party Prompt Sources](/docs/overview/third-party-prompt-repositories) for the complete built-in list.
 
+## Desktop library and canvas files
+
+The panel on the left of a desktop canvas has two tabs, both scoped to the current canvas:
+
+- Library: the canvas's reusable images, videos and audio, kept in its own `library` folder. Drop files in from Explorer or click + to import, then drag items onto the canvas or double-click them; a node's Add to library names the copy after the node. The Agent tools `library_list` / `library_place` / `library_add` act on the current canvas too.
+- Canvas files: every image, video and audio file in the canvas's folder. Files no longer on the canvas are faded and tagged 不在画布上. Click a file to find the node using it; double-click, drag or use the context menu to put an off-canvas file back, reusing the same file.
+- The header refreshes both lists (picking up files added in Explorer) and opens the folder of the current tab.
+- Deleting: removing an image, video or audio node from the canvas keeps its file in the canvas folder. Only deleting in the Canvas files tab sends files to the recycle bin, together with the nodes that use them, after a confirmation. Leaving a canvas only prunes masks no longer in use.
+
 ## Configuration and synchronization
 
 - Export and import channel, model, generation, prompt-source, and WebDAV settings.

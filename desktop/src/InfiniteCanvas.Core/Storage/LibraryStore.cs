@@ -1,5 +1,4 @@
 using InfiniteCanvas.Core.Canvas;
-using Microsoft.VisualBasic.FileIO;
 
 namespace InfiniteCanvas.Core.Storage;
 
@@ -10,9 +9,11 @@ public static class LibraryStore
 {
     public static event Action? Changed;
 
-    public static List<LibraryItem> List(string projectId)
+    public static List<LibraryItem> List(string projectId) => Files(ProjectStore.LibraryDir(projectId));
+
+    /// <summary>Pictures, videos and audio in a folder, newest first.</summary>
+    public static List<LibraryItem> Files(string dir)
     {
-        var dir = ProjectStore.LibraryDir(projectId);
         if (!Directory.Exists(dir)) return [];
         return new DirectoryInfo(dir).EnumerateFiles()
             .Where(file => Media.KindOf(file.Name) is not null)
@@ -47,10 +48,9 @@ public static class LibraryStore
         return added;
     }
 
-    /// <summary>Removed items go to the recycle bin; cancelling the shell dialog returns silently.</summary>
     public static void Remove(string path)
     {
-        if (File.Exists(path)) FileSystem.DeleteFile(path, UIOption.OnlyErrorDialogs, RecycleOption.SendToRecycleBin, UICancelOption.DoNothing);
+        ProjectStore.Recycle(path);
         Changed?.Invoke();
     }
 }
