@@ -37,7 +37,7 @@ public interface ICanvasHost
     void Ungroup(IReadOnlyCollection<string> ids);
     /// <summary>Import media files as new nodes from a world point (one undo step); the new node IDs.</summary>
     Task<IReadOnlyList<string>> ImportAsync(IReadOnlyList<string> paths, double x, double y);
-    /// <summary>Copy a node's media into the shared library, named after the node.</summary>
+    /// <summary>Copy a node's media into this canvas's library, named after the node.</summary>
     Task AddToLibraryAsync(CanvasNode node);
 }
 
@@ -93,7 +93,7 @@ public static class CanvasTools
         - 先用 canvas_get_state 了解节点、连线、选区和可用模型；用户说「这张图」「选中的」时指的是 selection 里的节点。
         - 生成图片、文本或语音用 canvas_generate（这个版本不支持生成视频，视频节点只用来放导入的视频）：它会新建节点、连上参考节点并立刻开始生成。生成是异步的，用 generation_get_status 查看结果，不要在没有结果时声称已经完成。
         - 增删改节点、连线、选择和视口用 canvas_apply_ops，一次调用就是一步撤销。
-        - 需要看图片内容时用 canvas_get_image；资料库（所有画布共用的素材）用 library_list / library_place / library_add；编组用 canvas_apply_ops 的 group / ungroup。
+        - 需要看图片内容时用 canvas_get_image；资料库（这个画布自己的常用素材）用 library_list / library_place / library_add；编组用 canvas_apply_ops 的 group / ungroup。
         - 节点 ID 只用工具返回的值，不要编造；模型 ID 只用 canvas_get_state.models 里列出的。
         """;
 
@@ -142,10 +142,10 @@ public static class CanvasTools
             Name = "canvas_get_image", ReadOnly = true,
             Description = "查看图片节点的画面（长边缩到 1024 像素以内）。",
         }),
-        McpServerTool.Create(([Description("image、video、audio，省略时全部")] string? kind = null, [Description("按文件名筛选")] string? keyword = null) => Library(kind, keyword), new()
+        McpServerTool.Create(async ([Description("image、video、audio，省略时全部")] string? kind = null, [Description("按文件名筛选")] string? keyword = null) => Library(await host.OnUiAsync(() => host.Document.Id), kind, keyword), new()
         {
             Name = "library_list", ReadOnly = true,
-            Description = "列出资料库（所有画布共用的常用图片、视频、音频）里的文件，新的在前。",
+            Description = "列出当前画布资料库里的常用图片、视频、音频，新的在前。",
         }),
         McpServerTool.Create(async (
             [Description("资料库文件名，取自 library_list 的 name")] List<string> names,
@@ -153,18 +153,18 @@ public static class CanvasTools
             double? y = null) => await PlaceAsync(host, names, x, y), new()
         {
             Name = "library_place",
-            Description = "把资料库里的文件放到当前画布上，成为新的图片 / 视频 / 音频节点，返回节点 ID（可作为生成的参考节点）。",
+            Description = "把当前画布资料库里的文件放到画布上，成为新的图片 / 视频 / 音频节点，返回节点 ID（可作为生成的参考节点）。",
         }),
         McpServerTool.Create(async ([Description("图片、视频或音频节点 ID")] string nodeId) => await AddToLibraryAsync(host, nodeId), new()
         {
             Name = "library_add",
-            Description = "把节点里的图片、视频或音频加入资料库，文件名用节点标题。",
+            Description = "把节点里的图片、视频或音频加入当前画布的资料库，文件名用节点标题。",
         }),
     ];
 
-    private static string Library(string? kind, string? keyword)
+    private static string Library(string projectId, string? kind, string? keyword)
     {
-        var items = LibraryStore.List()
+        var items = LibraryStore.List(projectId)
             .Where(i => kind is null || i.Kind.ToString().Equals(kind, StringComparison.OrdinalIgnoreCase))
             .Where(i => string.IsNullOrWhiteSpace(keyword) || i.Name.Contains(keyword, StringComparison.OrdinalIgnoreCase))
             .Take(200)
@@ -174,7 +174,7 @@ public static class CanvasTools
 
     private static async Task<string> PlaceAsync(ICanvasHost host, List<string> names, double? x, double? y)
     {
-        var items = LibraryStore.List();
+        var items = LibraryStore.List(await host.OnUiAsync(() => host.Document.Id));
         var paths = names.Select(name => items.FirstOrDefault(i => Path.GetFileName(i.Path).Equals(name, StringComparison.OrdinalIgnoreCase) || i.Name.Equals(name, StringComparison.OrdinalIgnoreCase))?.Path
             ?? throw new McpException($"资料库里没有「{name}」，请先用 library_list 查看文件名")).ToList();
         var ids = await await host.OnUiAsync(() => host.ImportAsync(paths, x ?? host.ViewCenter.X, y ?? host.ViewCenter.Y));

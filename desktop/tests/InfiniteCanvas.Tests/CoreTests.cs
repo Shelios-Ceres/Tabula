@@ -29,6 +29,19 @@ public class CoreTests
         Assert.True(Stacks.Expand(doc, [first.Id]).SetEquals([first.Id]));
     }
 
+    [Fact]
+    public void Stack_name_belongs_to_the_batch_and_its_lead_goes_by_its_own_number()
+    {
+        var lead = CanvasNode.Create(NodeKind.Image, 0, 0);
+        var second = CanvasNode.Create(NodeKind.Image, 0, 0);
+        (lead.Title, lead.Content, second.Title, second.Content) = ("卸妆·锁眼长", "图片-007.png", "图片-008", "图片-008.png");
+        Stacks.Form([lead, second]);
+        Assert.Equal(["图片-007", "图片-008"], [Stacks.OwnTitle(lead), Stacks.OwnTitle(second)]);
+        var single = CanvasNode.Create(NodeKind.Image, 0, 0);
+        (single.Title, single.Content) = ("全身正面", "图片-009.png");
+        Assert.Equal("全身正面", Stacks.OwnTitle(single));
+    }
+
     [Theory]
     [InlineData("default::gpt-image-2.5-flare", "gpt-image-2.5-flare")]
     [InlineData("models/gemini-3-pro-image-preview", "gemini-3-pro-image")]

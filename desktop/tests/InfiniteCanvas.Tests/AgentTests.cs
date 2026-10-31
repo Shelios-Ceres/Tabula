@@ -349,9 +349,10 @@ public class AgentTests
         var failed = await client.CallToolAsync("canvas_run_generation", new Dictionary<string, object?> { ["nodeId"] = "missing" });
         Assert.True(failed.IsError);
 
-        // The library lives in the test data folder (TestEnvironment points ProjectStore.Root at a temp directory).
-        Directory.CreateDirectory(InfiniteCanvas.Core.Storage.LibraryStore.Dir);
-        var file = Path.Combine(InfiniteCanvas.Core.Storage.LibraryStore.Dir, $"mcp-test-{Guid.NewGuid():N}.png");
+        // Each canvas has its own library in the test data folder (TestEnvironment points ProjectStore.Root at a temp directory).
+        var library = InfiniteCanvas.Core.Storage.ProjectStore.LibraryDir(host.Document.Id);
+        Directory.CreateDirectory(library);
+        var file = Path.Combine(library, $"mcp-test-{Guid.NewGuid():N}.png");
         await File.WriteAllBytesAsync(file, [1, 2, 3]);
         try
         {
@@ -362,6 +363,6 @@ public class AgentTests
             Assert.Equal([file], host.Imported);
             Assert.True((await client.CallToolAsync("library_place", new Dictionary<string, object?> { ["names"] = new[] { "nope.png" } })).IsError);
         }
-        finally { File.Delete(file); }
+        finally { Directory.Delete(Path.GetDirectoryName(library)!, true); }
     }
 }

@@ -13,13 +13,20 @@
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
             <Grid>
-                <TextBlock Text="资料库" FontSize="15" FontWeight="SemiBold" VerticalAlignment="Center" Margin="4,0,0,0" />
-                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="2">
-                    <Button Style="{StaticResource ToolbarButton}" Padding="9,6" Click="Import_Click" ToolTipService.ToolTip="导入到资料库" AutomationProperties.Name="导入到资料库">
+                <!-- This canvas's own library, and everything already placed on the canvas. -->
+                <SelectorBar x:Name="Tabs" Padding="0" Margin="-4,0,0,0" SelectionChanged="Tabs_SelectionChanged">
+                    <SelectorBarItem Text="资料库" Tag="Library" IsSelected="True" FontWeight="SemiBold" />
+                    <SelectorBarItem Text="画布内容" Tag="Canvas" FontWeight="SemiBold" />
+                </SelectorBar>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center" Spacing="2">
+                    <Button x:Name="ImportButton" Style="{StaticResource ToolbarButton}" Padding="9,6" Click="Import_Click" ToolTipService.ToolTip="导入到资料库" AutomationProperties.Name="导入到资料库">
                         <FontIcon Glyph="&#xE710;" FontSize="13" />
                     </Button>
-                    <Button Style="{StaticResource ToolbarButton}" Padding="9,6" Click="OpenFolder_Click" ToolTipService.ToolTip="打开资料库文件夹" AutomationProperties.Name="打开资料库文件夹">
+                    <Button x:Name="FolderButton" Style="{StaticResource ToolbarButton}" Padding="9,6" Click="OpenFolder_Click" ToolTipService.ToolTip="打开资料库文件夹" AutomationProperties.Name="打开资料库文件夹">
                         <FontIcon Glyph="&#xE838;" FontSize="13" />
+                    </Button>
+                    <Button Style="{StaticResource ToolbarButton}" Padding="9,6" Click="Refresh_Click" ToolTipService.ToolTip="刷新" AutomationProperties.Name="刷新">
+                        <FontIcon Glyph="&#xE72C;" FontSize="13" />
                     </Button>
                 </StackPanel>
             </Grid>
@@ -28,8 +35,9 @@
                 <SelectorBarItem Text="图片" Tag="Image" />
                 <SelectorBarItem Text="视频" Tag="Video" />
                 <SelectorBarItem Text="音频" Tag="Audio" />
+                <SelectorBarItem x:Name="TextFilter" Text="文本" Tag="Text" Visibility="Collapsed" />
             </SelectorBar>
-            <GridView x:Name="Items" Grid.Row="2" SelectionMode="Extended" CanDragItems="True" DragItemsStarting="Items_DragItemsStarting" ContextRequested="Items_ContextRequested" Padding="0">
+            <GridView x:Name="Items" Grid.Row="2" SelectionMode="Extended" CanDragItems="True" ItemClick="Items_ItemClick" DragItemsStarting="Items_DragItemsStarting" ContextRequested="Items_ContextRequested" Padding="0">
                 <GridView.Resources>
                     <CornerRadius x:Key="GridViewItemCornerRadius">4</CornerRadius>
                 </GridView.Resources>
@@ -41,8 +49,9 @@
                                 <RowDefinition Height="Auto" />
                             </Grid.RowDefinitions>
                             <Grid CornerRadius="4" Background="{ThemeResource CardBrush}" BorderBrush="{ThemeResource CardStrokeBrush}" BorderThickness="1">
-                                <FontIcon Glyph="{x:Bind Glyph}" FontSize="24" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                                <FontIcon Glyph="{x:Bind Glyph}" FontSize="24" Foreground="{ThemeResource TextFillColorTertiaryBrush}" Visibility="{x:Bind ShowGlyph}" />
                                 <Image Source="{x:Bind Thumbnail, Mode=OneWay}" Stretch="UniformToFill" />
+                                <TextBlock Text="{x:Bind Snippet}" Margin="8,6" TextWrapping="Wrap" TextTrimming="CharacterEllipsis" Style="{StaticResource CaptionTextBlockStyle}" />
                                 <Border Style="{StaticResource GlassChip}" Padding="5,3" Margin="6" HorizontalAlignment="Right" VerticalAlignment="Bottom" Visibility="{x:Bind IsVideo}">
                                     <FontIcon Glyph="&#xE768;" FontSize="10" />
                                 </Border>
@@ -53,10 +62,9 @@
                 </GridView.ItemTemplate>
             </GridView>
             <TextBlock x:Name="EmptyText" Grid.Row="2" TextWrapping="Wrap" TextAlignment="Center" VerticalAlignment="Center" Margin="16,0"
-                       Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                       Text="把常用的图片、视频或音频拖到这里，或点右上角 + 导入。&#x0a;之后可以直接拖到画布上使用。" />
+                       Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
             <StackPanel Grid.Row="3" Spacing="6">
-                <TextBlock x:Name="UsageHint" Style="{StaticResource SecondaryCaption}" TextWrapping="Wrap" Margin="4,0" Text="双击放到画布中央，或拖到画布任意位置" />
+                <TextBlock x:Name="UsageHint" Style="{StaticResource SecondaryCaption}" TextWrapping="Wrap" Margin="4,0" />
                 <TextBlock x:Name="ImportStatus" Style="{StaticResource SecondaryCaption}" TextWrapping="Wrap" Margin="4,0" Visibility="Collapsed" AutomationProperties.LiveSetting="Polite" />
             </StackPanel>
         </Grid>

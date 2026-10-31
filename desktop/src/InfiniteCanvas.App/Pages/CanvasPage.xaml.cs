@@ -109,6 +109,7 @@ public sealed partial class CanvasPage : Page
         _saveTimer.IsRepeating = false;
         _saveTimer.Tick += (_, _) => SaveNow();
         Board.Load(_doc);
+        Library.Refresh();
         SharedCanvasHost.Open = new CanvasAgentHost(Board);
         // Subscribe after loading so merely opening a canvas does not rewrite it.
         Board.Changed += Board_Changed;

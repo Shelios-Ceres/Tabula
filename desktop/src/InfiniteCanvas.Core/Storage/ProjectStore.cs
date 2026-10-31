@@ -7,7 +7,7 @@ namespace InfiniteCanvas.Core.Storage;
 
 public sealed record ProjectInfo(string Id, string Title, DateTimeOffset UpdatedAt, int NodeCount, int ConnectionCount, string? Cover);
 
-/// <summary>Each canvas is a folder: project.json plus an assets folder holding generated and imported media.</summary>
+/// <summary>Each canvas is a folder: project.json, an assets folder holding generated and imported media, and its own library folder.</summary>
 public static class ProjectStore
 {
     /// <summary>INFINITE_CANVAS_DATA points a test instance at a throwaway folder so it never touches real canvases.</summary>
@@ -18,6 +18,7 @@ public static class ProjectStore
     private static string FileOf(string id) => Path.Combine(ProjectsDir, id, "project.json");
     public static string AssetsDir(string id) => Path.Combine(ProjectsDir, id, "assets");
     public static string AssetPath(string id, string name) => Path.Combine(AssetsDir(id), name);
+    public static string LibraryDir(string id) => Path.Combine(ProjectsDir, id, "library");
 
     public static List<ProjectInfo> List()
     {

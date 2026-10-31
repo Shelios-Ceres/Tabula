@@ -5,16 +5,16 @@ namespace InfiniteCanvas.Core.Storage;
 
 public sealed record LibraryItem(string Path, string Name, NodeKind Kind, DateTime AddedAt);
 
-/// <summary>Reusable media shared by every canvas: plain files in the library folder, newest first.</summary>
+/// <summary>Reusable media of one canvas: plain files in that canvas's library folder, newest first.</summary>
 public static class LibraryStore
 {
-    public static string Dir => System.IO.Path.Combine(ProjectStore.Root, "library");
     public static event Action? Changed;
 
-    public static List<LibraryItem> List()
+    public static List<LibraryItem> List(string projectId)
     {
-        if (!Directory.Exists(Dir)) return [];
-        return new DirectoryInfo(Dir).EnumerateFiles()
+        var dir = ProjectStore.LibraryDir(projectId);
+        if (!Directory.Exists(dir)) return [];
+        return new DirectoryInfo(dir).EnumerateFiles()
             .Where(file => Media.KindOf(file.Name) is not null)
             .OrderByDescending(file => file.CreationTime)
             .Select(file => new LibraryItem(file.FullName, System.IO.Path.GetFileNameWithoutExtension(file.Name), Media.KindOf(file.Name)!.Value, file.CreationTime))
@@ -25,18 +25,19 @@ public static class LibraryStore
     /// Copy files in on the thread pool, keeping their names; a clash gets a numeric suffix instead of overwriting.
     /// A locked or unreadable file is skipped. Changed fires back on the caller's context.
     /// </summary>
-    public static async Task<int> AddAsync(IReadOnlyList<string> paths)
+    public static async Task<int> AddAsync(string projectId, IReadOnlyList<string> paths)
     {
+        var dir = ProjectStore.LibraryDir(projectId);
         var added = await Task.Run(() =>
         {
-            Directory.CreateDirectory(Dir);
+            Directory.CreateDirectory(dir);
             var count = 0;
             foreach (var path in paths.Where(p => Media.KindOf(p) is not null && File.Exists(p)))
             {
                 var name = System.IO.Path.GetFileNameWithoutExtension(path);
                 var ext = System.IO.Path.GetExtension(path).ToLowerInvariant();
-                var target = System.IO.Path.Combine(Dir, name + ext);
-                for (var i = 2; File.Exists(target); i++) target = System.IO.Path.Combine(Dir, $"{name} ({i}){ext}");
+                var target = System.IO.Path.Combine(dir, name + ext);
+                for (var i = 2; File.Exists(target); i++) target = System.IO.Path.Combine(dir, $"{name} ({i}){ext}");
                 try { File.Copy(path, target); count++; }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { /* Locked or unreadable source: skip it. */ }
             }

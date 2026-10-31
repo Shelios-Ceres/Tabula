@@ -564,7 +564,7 @@ public sealed partial class CanvasView : UserControl
         Add("", "本地放大", UpscaleAsync);
         Add("", "反推提示词", node => ImageTools.ReversePromptAsync(this, node));
         row.Children.Add(new Microsoft.UI.Xaml.Shapes.Rectangle { Style = (Style)Application.Current.Resources["ToolbarDivider"] });
-        Add("", "加入资料库", node => AddToLibraryAsync(node, ProjectStore.AssetPath(Doc.Id, node.Content!)));
+        Add("", "加入资料库", AddToLibraryAsync);
         Add("", "用默认应用打开", node =>
         {
             Process.Start(new ProcessStartInfo(ProjectStore.AssetPath(Doc.Id, node.Content!)) { UseShellExecute = true });
@@ -1094,6 +1094,16 @@ public sealed partial class CanvasView : UserControl
     /// <summary>Pan just enough to bring a node (and the panel under it) into view.</summary>
     public void EnsureVisible(CanvasNode node) => EnsureVisible(Rect.Of(node));
 
+    /// <summary>Select a node and glide it to the middle of the free area without zooming; a card hidden in a collapsed stack is found through its lead.</summary>
+    public void Locate(CanvasNode node)
+    {
+        if (!Doc.Nodes.Contains(node)) return;
+        if (Stacks.Hidden(Doc).Contains(node)) node = Stacks.Members(Doc, Stacks.Of(node)!)[0];
+        Select([node.Id]);
+        var middle = ToScreen(node.X + node.Width / 2, node.Y + node.Height / 2);
+        Glide(V with { X = V.X + Center.X - middle.X, Y = V.Y + Center.Y - middle.Y });
+    }
+
     /// <summary>Pan (never zoom) just enough to bring an area and the panel under it into view, clear of the safe area; content larger than the view keeps its top-left visible.</summary>
     public void EnsureVisible(Rect bounds)
     {
@@ -1370,7 +1380,7 @@ public sealed partial class CanvasView : UserControl
                 menu.Items.Add(Item("反推提示词", "\uE8FD", () => TrackLocalAsync(() => ImageTools.ReversePromptAsync(this, node))));
             }
             menu.Items.Add(Item("另存为…", "", () => SaveAsAsync(node, path)));
-            menu.Items.Add(Item("加入资料库", "", () => AddToLibraryAsync(node, path)));
+            menu.Items.Add(Item("加入资料库", "", () => AddToLibraryAsync(node)));
         }
         if (node.Kind == NodeKind.Text && node.HasContent)
             menu.Items.Add(Item("复制文本", "", () => { var data = new DataPackage(); data.SetText(node.Content); Clipboard.SetContent(data); }));
@@ -1797,11 +1807,12 @@ public sealed partial class CanvasView : UserControl
         return copy;
     }
 
-    /// <summary>Copy off the UI thread and drop the temporary named copy afterwards (never the asset itself when no copy was made).</summary>
-    internal static async Task AddToLibraryAsync(CanvasNode node, string path)
+    /// <summary>Copy into this canvas's library off the UI thread and drop the temporary named copy afterwards (never the asset itself when no copy was made).</summary>
+    internal async Task AddToLibraryAsync(CanvasNode node)
     {
+        var (projectId, path) = (Doc.Id, ProjectStore.AssetPath(Doc.Id, node.Content!));
         var copy = await Task.Run(() => NamedCopy(node, path));
-        try { await LibraryStore.AddAsync([copy]); }
+        try { await LibraryStore.AddAsync(projectId, [copy]); }
         finally { if (copy != path) Directory.Delete(Path.GetDirectoryName(copy)!, true); }
     }
 

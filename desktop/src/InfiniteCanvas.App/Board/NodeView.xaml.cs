@@ -72,10 +72,14 @@ public sealed partial class NodeView : UserControl
         StackBadge.Visibility = count > 1 ? Visibility.Visible : Visibility.Collapsed;
         StackIcon.Glyph = failed > 0 ? "" : collapsed ? "" : "";
         StackText.Text = collapsed ? $"{completed}/{count} 完成" + (failed > 0 ? $" · {failed} 失败" : "") : "收起";
+        SyncTitle();
         var tip = $"这一批共 {count} 个结果，已完成 {completed} 个，失败 {failed} 个；" + (collapsed ? "点击卡片展开" : "点击收起这一批");
         ToolTipService.SetToolTip(StackBadge, tip);
         AutomationProperties.SetName(StackBadge, tip);
     }
+
+    /// <summary>A collapsed stack shows the batch's name; opened, its lead goes by its own number like the cards beside it.</summary>
+    private void SyncTitle() => TitleText.Text = FloatingTitle.Text = _stack is (> 1, true, _, _) ? Stacks.OwnTitle(Node) : Node.Title;
 
     public static string Glyph(NodeKind kind) => kind switch
     {
@@ -263,7 +267,7 @@ public sealed partial class NodeView : UserControl
     {
         SyncPosition();
         SyncSize();
-        TitleText.Text = FloatingTitle.Text = Node.Title;
+        SyncTitle();
         SyncStatus();
         SyncContent();
         SyncPreview();
@@ -277,9 +281,9 @@ public sealed partial class NodeView : UserControl
         {
             case nameof(CanvasNode.X) or nameof(CanvasNode.Y): SyncPosition(); break;
             case nameof(CanvasNode.Width) or nameof(CanvasNode.Height) or nameof(CanvasNode.FreeResize): SyncSize(); break;
-            case nameof(CanvasNode.Title): TitleText.Text = FloatingTitle.Text = Node.Title; break;
+            case nameof(CanvasNode.Title): SyncTitle(); break;
             case nameof(CanvasNode.Status) or nameof(CanvasNode.Error): SyncStatus(); break;
-            case nameof(CanvasNode.Content): SyncContent(); UpdateChrome(); break;
+            case nameof(CanvasNode.Content): SyncContent(); SyncTitle(); UpdateChrome(); break;
             case nameof(CanvasNode.Preview): SyncPreview(); break;
             case nameof(CanvasNode.Prompt) or nameof(CanvasNode.Model) or nameof(CanvasNode.Mode) or nameof(CanvasNode.Count): SyncConfig(); break;
         }

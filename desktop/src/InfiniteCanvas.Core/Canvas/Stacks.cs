@@ -13,6 +13,12 @@ public static class Stacks
 
     public static List<CanvasNode> Members(CanvasDocument doc, string id) => doc.Nodes.Where(n => n.Option(NodeKeys.Stack) == id).ToList();
 
+    /// <summary>
+    /// A stack is named after the node it formed on, so that node's title names the whole batch. Shown on its own
+    /// (an opened stack, a list of pictures) it goes by its file's number like the other members.
+    /// </summary>
+    public static string OwnTitle(CanvasNode node) => Of(node) == node.Id && node.Content is { Length: > 0 } asset ? Path.GetFileNameWithoutExtension(asset) : node.Title;
+
     /// <summary>Selection operations on a collapsed stack include every member; opened members remain independent.</summary>
     public static HashSet<string> Expand(CanvasDocument doc, IEnumerable<string> ids)
     {
