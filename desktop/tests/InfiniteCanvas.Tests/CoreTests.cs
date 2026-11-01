@@ -369,6 +369,83 @@ public class CoreTests
     }
 
     [Fact]
+    public void Recycled_assets_cannot_reappear_from_undo_or_redo_but_other_edits_survive()
+    {
+        var doc = new CanvasDocument();
+        var text = CanvasNode.Create(NodeKind.Text, 0, 0);
+        var image = CanvasNode.Create(NodeKind.Image, 0, 0);
+        text.Content = "before";
+        image.Content = "图片-001.png";
+        doc.Nodes.Add(text);
+        doc.Nodes.Add(image);
+        doc.Connections.Add(CanvasConnection.Create(image.Id, text.Id));
+        var history = new CanvasHistory(doc);
+        history.Record();
+        text.Content = "after";
+        history.Record();
+        image.X = 700;
+        Assert.True(history.Undo()); // Put another reference to the image into redo.
+
+        history.ForgetAssets(new HashSet<string> { "图片-001.png" });
+        doc.Nodes.Remove(doc.Find(image.Id)!);
+        doc.Connections.Clear();
+        Assert.True(history.Redo());
+        Assert.Equal("after", Assert.Single(doc.Nodes).Content);
+        Assert.Empty(doc.Connections);
+        Assert.True(history.Undo());
+        Assert.True(history.Undo());
+        Assert.Equal("before", Assert.Single(doc.Nodes).Content);
+        Assert.Empty(doc.Connections);
+    }
+
+    [Fact]
+    public void Recycling_an_old_version_keeps_the_regenerated_node_in_later_snapshots()
+    {
+        var doc = new CanvasDocument();
+        var image = CanvasNode.Create(NodeKind.Image, 0, 0);
+        image.Content = "图片-005.png";
+        doc.Nodes.Add(image);
+        var history = new CanvasHistory(doc);
+        history.Record();
+        image.Content = "图片-010.png";
+        history.Record();
+        var x = image.X;
+        image.X += 300;
+
+        // 图片-005 is now off the canvas; deleting it must not take the node that moved on to 图片-010 out of the history.
+        history.ForgetAssets(new HashSet<string> { "图片-005.png" });
+        Assert.True(history.Undo());
+        Assert.Equal(("图片-010.png", x), (Assert.Single(doc.Nodes).Content, doc.Nodes[0].X));
+        Assert.True(history.Undo());
+        Assert.Empty(doc.Nodes);
+        Assert.True(history.Redo());
+        Assert.Equal("图片-010.png", Assert.Single(doc.Nodes).Content);
+    }
+
+    [Fact]
+    public void Recycling_an_off_canvas_file_retires_old_references_before_its_number_is_reused()
+    {
+        var doc = new CanvasDocument();
+        var image = CanvasNode.Create(NodeKind.Image, 0, 0);
+        image.Content = "图片-001.png";
+        doc.Nodes.Add(image);
+        var history = new CanvasHistory(doc);
+        history.Record();
+        doc.Nodes.Remove(image);
+        history.ForgetAssets(new HashSet<string> { "图片-001.png" });
+        history.Record();
+        var replacement = CanvasNode.Create(NodeKind.Image, 0, 0);
+        replacement.Content = "图片-001.png";
+        doc.Nodes.Add(replacement);
+        Assert.True(history.Undo());
+        Assert.True(history.Undo());
+        Assert.Empty(doc.Nodes);
+        Assert.True(history.Redo());
+        Assert.True(history.Redo());
+        Assert.Equal(replacement.Id, Assert.Single(doc.Nodes).Id);
+    }
+
+    [Fact]
     public void History_coalesces_records_with_the_same_key()
     {
         var doc = new CanvasDocument();
@@ -421,6 +498,20 @@ public class CoreTests
         var today = DateOnly.FromDateTime(DateTime.Now);
         Assert.Equal(new Dictionary<Capability, int> { [Capability.Image] = 5, [Capability.Text] = 1 }, UsageStore.Since(channel, today));
         Assert.Empty(UsageStore.Since(channel, today.AddDays(1)));
+    }
+
+    [Fact]
+    public void Gemini_25_image_output_has_its_own_media_price_in_ledger_and_preview()
+    {
+        var channel = new ModelChannel { Vendor = Vendor.Google };
+        var price = Prices.Default(Vendor.Google, "gemini-2.5-flash-image")!;
+        Assert.Equal(30m, price.Media);
+        Assert.Equal(0.0387m, Prices.Cost(new TokenUsage(0, 0, 1290), price));
+        UsageStore.Record(channel.Id, "gemini-2.5-flash-image", Capability.Image, 100, new TokenUsage(0, 0, 129000));
+        Assert.Equal(3.87m, Prices.Estimate(channel, DateOnly.FromDateTime(DateTime.Now)));
+        var node = CanvasNode.Create(NodeKind.Image, 0, 0);
+        node.Count = 3;
+        Assert.Equal(3 * 0.0387m, Prices.EstimateImage(channel, "gemini-2.5-flash-image", node, 0)!.Amount);
     }
 
     [Fact]

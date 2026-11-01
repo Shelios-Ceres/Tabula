@@ -222,7 +222,7 @@ public static class ImageTools
         private readonly CanvasBitmap _bitmap;
         private readonly int _width, _height;
         private readonly double _scale;
-        private readonly CanvasControl _canvas;
+        private CanvasControl _canvas;
         private readonly TextBlock _info = new() { Style = (Style)Application.Current.Resources["SecondaryCaption"], VerticalAlignment = VerticalAlignment.Center };
         private double _aspect;
         private Rect _box;
@@ -256,6 +256,7 @@ public static class ImageTools
             _canvas.PointerPressed += Pressed;
             _canvas.PointerMoved += Moved;
             _canvas.PointerReleased += (_, e) => { _drag = null; _canvas.ReleasePointerCapture(e.Pointer); };
+            Closed += (_, _) => { _canvas.RemoveFromVisualTree(); _canvas = null!; };
             var bar = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 16, Children = { ratios, _info } };
             Content = new StackPanel
             {
@@ -364,7 +365,7 @@ public static class ImageTools
         private readonly CanvasBitmap _bitmap;
         private readonly int _width, _height;
         private readonly double _scale;
-        private readonly CanvasControl _canvas;
+        private CanvasControl _canvas;
         private readonly NumberBox _rows = new() { Header = "行数", Value = 2, Minimum = 1, Maximum = 12, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Inline, MinWidth = 120 };
         private readonly NumberBox _columns = new() { Header = "列数", Value = 2, Minimum = 1, Maximum = 12, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Inline, MinWidth = 120 };
         private readonly TextBlock _info = new() { Style = (Style)Application.Current.Resources["SecondaryCaption"], VerticalAlignment = VerticalAlignment.Bottom, Margin = new(0, 0, 0, 6) };
@@ -383,6 +384,7 @@ public static class ImageTools
             _canvas.Draw += Draw;
             _rows.ValueChanged += (_, _) => Refresh();
             _columns.ValueChanged += (_, _) => Refresh();
+            Closed += (_, _) => { _canvas.RemoveFromVisualTree(); _canvas = null!; };
             Content = new StackPanel
             {
                 Spacing = 12,

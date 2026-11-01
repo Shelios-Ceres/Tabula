@@ -127,9 +127,9 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
             ? origin : null;
 
     /// <summary>Generate from a node, or retry an empty output through its source (see <see cref="RetrySource"/>).</summary>
-    public Task GenerateAsync(CanvasNode node) => RetrySource(doc, node) is { } origin ? RunAsync(origin, node) : RunAsync(node, null);
+    public Task GenerateAsync(CanvasNode node, bool recordUndo = true) => RetrySource(doc, node) is { } origin ? RunAsync(origin, node, recordUndo) : RunAsync(node, null, recordUndo);
 
-    private async Task RunAsync(CanvasNode source, CanvasNode? retry)
+    private async Task RunAsync(CanvasNode source, CanvasNode? retry, bool recordUndo)
     {
         if (_shuttingDown || doc.Find(source.Id) != source || IsRunning(source.Id) || retry is not null && IsRunning(retry.Id) || !CanGenerate(source)) return;
         var capability = CapabilityOf(source);
@@ -199,7 +199,7 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
             if (_shuttingDown || doc.Find(source.Id) != source || retry is not null && doc.Find(retry.Id) != retry) return;
             // Layer decomposition yields one base image plus its layers.
             var count = capability != Capability.Image || imageOptions.LayerDecomposition ? 1 : Math.Clamp(snapshot.Count, 1, 15);
-            recordHistory();
+            if (recordUndo) recordHistory();
             targets = retry is null ? PrepareTargets(source, snapshot, capability, count) : [Restart(retry)];
             if (retry is not null) CopySettings(snapshot, retry);
             var inputNote = shrunk.Count > 0 ? $"超过服务商上限的参考图已压缩后发送（原图未改动）：{string.Join("；", shrunk)}" : null;
@@ -424,6 +424,30 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
         return output.ToArray();
     }
 
+    /// <summary>The stored mask is in the original image's coordinates; follow the prepared first reference's oriented dimensions.</summary>
+    private static async Task<MediaInput> LoadMaskAsync(string path, MediaInput reference, CancellationToken ct)
+    {
+        var bytes = await File.ReadAllBytesAsync(path, ct);
+        using var referenceStream = new MemoryStream(reference.Bytes);
+        var referenceDecoder = await BitmapDecoder.CreateAsync(referenceStream.AsRandomAccessStream());
+        var (width, height) = (referenceDecoder.OrientedPixelWidth, referenceDecoder.OrientedPixelHeight);
+        ct.ThrowIfCancellationRequested();
+        using var input = new MemoryStream(bytes);
+        var decoder = await BitmapDecoder.CreateAsync(input.AsRandomAccessStream());
+        ct.ThrowIfCancellationRequested();
+        if (decoder.OrientedPixelWidth == width && decoder.OrientedPixelHeight == height) return new(bytes, "image/png");
+        // The editor paints over Win2D's already oriented image, so scale the mask without rotating it a second time.
+        var transform = new BitmapTransform { ScaledWidth = width, ScaledHeight = height, InterpolationMode = BitmapInterpolationMode.NearestNeighbor };
+        using var pixels = await decoder.GetSoftwareBitmapAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Straight, transform, ExifOrientationMode.RespectExifOrientation, ColorManagementMode.ColorManageToSRgb);
+        ct.ThrowIfCancellationRequested();
+        using var output = new MemoryStream();
+        var encoder = await BitmapEncoder.CreateAsync(BitmapEncoder.PngEncoderId, output.AsRandomAccessStream());
+        encoder.SetSoftwareBitmap(pixels);
+        await encoder.FlushAsync();
+        ct.ThrowIfCancellationRequested();
+        return new(output.ToArray(), "image/png");
+    }
+
     private async Task FillAsync(CanvasNode node, byte[] bytes, string mimeType)
     {
         if (doc.Find(node.Id) != node) return;
@@ -538,7 +562,8 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
         // Editing an image node: its own marks travel with the request (mask for GPT Image, points / boxes for Seedream).
         var editing = source.Kind == NodeKind.Image && source.HasContent;
         var mask = editing && channel.Vendor == Vendor.OpenAI && source.Option(NodeKeys.Mask) is { Length: > 0 } maskAsset && File.Exists(ProjectStore.AssetPath(doc.Id, maskAsset))
-            ? new MediaInput(File.ReadAllBytes(ProjectStore.AssetPath(doc.Id, maskAsset)), "image/png") : null;
+            ? await LoadMaskAsync(ProjectStore.AssetPath(doc.Id, maskAsset), images[0], ct) : null;
+        ct.ThrowIfCancellationRequested();
         var selections = editing && family?.Interactive == true ? NodeKeys.SelectionsOf(source) : [];
         // Continuing a stored conversation: the image is already in it, so only extra inputs are sent again.
         // OpenAI only continues through the Responses image tool; the Image API ignores previous IDs.

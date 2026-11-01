@@ -35,6 +35,25 @@ public sealed class CanvasHistory(CanvasDocument doc)
     public bool Undo() => Step(_undo, _redo);
     public bool Redo() => Step(_redo, _undo);
 
+    /// <summary>
+    /// Recycled files cannot come back through JSON undo, so each snapshot drops the nodes that showed one of them at that point, with
+    /// their connections. A node that shows another file in a snapshot (it was regenerated) stays there, and unrelated edits are kept.
+    /// </summary>
+    public void ForgetAssets(IReadOnlySet<string> files)
+    {
+        foreach (var history in new[] { _undo, _redo })
+            for (var i = 0; i < history.Count; i++)
+            {
+                var snapshot = Json.Deserialize<Snapshot>(history[i])!;
+                var gone = snapshot.Nodes.Where(n => n.Kind is NodeKind.Image or NodeKind.Video or NodeKind.Audio && n.Content is { } file && files.Contains(file)).Select(n => n.Id).ToHashSet();
+                if (gone.Count == 0) continue;
+                snapshot.Nodes.RemoveAll(n => gone.Contains(n.Id));
+                snapshot.Connections.RemoveAll(c => gone.Contains(c.From) || gone.Contains(c.To));
+                history[i] = JsonSerializer.Serialize(snapshot, Compact);
+            }
+        _coalesce = null;
+    }
+
     private bool Step(List<string> from, List<string> to)
     {
         if (from.Count == 0) return false;

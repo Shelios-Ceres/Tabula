@@ -74,12 +74,14 @@
             <TextBlock Text="基准" FontSize="12" FontWeight="SemiBold" Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}" />
         </Border>
         <!-- Batch stacks: the count on a collapsed stack (click the card to open it), 收起 on the lead of an opened one. -->
-        <Border x:Name="StackBadge" Tag="stack" Style="{StaticResource GlassChip}" VerticalAlignment="Top" HorizontalAlignment="Left" Margin="8,8,0,0"
-                RenderTransformOrigin="0,0" Visibility="Collapsed" AutomationProperties.Name="批次">
-            <StackPanel Orientation="Horizontal" Spacing="6">
-                <FontIcon x:Name="StackIcon" FontSize="12" />
-                <TextBlock x:Name="StackText" FontSize="12" FontWeight="SemiBold" />
-            </StackPanel>
+        <Border x:Name="StackBadge" Style="{StaticResource GlassChip}" Padding="0" VerticalAlignment="Top" HorizontalAlignment="Left" Margin="8,8,0,0"
+                RenderTransformOrigin="0,0" Visibility="Collapsed">
+            <Button x:Name="StackButton" Style="{StaticResource ToolbarButton}" Padding="6,4" MinHeight="0" AutomationProperties.Name="展开或收起批次" AutomationProperties.AutomationId="ToggleStack">
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                    <FontIcon x:Name="StackIcon" FontSize="12" />
+                    <TextBlock x:Name="StackText" FontSize="12" FontWeight="SemiBold" />
+                </StackPanel>
+            </Button>
         </Border>
         <Rectangle x:Name="GroupOutline" RadiusX="12" RadiusY="12" StrokeThickness="1.5" StrokeDashArray="4,3" Visibility="Collapsed" IsHitTestVisible="False"
                    Stroke="{ThemeResource KindGroupBrush}" />

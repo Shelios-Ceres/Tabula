@@ -41,6 +41,7 @@ public static class Prices
         ("gemini-3.1-pro", new(2.00m, 12.00m, 0)),
         ("gemini-2.5-pro", new(1.25m, 10.00m, 0)),
         ("gemini-2.5-flash", new(0.30m, 2.50m, 0)),
+        ("gemini-2.5-flash-image", new(0.30m, 2.50m, 30.00m)),
         ("gemini-2.5-flash-lite", new(0.10m, 0.40m, 0)),
         ("gemini-nano-banana-2.1", new(1.50m, 7.50m, 30.00m)),
         ("gemini-3.1-flash-image", new(0.50m, 3.00m, 60.00m)),
@@ -81,6 +82,7 @@ public static class Prices
         ["gemini-3.1-flash-image"] = new() { ["512"] = 747, ["1K"] = 1120, ["2K"] = 1680, ["4K"] = 2520 },
         ["gemini-3.1-flash-lite-image"] = new() { ["1K"] = 1120 },
         ["gemini-3-pro-image"] = new() { ["1K"] = 1120, ["2K"] = 1120, ["4K"] = 2000 },
+        ["gemini-2.5-flash-image"] = new() { ["1K"] = 1290 },
     };
     private const int GeminiInputImageTokens = 560;
 

@@ -148,18 +148,22 @@ public sealed class ArkProvider(ModelChannel channel, HttpClient http) : AiProvi
         var body = new JsonObject { ["model"] = request.Model, ["messages"] = messages, ["stream"] = true, ["stream_options"] = new JsonObject { ["include_usage"] = true } };
         using var response = await Http.PostStreamAsync($"{Base}/chat/completions", Auth, Http.Content(body), ct).ConfigureAwait(false);
         var text = new StringBuilder();
+        string? finishReason = null;
         await foreach (var item in Http.ReadSse(response, ct).ConfigureAwait(false))
         {
             if (item.Data == "[DONE]") break;
             var data = JsonNode.Parse(item.Data)!;
             if (data["error"] is not null) throw new ApiException(Http.Message(data) ?? "文本生成失败");
             Count(data["usage"]);
-            if (Http.Str(data["choices"].Items().FirstOrDefault()?["delta"]?["content"]) is { Length: > 0 } delta)
+            var choice = data["choices"].Items().FirstOrDefault();
+            finishReason = Http.Str(choice?["finish_reason"]) ?? finishReason;
+            if (Http.Str(choice?["delta"]?["content"]) is { Length: > 0 } delta)
             {
                 text.Append(delta);
                 onDelta?.Invoke(text.ToString());
             }
         }
+        if (finishReason != "stop") throw new ApiException($"文本响应未完整结束（{finishReason ?? "缺少完成事件"}），已保留收到的部分内容，请重试");
         return text.ToString();
     }
 

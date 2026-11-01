@@ -28,7 +28,7 @@ public interface ICanvasHost
     bool IsRunning(string nodeId);
     /// <summary>Why a generation cannot start (missing model, key or prompt), or null when it can.</summary>
     string? CannotGenerate(CanvasNode node);
-    void Generate(CanvasNode node);
+    void Generate(CanvasNode node, bool recordHistory = true);
     /// <summary>The node's picture scaled to fit maxEdge, or null when it has none.</summary>
     Task<(byte[] Bytes, string MimeType)?> LoadImageAsync(CanvasNode node, int maxEdge);
     /// <summary>Put nodes (and members of groups among them) into one new group; its ID, or null when nothing changes. No history record.</summary>
@@ -135,7 +135,7 @@ public static class CanvasTools
         McpServerTool.Create(([Description("要查询的节点 ID；省略时返回所有生成中或失败的节点")] List<string>? nodeIds = null) => host.OnUiAsync(() => Status(host, nodeIds)), new()
         {
             Name = "generation_get_status", ReadOnly = true,
-            Description = "查询节点的生成状态（idle / loading / success / error）、错误信息和结果文件。",
+            Description = "查询节点的生成状态（idle / loading / success / error）、错误信息和结果文件。batch 列出同批全部成员（含节点本身），outputs 列出下游输出。",
         }),
         McpServerTool.Create(async ([Description("图片节点 ID")] string nodeId) => await GetImageAsync(host, nodeId), new()
         {
@@ -174,19 +174,29 @@ public static class CanvasTools
 
     private static async Task<string> PlaceAsync(ICanvasHost host, List<string> names, double? x, double? y)
     {
-        var items = LibraryStore.List(await host.OnUiAsync(() => host.Document.Id));
+        ValidateGeometry(x, y);
+        var canvas = await host.OnUiAsync(() => host.Document);
+        var items = LibraryStore.List(canvas.Id);
         var paths = names.Select(name => items.FirstOrDefault(i => Path.GetFileName(i.Path).Equals(name, StringComparison.OrdinalIgnoreCase) || i.Name.Equals(name, StringComparison.OrdinalIgnoreCase))?.Path
             ?? throw new McpException($"资料库里没有「{name}」，请先用 library_list 查看文件名")).ToList();
-        var ids = await await host.OnUiAsync(() => host.ImportAsync(paths, x ?? host.ViewCenter.X, y ?? host.ViewCenter.Y));
+        var ids = await await host.OnUiAsync(() =>
+        {
+            if (!ReferenceEquals(canvas, host.Document)) throw new McpException("画布已切换，请重新读取当前画布后再放置素材");
+            return host.ImportAsync(paths, x ?? host.ViewCenter.X, y ?? host.ViewCenter.Y);
+        });
         return Json(new { NodeIds = ids });
     }
 
     private static async Task<string> AddToLibraryAsync(ICanvasHost host, string nodeId)
     {
-        var node = await host.OnUiAsync(() => Find(host, nodeId));
-        if (node.Kind is not (NodeKind.Image or NodeKind.Video or NodeKind.Audio) || !node.HasContent) throw new McpException("只有带图片、视频或音频的节点可以加入资料库");
-        await await host.OnUiAsync(() => host.AddToLibraryAsync(node));
-        return Json(new { Added = node.Title });
+        var operation = await host.OnUiAsync(() =>
+        {
+            var node = Find(host, nodeId);
+            if (node.Kind is not (NodeKind.Image or NodeKind.Video or NodeKind.Audio) || !node.HasContent) throw new McpException("只有带图片、视频或音频的节点可以加入资料库");
+            return (Work: host.AddToLibraryAsync(node), Title: node.Title);
+        });
+        await operation.Work;
+        return Json(new { Added = operation.Title });
     }
 
     private static string Json(object value) => JsonSerializer.Serialize(value, Options);
@@ -232,15 +242,34 @@ public static class CanvasTools
     }
 
     private static NodeKind ParseKind(string? kind) =>
-        Enum.TryParse<NodeKind>(kind, true, out var parsed) && parsed != NodeKind.Group ? parsed : throw new McpException($"不支持的节点类型「{kind}」，可用 text、image、video、audio、config");
+        Enum.TryParse<NodeKind>(kind, true, out var parsed) && Enum.IsDefined(parsed) && parsed != NodeKind.Group ? parsed : throw new McpException($"不支持的节点类型「{kind}」，可用 text、image、video、audio、config");
 
     private static Capability ParseMode(string? mode) =>
-        Enum.TryParse<Capability>(mode, true, out var parsed) && parsed != Capability.Video ? parsed : throw new McpException($"不支持的生成类型「{mode}」，可用 image、text、audio（这个版本不支持生成视频）");
+        Enum.TryParse<Capability>(mode, true, out var parsed) && Enum.IsDefined(parsed) && parsed != Capability.Video ? parsed : throw new McpException($"不支持的生成类型「{mode}」，可用 image、text、audio（这个版本不支持生成视频）");
+
+    private static void ValidateModel(string? model)
+    {
+        if (model is not null && SettingsStore.Current.Resolve(model) is null) throw new McpException($"未知模型「{model}」，请使用 canvas_get_state.models 里的 ID");
+    }
+
+    private static void ValidateGeometry(double? x, double? y, double? width = null, double? height = null)
+    {
+        if (new[] { x, y, width, height }.Any(v => v is { } n && !double.IsFinite(n))) throw new McpException("坐标和尺寸必须是有限数值");
+        if (width <= 0 || height <= 0) throw new McpException("节点宽度和高度必须大于 0");
+    }
+
+    private static void ValidateNodeOp(CanvasOp op, NodeKind kind)
+    {
+        ValidateGeometry(op.X, op.Y, op.Width, op.Height);
+        ValidateModel(op.Model);
+        if (op.Mode is not null) _ = ParseMode(op.Mode);
+        if (op.Text is not null && kind != NodeKind.Text) throw new McpException("只有文本节点可以设置 text");
+    }
 
     /// <summary>Copy the generation fields an op or tool call sets; unknown model IDs are rejected instead of silently falling back.</summary>
     private static void SetParams(CanvasNode node, string? prompt, string? model, string? ratio, string? size, string? quality, int? count)
     {
-        if (model is not null && SettingsStore.Current.Resolve(model) is null) throw new McpException($"未知模型「{model}」，请使用 canvas_get_state.models 里的 ID");
+        ValidateModel(model);
         if (prompt is not null) node.Prompt = prompt;
         if (model is not null) node.Model = model;
         if (ratio is not null) node.Ratio = ratio;
@@ -283,6 +312,7 @@ public static class CanvasTools
                 {
                     case "add_node":
                         var kind = ParseKind(op.Kind);
+                        ValidateNodeOp(op, kind);
                         var node = Place(host, kind, op.X, op.Y);
                         if (op.Width is { } w) node.Width = w;
                         if (op.Height is { } h) node.Height = h;
@@ -297,13 +327,14 @@ public static class CanvasTools
                         break;
                     case "update_node":
                         var target = Find(host, Resolve(op.Id));
+                        ValidateNodeOp(op, target.Kind);
                         if (op.Title is not null) target.Title = op.Title;
                         if (op.X is { } nx) target.X = nx;
                         if (op.Y is { } ny) target.Y = ny;
                         if (op.Width is { } nw) target.Width = nw;
                         if (op.Height is { } nh) target.Height = nh;
                         if (op.Text is not null)
-                            target.Content = target.Kind == NodeKind.Text ? op.Text : throw new McpException("只有文本节点可以设置 text");
+                            target.Content = op.Text;
                         if (op.Mode is not null) target.Mode = ParseMode(op.Mode);
                         SetParams(target, op.Prompt, op.Model, op.Ratio, op.Size, op.Quality, op.Count);
                         foreach (var (key, value) in op.Options ?? []) target.SetOption(key, value);
@@ -329,6 +360,8 @@ public static class CanvasTools
                         results.Add(new { Index = index, Selected = host.Selection });
                         break;
                     case "set_viewport":
+                        ValidateGeometry(op.X, op.Y);
+                        if (op.Zoom is { } requestedZoom && !double.IsFinite(requestedZoom)) throw new McpException("缩放倍数必须是有限数值");
                         var zoom = Math.Clamp(op.Zoom ?? host.Viewport.K, 0.05, 5);
                         var (cx, cy) = (op.X ?? host.ViewCenter.X, op.Y ?? host.ViewCenter.Y);
                         // Keep the screen position of the current centre while moving the requested world point onto it.
@@ -337,7 +370,7 @@ public static class CanvasTools
                         results.Add(new { Index = index, Viewport = new { host.Viewport.X, host.Viewport.Y, Zoom = host.Viewport.K } });
                         break;
                     case "run_generation":
-                        results.Add(new { Index = index, Started = Run(host, Find(host, Resolve(op.Id))) });
+                        results.Add(new { Index = index, Started = Run(host, Find(host, Resolve(op.Id)), recordHistory: false) });
                         break;
                     case "group":
                         var members = (op.Ids ?? []).Select(Resolve).Where(id => doc.Find(id) is not null).ToList();
@@ -365,6 +398,8 @@ public static class CanvasTools
     private static string Generate(ICanvasHost host, string mode, string prompt, List<string>? references, string? model, string? ratio, string? size, string? quality, int? count, double? x, double? y)
     {
         var capability = ParseMode(mode);
+        ValidateGeometry(x, y);
+        ValidateModel(model);
         var inputs = (references ?? []).Select(id => Find(host, id)).ToList();
         host.RecordHistory();
         var node = Place(host, NodeSpec.KindOf(capability), x, y);
@@ -384,15 +419,15 @@ public static class CanvasTools
         foreach (var input in inputs) Connect(host.Document, input, node);
         host.Reveal([node]);
         if (host.CannotGenerate(node) is { } reason) throw new McpException($"节点已创建（{node.Id}），但无法开始生成：{reason}");
-        host.Generate(node);
+        host.Generate(node, recordHistory: false);
         return Json(new { NodeId = node.Id, Started = true, Note = "生成是异步的，用 generation_get_status 查看结果；多张图会在旁边追加节点并从同样的输入连线。" });
     }
 
-    private static bool Run(ICanvasHost host, CanvasNode node)
+    private static bool Run(ICanvasHost host, CanvasNode node, bool recordHistory = true)
     {
         if (host.IsRunning(node.Id)) return false;
         if (host.CannotGenerate(node) is { } reason) throw new McpException(reason);
-        host.Generate(node);
+        host.Generate(node, recordHistory);
         return true;
     }
 
@@ -407,6 +442,7 @@ public static class CanvasTools
             Nodes = nodes.Select(n => new
             {
                 Node = Summary(host, n),
+                Batch = Stacks.Of(n) is { } stack ? Stacks.Members(host.Document, stack).Select(member => Summary(host, member)).ToList() : null,
                 Outputs = host.Document.Connections.Where(c => c.From == n.Id).Select(c => host.Document.Find(c.To)).OfType<CanvasNode>()
                     .Where(o => o.Kind != NodeKind.Config).Select(o => new { o.Id, Status = o.Status.ToString().ToLowerInvariant(), o.Error, File = o.Content }),
             }),
@@ -415,15 +451,18 @@ public static class CanvasTools
 
     private static async Task<CallToolResult> GetImageAsync(ICanvasHost host, string nodeId)
     {
-        var node = await host.OnUiAsync(() => Find(host, nodeId));
-        var image = await host.OnUiAsync(() => host.LoadImageAsync(node, 1024));
-        if (await image is not { } picture) throw new McpException("这个节点没有可查看的图片");
+        var operation = await host.OnUiAsync(() =>
+        {
+            var node = Find(host, nodeId);
+            return (Image: host.LoadImageAsync(node, 1024), Description: $"节点 {node.Id}「{node.Title}」，原图 {node.NaturalWidth}×{node.NaturalHeight}");
+        });
+        if (await operation.Image is not { } picture) throw new McpException("这个节点没有可查看的图片");
         return new CallToolResult
         {
             Content =
             [
                 ImageContentBlock.FromBytes(picture.Bytes, picture.MimeType),
-                new TextContentBlock { Text = $"节点 {node.Id}「{node.Title}」，原图 {node.NaturalWidth}×{node.NaturalHeight}" },
+                new TextContentBlock { Text = operation.Description },
             ],
         };
     }

@@ -82,7 +82,17 @@ public sealed partial class PromptPanel : UserControl
 
     private void Node_PropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName != nameof(CanvasNode.Prompt) || _node is null) return;
+        if (_loading || _node is null) return;
+        if (e.PropertyName is nameof(CanvasNode.Model) or nameof(CanvasNode.Mode) or nameof(CanvasNode.Count)
+            or nameof(CanvasNode.Size) or nameof(CanvasNode.Ratio) or nameof(CanvasNode.Quality) or nameof(CanvasNode.Options))
+        {
+            // External changes must not leave an open parameter editor bound to an old model or value.
+            ParamsFlyout.Hide();
+            if (e.PropertyName == nameof(CanvasNode.Mode)) Bind(_node);
+            else Refresh();
+            return;
+        }
+        if (e.PropertyName != nameof(CanvasNode.Prompt)) return;
         var text = NodeView.BoxText(_node.Prompt);
         // Local typing already matches; only external edits replace the text, without moving the caret unnecessarily.
         if (PromptBox.Text == text) return;
@@ -219,9 +229,9 @@ public sealed partial class PromptPanel : UserControl
     private void ModeBar_SelectionChanged(SelectorBar sender, SelectorBarSelectionChangedEventArgs args)
     {
         if (_loading || _node is null || sender.SelectedItem?.Tag is not string tag || tag == _node.Mode.ToString()) return;
-        _host.History.Record();
-        _node.Mode = Enum.Parse<Capability>(tag);
-        Bind(_node);
+        var (node, mode) = (_node, Enum.Parse<Capability>(tag));
+        SetParameter(() => node.Mode = mode);
+        Bind(node);
     }
 
     private void PromptBox_TextChanged(object sender, TextChangedEventArgs e)
@@ -252,12 +262,10 @@ public sealed partial class PromptPanel : UserControl
     private void ModelBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_loading || _node is null || ModelBox.SelectedIndex < 0 || _models[ModelBox.SelectedIndex] == _node.Model) return;
-        _host.History.Record();
-        _node.Model = _models[ModelBox.SelectedIndex];
+        var (node, model) = (_node, _models[ModelBox.SelectedIndex]);
+        SetParameter(() => node.Model = model);
         ShowMarks();
         ShowHint();
-        ParamsText.Text = ParamsSummary();
-        ShowEstimate();
     }
 
     private async void Generate_Click(object sender, RoutedEventArgs e)
@@ -404,14 +412,14 @@ public sealed partial class PromptPanel : UserControl
         var list = items.ToList();
         var box = new ComboBox { Width = 150, ItemsSource = list.Select(i => i.Label).ToList() };
         box.SelectedIndex = Math.Max(0, list.FindIndex(i => i.Value == current));
-        box.SelectionChanged += (_, _) => { if (box.SelectedIndex < 0) return; _host.History.Record(); apply(list[box.SelectedIndex].Value); ShowEstimate(); };
+        box.SelectionChanged += (_, _) => { if (box.SelectedIndex >= 0) SetParameter(() => apply(list[box.SelectedIndex].Value)); };
         Row(header, box);
     }
 
     private void Toggle(string header, bool value, Action<bool> apply)
     {
         var toggle = new ToggleSwitch { IsOn = value, OnContent = "", OffContent = "", MinWidth = 0 };
-        toggle.Toggled += (_, _) => { _host.History.Record(); apply(toggle.IsOn); ShowEstimate(); };
+        toggle.Toggled += (_, _) => SetParameter(() => apply(toggle.IsOn));
         Row(header, toggle);
     }
 
@@ -420,8 +428,23 @@ public sealed partial class PromptPanel : UserControl
         // AcceptsReturn before Text, or a multi-line value is cut at its first line break.
         var box = new TextBox { Header = header, AcceptsReturn = true, Text = value, TextWrapping = TextWrapping.Wrap };
         // The box itself is the undo key, so one typing session shares one undo point; the BoxText check skips the echo of the initial value.
-        box.TextChanged += (_, _) => { if (box.Text == NodeView.BoxText(value)) return; value = box.Text; _host.History.Record(box); apply(value.Replace('\r', '\n')); };
+        box.TextChanged += (_, _) => { if (box.Text == NodeView.BoxText(value)) return; value = box.Text; SetParameter(() => apply(value.Replace('\r', '\n')), box); };
         _params.Children.Add(box);
+    }
+
+    /// <summary>
+    /// A change made in this panel: one undo point, written while <see cref="_loading"/> is set so <see cref="Node_PropertyChanged"/>
+    /// (which reloads the panel for outside edits) ignores it, then only the summary and estimate follow. Typing in a parameter box
+    /// must not reload the inputs or the model list on every key.
+    /// </summary>
+    private void SetParameter(Action apply, object? undoKey = null)
+    {
+        _host.History.Record(undoKey);
+        _loading = true;
+        try { apply(); }
+        finally { _loading = false; }
+        ParamsText.Text = ParamsSummary();
+        ShowEstimate();
     }
 
     private void Note(string text) => _params.Children.Add(new TextBlock

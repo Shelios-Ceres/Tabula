@@ -19,7 +19,9 @@ public static class Motion
     /// <summary>Scale around a point of the element given as fractions of its size (0.5, 0.5 is the centre), following later size changes.</summary>
     private static void Pivot(Visual visual, float x, float y)
     {
-        var center = visual.Compositor.CreateExpressionAnimation($"Vector3(this.Target.Size.X * {x}, this.Target.Size.Y * {y}, 0)");
+        var center = visual.Compositor.CreateExpressionAnimation("Vector3(this.Target.Size.X * pivotX, this.Target.Size.Y * pivotY, 0)");
+        center.SetScalarParameter("pivotX", x);
+        center.SetScalarParameter("pivotY", y);
         visual.StartAnimation("CenterPoint", center);
     }
 

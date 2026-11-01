@@ -98,11 +98,15 @@ public sealed class GoogleProvider(ModelChannel channel, HttpClient http) : AiPr
             if (type == "step.start" && Http.Str(data["step"]?["type"]) == "model_output")
                 foreach (var content in data["step"]!["content"].Items().Where(c => Http.Str(c["type"]) == "text")) Append(Http.Str(content["text"]));
             if (type == "step.delta" && Http.Str(data["delta"]?["type"]) == "text") Append(Http.Str(data["delta"]!["text"]));
-            if (type == "interaction.completed") CountUsage(data["interaction"]?["usage"], media: false);
-            if (type == "interaction.completed" && Http.Str(data["interaction"]?["status"]) is { } status && status != "completed")
-                throw new ApiException(Http.Message(data["interaction"]) ?? $"Interactions 状态为 {status}");
+            if (type == "interaction.completed")
+            {
+                CountUsage(data["interaction"]?["usage"], media: false);
+                if (Http.Str(data["interaction"]?["status"]) != "completed")
+                    throw new ApiException(Http.Message(data["interaction"]) ?? "文本生成未完整结束，已保留收到的部分内容");
+                return text.ToString();
+            }
         }
-        return text.ToString();
+        throw new ApiException("文本响应在完成前中断，已保留收到的部分内容，请重试");
     }
 
     /// <summary>

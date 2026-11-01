@@ -279,7 +279,7 @@ public class ProviderTests
     {
         var (provider, handler) = Create(Vendor.Qwen, (_, _) => Sse(
             """data: {"output":{"choices":[{"message":{"role":"assistant","content":[{"text":"你"}]}}]}}""",
-            """data: {"output":{"choices":[{"message":{"role":"assistant","content":[{"text":"好"}]}}]}}"""));
+            """data: {"output":{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":[{"text":"好"}]}}]}}"""));
         var text = await provider.GenerateTextAsync(new TextRequest("qwen3.8-max", "打招呼", []), null, default);
         Assert.Equal("你好", text);
         var (request, body) = handler.Calls.Single();
@@ -552,9 +552,73 @@ public class ProviderTests
     {
         var (provider, _) = Create(Vendor.Qwen, (_, _) => Sse(
             """data: {"output":{"choices":[{"message":{"content":"我爱"}}]},"usage":{"input_tokens":26,"output_tokens":1}}""",
-            """data: {"output":{"choices":[{"message":{"content":"苹果"}}]},"usage":{"input_tokens":26,"output_tokens":4}}"""));
+            """data: {"output":{"choices":[{"finish_reason":"stop","message":{"content":"苹果"}}]},"usage":{"input_tokens":26,"output_tokens":4}}"""));
         await provider.GenerateTextAsync(new TextRequest("qwen3.5-plus", "你好", []), null, default);
         Assert.Equal(new TokenUsage(26, 4), provider.Tokens);
+    }
+
+    private static string NativeTextDelta(Vendor vendor) => vendor switch
+    {
+        Vendor.Google => """data: {"event_type":"step.delta","delta":{"type":"text","text":"未完成"}}""",
+        Vendor.Ark => """data: {"choices":[{"delta":{"content":"未完成"}}]}""",
+        _ => """data: {"output":{"choices":[{"message":{"content":"未完成"},"finish_reason":null}]}}""",
+    };
+
+    [Theory]
+    [InlineData(Vendor.Google, false)]
+    [InlineData(Vendor.Google, true)]
+    [InlineData(Vendor.Ark, false)]
+    [InlineData(Vendor.Ark, true)]
+    [InlineData(Vendor.Qwen, false)]
+    [InlineData(Vendor.Qwen, true)]
+    public async Task Native_text_needs_a_success_terminal_event_before_done_or_eof(Vendor vendor, bool done)
+    {
+        var events = new List<string> { NativeTextDelta(vendor) };
+        if (done) events.Add("data: [DONE]");
+        var (provider, _) = Create(vendor, (_, _) => Sse(events.ToArray()));
+        var deltas = new List<string>();
+        await Assert.ThrowsAsync<ApiException>(() => provider.GenerateTextAsync(new TextRequest("text-model", "继续", []), deltas.Add, default));
+        Assert.Equal(["未完成"], deltas);
+    }
+
+    [Theory]
+    [InlineData(Vendor.Google)]
+    [InlineData(Vendor.Ark)]
+    [InlineData(Vendor.Qwen)]
+    public async Task Native_empty_text_stream_is_not_success(Vendor vendor)
+    {
+        var (provider, _) = Create(vendor, (_, _) => Sse());
+        await Assert.ThrowsAsync<ApiException>(() => provider.GenerateTextAsync(new TextRequest("text-model", "继续", []), null, default));
+    }
+
+    [Theory]
+    [InlineData(Vendor.Google, "incomplete")]
+    [InlineData(Vendor.Ark, "length")]
+    [InlineData(Vendor.Ark, "content_filter")]
+    [InlineData(Vendor.Qwen, "length")]
+    [InlineData(Vendor.Qwen, "tool_calls")]
+    public async Task Native_text_truncation_keeps_partial_text_and_reports_failure(Vendor vendor, string reason)
+    {
+        var end = vendor switch
+        {
+            Vendor.Google => $$$"""data: {"event_type":"interaction.completed","interaction":{"status":"{{{reason}}}"}}""",
+            Vendor.Ark => $$"""data: {"choices":[{"delta":{},"finish_reason":"{{reason}}"}]}""",
+            _ => $$$"""data: {"output":{"choices":[{"message":{"content":""},"finish_reason":"{{{reason}}}"}]}}""",
+        };
+        var (provider, _) = Create(vendor, (_, _) => Sse(NativeTextDelta(vendor), end, "data: [DONE]"));
+        var deltas = new List<string>();
+        await Assert.ThrowsAsync<ApiException>(() => provider.GenerateTextAsync(new TextRequest("text-model", "继续", []), deltas.Add, default));
+        Assert.Equal(["未完成"], deltas);
+    }
+
+    [Fact]
+    public async Task Google_completed_returns_without_requiring_eof()
+    {
+        var (provider, _) = Create(Vendor.Google, (_, _) => Sse(
+            NativeTextDelta(Vendor.Google),
+            """data: {"event_type":"interaction.completed","interaction":{"status":"completed"}}""",
+            """data: {"event_type":"error","message":"完成后的数据"}"""));
+        Assert.Equal("未完成", await provider.GenerateTextAsync(new TextRequest("text-model", "继续", []), null, default));
     }
 
     private sealed class SyncProgress<T>(Action<T> report) : IProgress<T>

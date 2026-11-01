@@ -7,7 +7,7 @@
     <Grid x:Name="Root" Background="{ThemeResource CanvasBackgroundBrush}" IsTabStop="True" AllowDrop="True" UseSystemFocusVisuals="False"
           PointerPressed="Root_PointerPressed" PointerMoved="Root_PointerMoved" PointerReleased="Root_PointerReleased"
           PointerCanceled="Root_PointerReleased" PointerCaptureLost="Root_PointerCaptureLost" PointerWheelChanged="Root_PointerWheelChanged"
-          RightTapped="Root_RightTapped" DoubleTapped="Root_DoubleTapped" KeyDown="Root_KeyDown" KeyUp="Root_KeyUp"
+          ContextRequested="Root_ContextRequested" DoubleTapped="Root_DoubleTapped" KeyDown="Root_KeyDown" KeyUp="Root_KeyUp"
           DragOver="Root_DragOver" Drop="Root_Drop" SizeChanged="Root_SizeChanged">
         <win2d:CanvasControl x:Name="Backdrop" Draw="Backdrop_Draw" IsHitTestVisible="False" ClearColor="Transparent" />
         <Canvas x:Name="World">

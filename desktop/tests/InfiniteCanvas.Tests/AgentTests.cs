@@ -14,7 +14,10 @@ public class AgentTests
 {
     private sealed class FakeHost : ICanvasHost
     {
-        public CanvasDocument Document { get; } = new() { Id = "canvas-1", Title = "测试" };
+        public CanvasDocument Document { get; set; } = new() { Id = "canvas-1", Title = "测试" };
+        public Action? AfterUi { get; set; }
+        public List<string> ViewedProjects { get; } = [];
+        public List<string> LibraryProjects { get; } = [];
         public List<string> Selected { get; } = [];
         public List<string> Generated { get; } = [];
         public int Records { get; private set; }
@@ -23,7 +26,12 @@ public class AgentTests
         public IReadOnlyCollection<string> Selection => Selected;
         public Viewport Viewport { get; set; } = new(0, 0, 1);
         public (double X, double Y) ViewCenter => (500, 400);
-        public Task<T> OnUiAsync<T>(Func<T> action) => Task.FromResult(action());
+        public Task<T> OnUiAsync<T>(Func<T> action)
+        {
+            var result = action();
+            AfterUi?.Invoke();
+            return Task.FromResult(result);
+        }
         public void RecordHistory() { Records++; History.Record(); }
         public void Select(IEnumerable<string> ids) { Selected.Clear(); Selected.AddRange(ids); }
         public void Delete(IEnumerable<string> ids)
@@ -35,9 +43,16 @@ public class AgentTests
         public void Reveal(IReadOnlyList<CanvasNode> nodes) { }
         public bool IsRunning(string nodeId) => Generated.Contains(nodeId);
         public string? CannotGenerate(CanvasNode node) => string.IsNullOrWhiteSpace(node.Prompt) ? "请先输入提示词" : null;
-        public void Generate(CanvasNode node) => Generated.Add(node.Id);
-        public Task<(byte[] Bytes, string MimeType)?> LoadImageAsync(CanvasNode node, int maxEdge) =>
-            Task.FromResult<(byte[], string)?>(node.HasContent ? ([1, 2, 3], "image/png") : null);
+        public void Generate(CanvasNode node, bool recordHistory = true)
+        {
+            if (recordHistory) RecordHistory();
+            Generated.Add(node.Id);
+        }
+        public Task<(byte[] Bytes, string MimeType)?> LoadImageAsync(CanvasNode node, int maxEdge)
+        {
+            ViewedProjects.Add(Document.Id);
+            return Task.FromResult<(byte[], string)?>(node.HasContent ? ([1, 2, 3], "image/png") : null);
+        }
         public string? Group(IReadOnlyCollection<string> ids, string? title)
         {
             if (ids.Count < 2) return null;
@@ -57,7 +72,7 @@ public class AgentTests
             Imported.AddRange(paths);
             return Task.FromResult<IReadOnlyList<string>>(paths.Select(_ => Ids.New("node")).ToList());
         }
-        public Task AddToLibraryAsync(CanvasNode node) => Task.CompletedTask;
+        public Task AddToLibraryAsync(CanvasNode node) { LibraryProjects.Add(Document.Id); return Task.CompletedTask; }
     }
 
     private static JsonElement Parse(string json) => JsonDocument.Parse(json).RootElement;
@@ -153,6 +168,63 @@ public class AgentTests
         Assert.Contains("找不到节点", results[0].GetProperty("error").GetString());
         Assert.Contains("未知模型", results[1].GetProperty("error").GetString());
         Assert.Equal("ok", host.Document.Nodes.Last().Content);
+        Assert.Single(host.Document.Nodes);
+    }
+
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(0)]
+    [InlineData(double.NaN)]
+    [InlineData(double.PositiveInfinity)]
+    public void Invalid_geometry_does_not_change_existing_nodes_or_leave_new_ones(double width)
+    {
+        var host = new FakeHost();
+        var node = CanvasNode.Create(NodeKind.Image, 0, 0);
+        host.Document.Nodes.Add(node);
+        var original = InfiniteCanvas.Core.Json.Serialize(node);
+        var result = Parse(CanvasTools.Apply(host,
+        [
+            new CanvasOp { Type = "update_node", Id = node.Id, Title = "不应保存", Width = width },
+            new CanvasOp { Type = "add_node", Kind = "image", Width = width },
+        ]));
+        Assert.All(result.GetProperty("results").EnumerateArray(), item => Assert.True(item.TryGetProperty("error", out _)));
+        Assert.Single(host.Document.Nodes);
+        Assert.Equal(original, InfiniteCanvas.Core.Json.Serialize(node));
+    }
+
+    [Fact]
+    public void Invalid_model_mode_or_text_is_rejected_before_any_field_is_changed()
+    {
+        var host = new FakeHost();
+        var node = CanvasNode.Create(NodeKind.Image, 0, 0);
+        host.Document.Nodes.Add(node);
+        var original = InfiniteCanvas.Core.Json.Serialize(node);
+        var result = Parse(CanvasTools.Apply(host,
+        [
+            new CanvasOp { Type = "update_node", Id = node.Id, Title = "不应保存", Model = "missing::model" },
+            new CanvasOp { Type = "update_node", Id = node.Id, X = 900, Text = "不能写入图片" },
+            new CanvasOp { Type = "update_node", Id = node.Id, X = 900, Mode = "99" },
+            new CanvasOp { Type = "add_node", Kind = "config", Mode = "bad" },
+            new CanvasOp { Type = "add_node", Kind = "99" },
+        ]));
+        Assert.All(result.GetProperty("results").EnumerateArray(), item => Assert.True(item.TryGetProperty("error", out _)));
+        Assert.Equal(original, InfiniteCanvas.Core.Json.Serialize(Assert.Single(host.Document.Nodes)));
+    }
+
+    [Fact]
+    public void Generation_in_an_apply_batch_uses_the_batch_undo_record()
+    {
+        var host = new FakeHost();
+        CanvasTools.Apply(host,
+        [
+            new CanvasOp { Type = "add_node", Kind = "image", Ref = "image", Prompt = "一只猫" },
+            new CanvasOp { Type = "run_generation", Id = "image" },
+        ]);
+        Assert.Single(host.Generated);
+        Assert.Equal(1, host.Records);
+        Assert.True(host.History.Undo());
+        Assert.Empty(host.Document.Nodes);
+        Assert.False(host.History.CanUndo);
     }
 
     [Fact]
@@ -341,10 +413,29 @@ public class AgentTests
         var generated = await client.CallToolAsync("canvas_generate", new Dictionary<string, object?> { ["mode"] = "image", ["prompt"] = "一只猫", ["ratio"] = "1:1" });
         var nodeId = Parse(((TextContentBlock)generated.Content[0]).Text).GetProperty("nodeId").GetString();
         Assert.Equal([nodeId!], host.Generated);
+        Assert.Equal(1, host.Records);
         Assert.Equal(("一只猫", "1:1"), (host.Document.Nodes.Single().Prompt, host.Document.Nodes.Single().Ratio));
 
         var state = Parse(((TextContentBlock)(await client.CallToolAsync("canvas_get_state")).Content[0]).Text);
         Assert.Equal("image", state.GetProperty("nodes")[0].GetProperty("kind").GetString());
+
+        var first = host.Document.Find(nodeId!)!;
+        var second = CanvasNode.Create(NodeKind.Image, 0, 0);
+        var third = CanvasNode.Create(NodeKind.Image, 0, 0);
+        var downstream = CanvasNode.Create(NodeKind.Image, 0, 0);
+        first.Status = NodeStatus.Success;
+        first.Content = "图片-001.png";
+        second.Status = NodeStatus.Error;
+        second.Error = "第二张失败";
+        third.Status = NodeStatus.Loading;
+        foreach (var node in new[] { second, third, downstream }) host.Document.Nodes.Add(node);
+        Stacks.Form([first, second, third]);
+        host.Document.Connections.Add(CanvasConnection.Create(first.Id, downstream.Id));
+        var status = Parse(((TextContentBlock)(await client.CallToolAsync("generation_get_status", new Dictionary<string, object?> { ["nodeIds"] = new[] { first.Id } })).Content[0]).Text);
+        var batch = status.GetProperty("nodes")[0].GetProperty("batch");
+        Assert.Equal([first.Id, second.Id, third.Id], batch.EnumerateArray().Select(n => n.GetProperty("id").GetString()!).ToArray());
+        Assert.Equal("第二张失败", batch[1].GetProperty("error").GetString());
+        Assert.Equal(downstream.Id, status.GetProperty("nodes")[0].GetProperty("outputs")[0].GetProperty("id").GetString());
 
         var failed = await client.CallToolAsync("canvas_run_generation", new Dictionary<string, object?> { ["nodeId"] = "missing" });
         Assert.True(failed.IsError);
@@ -362,6 +453,42 @@ public class AgentTests
             Assert.Equal(1, Parse(((TextContentBlock)placed.Content[0]).Text).GetProperty("nodeIds").GetArrayLength());
             Assert.Equal([file], host.Imported);
             Assert.True((await client.CallToolAsync("library_place", new Dictionary<string, object?> { ["names"] = new[] { "nope.png" } })).IsError);
+        }
+        finally { Directory.Delete(Path.GetDirectoryName(library)!, true); }
+    }
+
+    [Fact]
+    public async Task Async_tools_do_not_mix_canvases_between_ui_dispatches()
+    {
+        var host = new FakeHost();
+        var original = new CanvasDocument();
+        var next = new CanvasDocument();
+        var image = CanvasNode.Create(NodeKind.Image, 0, 0);
+        image.Content = "图片-001.png";
+        original.Nodes.Add(image);
+        host.Document = original;
+        host.AfterUi = () => host.Document = next;
+        await using var server = new CanvasMcpServer(host);
+        await using var pipe = new NamedPipeClientStream(".", server.PipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
+        await pipe.ConnectAsync(5000);
+        await using var client = await McpClient.CreateAsync(new StreamClientTransport(pipe, pipe, null));
+
+        Assert.False((await client.CallToolAsync("canvas_get_image", new Dictionary<string, object?> { ["nodeId"] = image.Id })).IsError == true);
+        Assert.Equal([original.Id], host.ViewedProjects);
+        host.Document = original;
+        Assert.False((await client.CallToolAsync("library_add", new Dictionary<string, object?> { ["nodeId"] = image.Id })).IsError == true);
+        Assert.Equal([original.Id], host.LibraryProjects);
+
+        var library = InfiniteCanvas.Core.Storage.ProjectStore.LibraryDir(original.Id);
+        Directory.CreateDirectory(library);
+        var file = Path.Combine(library, "reference.png");
+        await File.WriteAllBytesAsync(file, [1, 2, 3]);
+        try
+        {
+            host.Document = original;
+            var placed = await client.CallToolAsync("library_place", new Dictionary<string, object?> { ["names"] = new[] { "reference.png" } });
+            Assert.True(placed.IsError);
+            Assert.Empty(host.Imported);
         }
         finally { Directory.Delete(Path.GetDirectoryName(library)!, true); }
     }

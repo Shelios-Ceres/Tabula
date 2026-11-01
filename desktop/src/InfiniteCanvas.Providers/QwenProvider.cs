@@ -79,12 +79,15 @@ public sealed class QwenProvider(ModelChannel channel, HttpClient http) : AiProv
         var text = new StringBuilder();
         // Every event carries the usage so far, so the last one is the request's total.
         JsonNode? usage = null;
+        string? finishReason = null;
         await foreach (var item in Http.ReadSse(response, ct).ConfigureAwait(false))
         {
             if (item.Data == "[DONE]") break;
             var data = JsonNode.Parse(item.Data)!;
             usage = data["usage"] ?? usage;
-            var message = data["output"]?["choices"]?[0]?["message"];
+            var choice = data["output"]?["choices"].Items().FirstOrDefault();
+            finishReason = Http.Str(choice?["finish_reason"]) ?? finishReason;
+            var message = choice?["message"];
             if (message is null && Http.Str(data["code"]) is { Length: > 0 }) throw new ApiException(Http.Message(data) ?? "文本生成失败");
             var delta = message?["content"] switch
             {
@@ -97,6 +100,7 @@ public sealed class QwenProvider(ModelChannel channel, HttpClient http) : AiProv
             onDelta?.Invoke(text.ToString());
         }
         Count(usage);
+        if (finishReason != "stop") throw new ApiException($"文本响应未完整结束（{finishReason ?? "缺少完成事件"}），已保留收到的部分内容，请重试");
         return text.ToString();
     }
 

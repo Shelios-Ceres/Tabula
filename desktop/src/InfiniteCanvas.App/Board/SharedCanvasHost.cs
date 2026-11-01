@@ -52,7 +52,7 @@ public sealed class SharedCanvasHost(DispatcherQueue ui) : ICanvasHost
     public void Reveal(IReadOnlyList<CanvasNode> nodes) => Canvas.Reveal(nodes);
     public bool IsRunning(string nodeId) => Canvas.IsRunning(nodeId);
     public string? CannotGenerate(CanvasNode node) => Canvas.CannotGenerate(node);
-    public void Generate(CanvasNode node) => Canvas.Generate(node);
+    public void Generate(CanvasNode node, bool recordHistory = true) => Canvas.Generate(node, recordHistory);
     public Task<(byte[] Bytes, string MimeType)?> LoadImageAsync(CanvasNode node, int maxEdge) => Canvas.LoadImageAsync(node, maxEdge);
     public string? Group(IReadOnlyCollection<string> ids, string? title) => Canvas.Group(ids, title);
     public void Ungroup(IReadOnlyCollection<string> ids) => Canvas.Ungroup(ids);

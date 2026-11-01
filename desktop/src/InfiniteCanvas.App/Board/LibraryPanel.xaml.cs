@@ -25,8 +25,8 @@ public sealed class LibraryEntry(string path, string name, NodeKind kind, bool c
     public string Name { get; } = name;
     public NodeKind Kind { get; } = kind;
     public bool CanvasFile { get; } = canvasFile;
-    public CanvasNode? Node { get; } = node;
-    public bool OffCanvas => CanvasFile && Node is null;
+    public string? NodeId { get; } = node?.Id;
+    public bool OffCanvas => CanvasFile && NodeId is null;
     public string Glyph => NodeView.Glyph(Kind);
     public bool IsVideo => Kind == NodeKind.Video;
     public ImageSource? Thumbnail { get => _thumbnail; set => SetProperty(ref _thumbnail, value); }
@@ -118,7 +118,7 @@ public sealed partial class LibraryPanel : UserControl
         return true;
     }
 
-    private static string Key(LibraryEntry entry) => $"{entry.Path}|{entry.Node?.Id}|{entry.Name}";
+    private static string Key(LibraryEntry entry) => $"{entry.Path}|{entry.NodeId}|{entry.Name}";
 
     private static LibraryEntry Thumbnailed(LibraryEntry entry)
     {
@@ -184,13 +184,13 @@ public sealed partial class LibraryPanel : UserControl
 
     private void Items_ItemClick(object sender, ItemClickEventArgs e)
     {
-        if (e.ClickedItem is LibraryEntry { Node: { } node }) Target?.Locate(node);
+        if (e.ClickedItem is LibraryEntry { NodeId: { } id } && Target is { } canvas && canvas.Doc.Find(id) is { } node) canvas.Locate(node);
     }
 
     // Library items are copied in; a canvas file that is off the canvas goes back as it is.
     private async void Item_DoubleTapped(object sender, DoubleTappedRoutedEventArgs e)
     {
-        if ((sender as FrameworkElement)?.DataContext is LibraryEntry { Node: null } entry && Target is { } canvas)
+        if ((sender as FrameworkElement)?.DataContext is LibraryEntry { NodeId: null } entry && Target is { } canvas)
             await canvas.ImportFilesAsync([entry.Path], canvas.ViewCenterWorld);
     }
 
@@ -206,7 +206,7 @@ public sealed partial class LibraryPanel : UserControl
     {
         if (e.OriginalSource is not FrameworkElement { DataContext: LibraryEntry entry } target || Target is not { } canvas) return;
         var menu = new MenuFlyout();
-        if (entry.Node is { } node)
+        if (entry.NodeId is { } id && canvas.Doc.Find(id) is { } node)
         {
             menu.Items.Add(CanvasView.Item("在画布上找到", "\uE721", () => canvas.Locate(node)));
             menu.Items.Add(CanvasView.Item("加入资料库", "\uE8F1", () => canvas.AddToLibraryAsync(node)));
@@ -227,7 +227,7 @@ public sealed partial class LibraryPanel : UserControl
         e.Handled = true;
     }
 
-    /// <summary>Deleting in the panel is what removes files: they go to the recycle bin, and canvas files take the nodes showing them along as one undo step.</summary>
+    /// <summary>Only successfully recycled files lose their nodes and historical references; restore files through the system recycle bin.</summary>
     private async Task DeleteAsync(IReadOnlyList<LibraryEntry> entries)
     {
         if (entries.Count == 0 || Target is not { } canvas) return;
@@ -236,16 +236,20 @@ public sealed partial class LibraryPanel : UserControl
             foreach (var entry in entries) LibraryStore.Remove(entry.Path);
             return;
         }
-        var names = entries.Select(e => Path.GetFileName(e.Path)).ToHashSet();
-        var nodes = canvas.Doc.Nodes.Where(n => n.Kind is NodeKind.Image or NodeKind.Video or NodeKind.Audio && n.Content is { } file && names.Contains(file)).Select(n => n.Id).ToList();
-        if (nodes.Count > 0)
+        if (!await Dialogs.ConfirmAsync($"删除 {entries.Count} 个文件？", "文件会移到回收站，画布上引用它们的节点和相关撤销记录也会删除。此操作不能通过画布撤销恢复；需要时请从系统回收站还原文件。", "删除", destructive: true) || canvas.IsClosing) return;
+        var (recycled, failures) = (new List<string>(), new List<string>());
+        foreach (var entry in entries)
         {
-            if (!await Dialogs.ConfirmAsync($"删除 {entries.Count} 个文件？", $"文件会移到回收站，画布上用到它们的 {nodes.Count} 个节点也会一起删除。", "删除", destructive: true)) return;
-            canvas.History.Record();
-            canvas.DeleteNodes(nodes, wholeStacks: false);
+            try
+            {
+                if (ProjectStore.Recycle(entry.Path)) recycled.Add(Path.GetFileName(entry.Path));
+                else failures.Add($"{entry.Name}：已取消或文件仍被占用");
+            }
+            catch (Exception ex) { failures.Add($"{entry.Name}：{ex.Message}"); }
         }
-        foreach (var entry in entries) ProjectStore.Recycle(entry.Path);
+        if (recycled.Count > 0) canvas.ForgetAssets(recycled);
         Refresh();
+        if (failures.Count > 0) await Dialogs.MessageAsync("部分文件未删除", string.Join("\n", failures));
     }
 
     private async void Import_Click(object sender, RoutedEventArgs e)

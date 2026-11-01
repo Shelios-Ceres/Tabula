@@ -127,10 +127,18 @@ public static class ProjectStore
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { /* Unreadable folder: keep everything. */ }
     }
 
-    /// <summary>Removed files go to the recycle bin; cancelling the shell dialog returns silently.</summary>
-    public static void Recycle(string path)
+    /// <summary>True only once the file is gone; a cancelled shell dialog leaves its references intact.</summary>
+    public static bool Recycle(string path)
     {
-        if (File.Exists(path)) FileSystem.DeleteFile(path, UIOption.OnlyErrorDialogs, RecycleOption.SendToRecycleBin, UICancelOption.DoNothing);
+        try
+        {
+            // Unlike File.Exists, this does not mistake an access error for an absent file.
+            File.GetAttributes(path);
+            FileSystem.DeleteFile(path, UIOption.OnlyErrorDialogs, RecycleOption.SendToRecycleBin, UICancelOption.ThrowException);
+            return true;
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException) { return true; }
+        catch (OperationCanceledException) { return false; }
     }
 
     private static string? Cover(CanvasDocument doc)

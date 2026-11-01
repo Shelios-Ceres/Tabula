@@ -672,7 +672,7 @@ public sealed partial class CanvasView : UserControl
         for (var element = source as DependencyObject; element is not null; element = VisualTreeHelper.GetParent(element))
         {
             if (element == _panel) return (null, "panel");
-            if (element is FrameworkElement { Tag: string tag } && tag is "source" or "target" or "resize" or "stack") part ??= tag;
+            if (element is FrameworkElement { Tag: string tag } && tag is "source" or "target" or "resize") part ??= tag;
             if (element is NodeView view) return (view, part);
             if (element == Root) break;
         }
@@ -862,12 +862,6 @@ public sealed partial class CanvasView : UserControl
         StopGlide();
         Root.Focus(FocusState.Pointer);
         _pressed = null;
-        if (part == "stack" && view is not null && e.GetCurrentPoint(Root).Properties.IsLeftButtonPressed)
-        {
-            ToggleStack(view.Node);
-            e.Handled = true;
-            return;
-        }
         _startScreen = point.Position;
         _startWorld = _currentWorld = ToWorld(point.Position);
         _moved = false;
@@ -1160,6 +1154,15 @@ public sealed partial class CanvasView : UserControl
         Select(_selected.Where(id => !nodeIds.Contains(id)).ToList());
     }
 
+    /// <summary>Recycled files come back through the recycle bin, never by reviving JSON references; one pass over the history for all of them.</summary>
+    public void ForgetAssets(IEnumerable<string> names)
+    {
+        var files = new HashSet<string>(names, StringComparer.OrdinalIgnoreCase);
+        History.ForgetAssets(files);
+        DeleteNodes(Doc.Nodes.Where(n => n.Kind is NodeKind.Image or NodeKind.Video or NodeKind.Audio && n.Content is { } asset && files.Contains(asset)).Select(n => n.Id).ToList(), wholeStacks: false);
+        RaiseChanged();
+    }
+
     public void Duplicate()
     {
         var sources = Doc.Nodes.Where(n => _selected.Contains(n.Id) && n.Kind != NodeKind.Group).ToList();
@@ -1316,13 +1319,17 @@ public sealed partial class CanvasView : UserControl
         menu.ShowAt(Root, new FlyoutShowOptions { Position = screen });
     }
 
-    private void Root_RightTapped(object sender, RightTappedRoutedEventArgs e)
+    private void Root_ContextRequested(UIElement sender, ContextRequestedEventArgs e)
     {
+        if (e.Handled) return;
         var (view, part) = HitTest(e.OriginalSource);
         if (part == "panel" || e.OriginalSource is TextBox) return;
-        var position = e.GetPosition(Root);
+        var keyboard = !e.TryGetPosition(Root, out var position);
+        var node = view?.Node ?? (keyboard ? _order.Select(Doc.Find).LastOrDefault(n => n is not null) : null);
+        if (keyboard) position = node is null ? Center : ToScreen(node.X + node.Width / 2, node.Y + node.Height / 2);
+        e.Handled = true;
         var world = ToWorld(position);
-        if ((view is null || view.Node.Kind == NodeKind.Group) && ConnectionAt(world) is { } connection)
+        if (!keyboard && (node is null || node.Kind == NodeKind.Group) && ConnectionAt(world) is { } connection)
         {
             Select([]);
             _selectedConnection = connection.Id;
@@ -1335,12 +1342,11 @@ public sealed partial class CanvasView : UserControl
             connectionMenu.ShowAt(Root, new FlyoutShowOptions { Position = position });
             return;
         }
-        if (view is null)
+        if (node is null)
         {
             ShowCreateMenu(position, null);
             return;
         }
-        var node = view.Node;
         if (!_selected.Contains(node.Id)) Select([node.Id]);
         var menu = new MenuFlyout();
         if (CanvasGenerator.CanGenerate(node))
@@ -1429,6 +1435,8 @@ public sealed partial class CanvasView : UserControl
     {
         // Keys pressed on the prompt panel's buttons and lists stay theirs (not Handled, so Tab / arrows still navigate).
         if (e.OriginalSource is TextBox or PasswordBox or RichEditBox || HitTest(e.OriginalSource).Part == "panel") return;
+        for (var element = e.OriginalSource as DependencyObject; element is not null && element != Root; element = VisualTreeHelper.GetParent(element))
+            if (element is ButtonBase) return;
         var ctrl = Down(VirtualKey.Control);
         var shift = Down(VirtualKey.Shift);
         switch (e.Key)
@@ -1812,7 +1820,8 @@ public sealed partial class CanvasView : UserControl
     internal async Task AddToLibraryAsync(CanvasNode node)
     {
         var (projectId, path) = (Doc.Id, ProjectStore.AssetPath(Doc.Id, node.Content!));
-        var copy = await Task.Run(() => NamedCopy(node, path));
+        var snapshot = node.Clone();
+        var copy = await Task.Run(() => NamedCopy(snapshot, path));
         try { await LibraryStore.AddAsync(projectId, [copy]); }
         finally { if (copy != path) Directory.Delete(Path.GetDirectoryName(copy)!, true); }
     }

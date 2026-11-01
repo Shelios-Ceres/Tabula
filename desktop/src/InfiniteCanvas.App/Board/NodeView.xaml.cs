@@ -36,6 +36,7 @@ public sealed partial class NodeView : UserControl
         InitializeComponent();
         Node = node;
         _host = host;
+        StackButton.Click += (_, _) => { _host.Select([Node.Id]); _host.ToggleStack(Node); };
         KindIcon.Glyph = Glyph(node.Kind);
         BuildBody();
         SyncAll();
@@ -74,8 +75,8 @@ public sealed partial class NodeView : UserControl
         StackText.Text = collapsed ? $"{completed}/{count} 完成" + (failed > 0 ? $" · {failed} 失败" : "") : "收起";
         SyncTitle();
         var tip = $"这一批共 {count} 个结果，已完成 {completed} 个，失败 {failed} 个；" + (collapsed ? "点击卡片展开" : "点击收起这一批");
-        ToolTipService.SetToolTip(StackBadge, tip);
-        AutomationProperties.SetName(StackBadge, tip);
+        ToolTipService.SetToolTip(StackButton, tip);
+        AutomationProperties.SetName(StackButton, tip);
     }
 
     /// <summary>A collapsed stack shows the batch's name; opened, its lead goes by its own number like the cards beside it.</summary>
