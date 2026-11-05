@@ -1,6 +1,6 @@
 {
-  "title": "Business",
+  "title": "License",
   "root": true,
   "defaultOpen": true,
-  "pages": ["license", "business"]
+  "pages": ["license"]
 }

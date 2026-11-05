@@ -21,8 +21,8 @@ const tabs: DocsSection[] = [
   { title: { en: 'Overview', 'zh-CN': '项目介绍' }, description: { en: 'Start here and explore features', 'zh-CN': '快速开始与功能介绍' }, href: '/docs/overview/quick-start', prefix: '/docs/overview', pages: ['quick-start', 'features'], icon: BookOpen },
   { title: { en: 'Development', 'zh-CN': '开发文档' }, description: { en: 'Building and code layout', 'zh-CN': '编译与代码结构' }, href: '/docs/development/local-development', prefix: '/docs/development', pages: ['local-development'], icon: Code2 },
   { title: { en: 'Progress', 'zh-CN': '项目进度' }, description: { en: 'Changelog, plans, and testing', 'zh-CN': '变更、计划与待测试项' }, href: '/docs/progress/changelog', prefix: '/docs/progress', pages: ['changelog', 'todo', 'pending-test', 'desktop-client-plan'], icon: ListChecks },
-  { title: { en: 'Business', 'zh-CN': '商务合作' }, description: { en: 'Cooperation and licensing', 'zh-CN': '合作方式与开源许可' }, href: '/docs/business/business', prefix: '/docs/business', pages: ['business', 'license'], icon: Handshake },
-  { title: { en: 'Support', 'zh-CN': '赞助支持' }, description: { en: 'Sponsorship and security', 'zh-CN': '赞助项目与安全说明' }, href: '/docs/support/sponsor', prefix: '/docs/support', pages: ['sponsor', 'security'], icon: HeartHandshake },
+  { title: { en: 'License', 'zh-CN': '开源协议' }, description: { en: 'MIT license and origin', 'zh-CN': 'MIT 许可与项目来源' }, href: '/docs/business/license', prefix: '/docs/business', pages: ['license'], icon: Handshake },
+  { title: { en: 'Security', 'zh-CN': '安全' }, description: { en: 'Reporting vulnerabilities', 'zh-CN': '漏洞提交' }, href: '/docs/support/security', prefix: '/docs/support', pages: ['security'], icon: HeartHandshake },
 ];
 
 export function DocsSidebarTabs() {
