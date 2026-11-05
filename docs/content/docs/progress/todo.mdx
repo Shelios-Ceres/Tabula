@@ -10,8 +10,7 @@ description: Planned follow-up work
 - Canvas UI: split image settings into common and advanced groups, and add a light hint on empty canvases.
 - Model family follow-ups: the official Kling API is on hold; Wan 2.6 and earlier (older protocol) are not integrated; Gemini multi-speaker TTS is not integrated yet.
 - Quota follow-ups: Gemini list prices rise from 2027-01-01, so update the built-in prices in `Core/Models/Prices.cs` then; if OpenAI publishes per-image tables for GPT Image 2.5 and 2K / 4K sizes, add them to the cost preview; Volcengine / Alibaba Cloud signing, the xAI Management API and each vendor's usage fields still need checking against real bills.
+- Screenshots: the images in the README and on the documentation home page still show the web client; replace them with desktop client screenshots.
 
-- Remaining real-account checks: untested GPT Image 2.5 Images options and Responses, other Gemini models, native search, Ark Pro layer decomposition and server-stored conversation continuation. Dated-snapshot Sunburst Images editing, tested Pro/Lite Endpoints and Gemini 3.1 Flash Image flows are listed in Pending Tests. Run native image schema tests after installing canvas-agent's own dependencies. Batch APIs, explicit cache controls, and custom safety controls remain outside the current real-time creation scope.
+- Remaining real-account checks: untested GPT Image 2.5 Images options and Responses, other Gemini models, native search, Ark Pro layer decomposition and server-stored conversation continuation. Batch APIs, explicit cache controls, and custom safety controls remain outside the current real-time creation scope.
 
-- Replace the Claude Code CLI adapter with a Claude Agent SDK adapter and improve the tool queue, following the [Local Agent Integration Plan](/docs/progress/local-agent-integration-plan).
-- Add Skill installation from web search, Skill resource-file management, and controlled local-memory persistence.

@@ -1,5 +1,7 @@
 # GPT Image 2.5 API 深度适配调研
 
+> 本文调研时的实现基于已从仓库移除的网页版，文中指向 `web/`、`canvas-agent/` 的源码链接需要到 git 历史中查看；服务商接口部分仍可参考。
+
 本报告面向 Infinite Canvas 的 OpenAI 官方直连适配。调研代码基线为 `main` 分支、提交 `d213a74`、版本 `v0.18.0`。接口差异来自 OpenAI 官方模型页、Images API 参考和图像指南；“当前实现”描述调研时的源码及本地生图工作台。第一阶段已进入实现与验收，实际变更见[待测试记录](/D:/infinite-canvas/docs/content/docs/progress/pending-test.zh-CN.mdx)；流式、input_fidelity 和 Responses 的实测条件继续适用。
 
 建议沿用现有 Images API 完成生成和编辑的第一阶段适配，同时接入 Sunburst 与 Flare。优先补齐模型能力、质量、输出格式、原生遮罩和参数保存链路；流式预览与 Responses 多轮编辑分别实施。现有基础架构可继续使用，改动重点在参数能否从界面完整传到 API，以及返回结果能否准确保存和复用。

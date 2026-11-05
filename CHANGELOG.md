@@ -2,6 +2,7 @@
 
 ## Unreleased
 
++ [调整] 移除网页版（`web/`）及只为它服务的 canvas-agent、canvas-proxy、网页节点插件、Codex 插件和 Docker / Render / Vercel / GitHub Pages 部署配置，项目只保留 Windows 桌面客户端，文档同步改为只介绍桌面客户端。
 + [修复] 桌面客户端文件回收成功后才移除节点及相关撤销引用，修复撤销错图、画布文件定位失效和 Agent 跨画布混用素材的问题。
 + [修复] 桌面客户端 MCP 在修改前校验参数，返回完整批次状态并复用整批撤销记录，生成面板同步 Agent 修改的模型与参数。
 + [修复] 桌面客户端拒绝缺少成功终态的文本流，修复大图重绘蒙版对齐及 Gemini 2.5 Flash Image 图片费用漏计。

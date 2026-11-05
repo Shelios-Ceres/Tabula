@@ -1,38 +1,38 @@
 ---
 title: Quick Start
-description: Run Infinite Canvas in a few steps
+description: Build and run the Infinite Canvas Windows desktop client
 ---
 
 # Quick Start
 
-To try the project, deploy or start the `web/` frontend.
+Infinite Canvas is a native Windows desktop client; its code is in the repository's `desktop/` folder.
 
-## Deploy with Vercel
+## Requirements
 
-Import the repository into Vercel. The root `vercel.json` builds `web/`. AI requests are sent directly from the browser to your OpenAI-compatible endpoint, so no additional application server is required.
+- Windows 10 1809 or later; Windows 11 is recommended.
+- .NET 10 SDK. The first build downloads Windows App SDK, Win2D and other dependencies from NuGet.
 
-## Run locally
+## Build and run
 
-```bash
-git clone git@github.com:basketikun/infinite-canvas.git
-cd infinite-canvas/web
-bun install
-bun run dev
-```
-
-Open `http://localhost:3000`.
-
-## Run with Docker
+From the repository root:
 
 ```bash
-docker build -t infinite-canvas .
-docker run --rm -p 3000:3000 infinite-canvas
+dotnet build desktop/InfiniteCanvas.sln
 ```
 
-## First-time setup
+```bash
+desktop/src/InfiniteCanvas.App/bin/x64/Debug/net10.0-windows10.0.19041.0/win-x64/InfiniteCanvas.exe
+```
 
-- Open Settings and enter your `Base URL`, `API Key`, and model names.
-- Open `/prompts` to fetch prompt repositories directly from the browser and cache them in IndexedDB.
-- Configure WebDAV if you want to synchronize canvases, assets, and generation history across devices.
+The app is unpackaged and self-contained, so no separate Windows App SDK runtime is needed. You can also open `desktop/InfiniteCanvas.sln` in Visual Studio 2026 with .NET 10 support and run the x64 configuration.
 
-Canvas projects and My Assets are primarily stored in the browser. The API key is also stored locally and used by the browser to call OpenAI-compatible endpoints directly.
+## First run
+
+- Open Settings, add the vendors you use under "服务商" (OpenAI, Google Gemini, Volcengine Ark, xAI, Qwen), enter their API keys, then fetch or add models.
+- Go back to the canvas list, create a canvas, and pick a model in the generation panel to generate.
+- To let an agent work on the canvas, open "助手" on the right of a canvas, or register `InfiniteCanvas.exe --mcp-bridge` as an MCP server in an agent outside the client.
+
+## Notes
+
+- Canvases, media files and settings are stored in `%LocalAppData%\InfiniteCanvas` and never uploaded to a server.
+- API keys are encrypted for the current user with Windows DPAPI, and generation requests go straight from the client to the vendor.

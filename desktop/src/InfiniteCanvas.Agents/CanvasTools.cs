@@ -85,7 +85,7 @@ public sealed class CanvasOp
     public double? Zoom { get; set; }
 }
 
-/// <summary>MCP tools over the open canvas. Names follow the web canvas-agent where the meaning is the same.</summary>
+/// <summary>MCP tools over the open canvas.</summary>
 public static class CanvasTools
 {
     public const string Instructions = """

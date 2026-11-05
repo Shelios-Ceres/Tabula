@@ -1,76 +1,73 @@
 ---
 title: Features
-description: Major features available in the current project
+description: Major features of the Windows desktop client
 ---
 
 # Features
 
-## Canvas projects
+Infinite Canvas is a native Windows desktop client (WinUI 3, in the repository's `desktop/` folder). This page covers the released features; newer changes that still await testing are listed in [Pending Tests](/docs/progress/pending-test).
 
-- Create, rename, duplicate, delete, import, and export canvas projects.
-- Persist projects in the browser and optionally synchronize them with WebDAV.
-- Keep viewport, background, nodes, connections, and assistant sessions with each project.
+## Canvas
 
-## Infinite canvas
+- The canvas list creates and opens multiple canvases; deleted canvases go to the recycle bin.
+- A Win2D infinite canvas: drag empty space to pan, hold Shift / Ctrl and drag to box-select, with touchpad gestures. Nodes can be moved, resized, connected and grouped. Undo and redo keep up to 100 steps, and the canvas saves automatically.
+- Node kinds are image, video, audio, text, generation config and group, each with its own color for icons, connections and the mini-map.
+- Images, videos and audio can be dropped in from Explorer, imported or pasted. Imported and generated files are numbered per canvas and kind (for example `图片-001.png`), and node titles follow the number until renamed.
+- A mini-map in the bottom-left corner; click or drag it to jump.
+- With several nodes selected, match width, height or both, or group them, using the first clicked node as the reference.
+- Double-click an image for a full-screen preview; Ctrl+C copies images or text; Ctrl+= / Ctrl+- zoom, and the arrow keys nudge nodes.
 
-- Pan, zoom, reset the view, select multiple nodes, copy and paste, undo and redo.
-- Drag files onto the canvas and use lines, dots, or a blank background.
-- Export the entire canvas or selected elements with their resources.
+## Generation
 
-## Nodes and workflows
+- Five vendors, called directly: OpenAI, Google Gemini, Volcengine Ark, xAI and Qwen each use their own official native API, never a compatibility layer. Add vendors in Settings; requests go straight from the client to the vendor.
+- Image, text and speech generation. A generation config node gathers upstream text and images and generates with one model and set of parameters.
+- Signature features of each vendor's models: Seedream 5.0 pro / flash point and box editing, layer decomposition and transparent backgrounds; GPT Image 2.5 masked inpainting; multi-turn editing with GPT Image and Nano Banana; Qwen 3.0 pro agent rewriting, thinking mode and seeds.
+- OpenAI "Responses image tool" jobs run as background tasks, so a dropped proxy connection does not fail long generations, and reopening a canvas after closing the client picks up the result.
+- Multi-image results stack into a pile: click to fan it out, click "收起" to fold it back, and the selected image becomes the cover. Failed nodes have a one-click "重试".
+- References over a vendor's official limit are shrunk below it before sending, and the generation panel says what changed.
+- Models show a short name without vendor prefixes and dates by default, or a custom display name; requests always use the full model ID.
+- This version imports and plays videos only; video generation lives on the `video-models` branch.
 
-- Text, image, video, and generation-configuration nodes.
-- Connect text prompts and reference media to generation nodes.
-- Generate or rewrite text, create images, edit images from references, and create videos.
-- Preserve original image ratios by default and organize batch results as connected nodes.
-- Record prompts, models, dimensions, quality, and references on generated nodes for retries.
+## Image tools
 
-## AI generation
+With a single image node that has a picture selected, a toolbar appears above it, with the same entries in the context menu. Results go into new nodes on the right and the original is left unchanged:
 
-- Connect to user-provided OpenAI-compatible endpoints directly from the browser.
-- Configure multiple channels, fetch or enter model names, and choose default text, image, and video models.
-- Support image count, aspect ratio, quality, transparent backgrounds, reasoning effort, and custom invocation scripts.
-- Support OpenAI-style video endpoints.
+- Local editing, crop, split, multi-angle redraw and prompt extraction.
+- Local upscaling with Real-ESRGAN on the local GPU at 2× / 4×; images are not uploaded. Put Real-ESRGAN-ncnn-vulkan in the data folder's `tools\realesrgan` first.
 
-## Canvas Agent
+## Library and canvas files
 
-- Connect local Codex through Canvas Agent and MCP without giving a web server direct access to browser state.
-- Read the active canvas, selection, nodes, edges, generation status, and apply structured operations.
-- Use Codex from the browser side panel with streaming responses, history, approvals, permissions, diagnostics, and local Skills.
-- Isolate active canvases and turns across multiple browser tabs.
-
-See [Codex App Plugin](/docs/overview/codex-app-plugin) for installation and usage.
-
-## Plugin system
-
-Canvas plugins can contribute node types, rendering, inspectors, serialization, migration, toolbar actions, and optional AI generation capabilities. Built-in and local plugins are managed through the canvas UI.
-
-## Prompts and assets
-
-- Use seven built-in prompt sources from the [Image Prompts](https://github.com/yukkcat/image-prompts) registry, with independent enablement, manual refresh, and scheduled refresh.
-- Add, edit, and remove custom standard JSON sources while retaining the last successful cache when refresh fails.
-- Search across enabled sources, filter by tags, inspect prompt details, copy prompts, and insert them into the canvas.
-- Store reusable images, videos, audio, and prompt assets in the browser.
-
-See [Third-party Prompt Sources](/docs/overview/third-party-prompt-repositories) for the complete built-in list.
-
-## Desktop library and canvas files
-
-The panel on the left of a desktop canvas has two tabs, both scoped to the current canvas:
+The panel on the left of a canvas has two tabs, both scoped to the current canvas:
 
 - Library: the canvas's reusable images, videos and audio, kept in its own `library` folder. Drop files in from Explorer or click + to import, then drag items onto the canvas or double-click them; a node's Add to library names the copy after the node. The Agent tools `library_list` / `library_place` / `library_add` act on the current canvas too.
 - Canvas files: every image, video and audio file in the canvas's folder. Files no longer on the canvas are faded and tagged 不在画布上. Click a file to find the node using it; double-click, drag or use the context menu to put an off-canvas file back, reusing the same file.
 - The header refreshes both lists (picking up files added in Explorer) and opens the folder of the current tab.
 - Deleting: removing an image, video or audio node from the canvas keeps its file in the canvas folder. Only deleting in the Canvas files tab sends files to the recycle bin, together with the nodes that use them, after a confirmation. This cannot be undone on the canvas; restore files from the system recycle bin when needed. Files that fail to delete keep their nodes, and the reason is shown. Leaving a canvas only prunes masks no longer in use.
 
-## Configuration and synchronization
+## Prompt library
 
-- Export and import channel, model, generation, prompt-source, and WebDAV settings.
-- Store application data and API credentials locally in the browser.
-- Use WebDAV for optional cross-device synchronization.
+- The generation panel opens a local prompt library: search, filter by tag, and click an entry to insert it. Save the current prompt, or edit and delete saved ones.
+- The library is stored in the data folder's `prompts.json`, shared by all canvases and kept on this machine only.
+
+## Agent assistant
+
+- The "助手" panel on the right of a canvas starts a local agent over ACP (Claude Code, Kimi Code, Grok Build and DeepSeek Harness by default; commands can be changed in Settings). Chat with it to read the canvas, add, edit and delete nodes, connect them and start generations, with permission prompts and a stop button; each change is a single undo step.
+- Agents outside the client (such as Claude Code, or Kimi / Grok in a terminal) can register `InfiniteCanvas.exe --mcp-bridge` as an MCP server to work on the open canvas. Turn this off with "允许外部 Agent 连接" in Settings.
+- Canvas tools only use local named pipes limited to the current Windows user, with no network port. Each agent handles its own sign-in, models and billing.
+
+## Interface
+
+- Native Windows 11 look: acrylic window, system accent color, and light, dark and high-contrast themes that switch while running.
+- Single instance; leaving a canvas or closing the window during a generation asks first.
+
+## Data and security
+
+- Canvases, media files and settings are stored in `%LocalAppData%\InfiniteCanvas`, one folder per canvas, and never uploaded to a server.
+- API keys are encrypted for the current user with Windows DPAPI; generation requests follow the system proxy settings.
+- Unhandled exceptions are logged to `crash.log` in the data folder.
 
 ## Current limitations
 
-- The project is frontend-first and does not provide built-in cloud accounts or cloud storage.
-- API keys remain in browser storage and requests are sent directly to configured providers.
-- Production Docker static-resource paths still require broader deployment verification.
+- Windows 10 1809 or later only; Windows 11 is recommended.
+- No cloud sync; canvases stay on this machine.
+- Video generation is not in this version (see the `video-models` branch), and plugin nodes are on hold.

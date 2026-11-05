@@ -4,20 +4,10 @@
 
 - [Quick Start](/docs/overview/quick-start)
 - [Features](/docs/overview/features)
-- [Deploy on Render](/docs/overview/render)
-- [Docker Deployment](/docs/overview/docker)
-- [Third-party Prompt Sources](/docs/overview/third-party-prompt-repositories)
 
-## Canvas Guide
-
-- [Canvas Node Guide](/docs/canvas/canvas-node-manual)
-- [Canvas Shortcuts](/docs/canvas/canvas-shortcuts)
-
-## Development and Data
+## Development
 
 - [Local Development](/docs/development/local-development)
-- [Canvas Data Structure](/docs/development/canvas-data-structure)
-- [How the Local Codex Connection Works](/docs/development/local-codex-canvas)
 
 ## Business
 
@@ -38,5 +28,6 @@
 
 ## Notes
 
-- Canvas projects and My Assets are primarily stored in the browser. WebDAV can be configured for cross-device synchronization.
-- The AI API key is stored in the browser, which sends requests directly to OpenAI-compatible endpoints.
+- Infinite Canvas is a native Windows desktop client in `desktop/`; the former web client and its companion tools have been removed.
+- Canvases, media files and settings are stored locally in `%LocalAppData%\InfiniteCanvas`; there is no cloud sync.
+- API keys are encrypted with Windows DPAPI, and the client sends requests directly to each vendor's native API.

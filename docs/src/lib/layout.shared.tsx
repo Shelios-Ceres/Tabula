@@ -1,6 +1,5 @@
 import type { BaseLayoutProps } from 'fumadocs-ui/layouts/shared';
 import { appNames, gitConfig } from './shared';
-import { ArrowUpRight } from 'lucide-react';
 import { i18n } from './i18n';
 import { uiTranslations } from 'fumadocs-ui/i18n';
 
@@ -60,17 +59,6 @@ export function baseOptions(locale: string): BaseLayoutProps {
       {
         text: chinese ? '文档导航' : 'Documentation',
         url: `${chinese ? '/zh-CN' : ''}/docs/overview/quick-start`,
-        on: 'nav',
-      },
-      {
-        text: (
-          <span className="inline-flex items-center gap-1.5">
-            <span>{chinese ? '在线体验' : 'Live Demo'}</span>
-            <ArrowUpRight className="size-4" />
-          </span>
-        ),
-        url: 'https://canvas.best/',
-        external: true,
         on: 'nav',
       },
       {

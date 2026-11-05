@@ -10,10 +10,9 @@ description: 当前项目后续值得处理的事项
 - 画布界面：图片设置拆分为常用与高级两组，空画布增加轻量引导。
 - 模型家族后续：可灵官方接口暂不做；万相 2.6 及更早的旧协议视频模型未接入；Gemini TTS 多人对话尚未接入。
 - 额度后续：Gemini 官方价格自 2027-01-01 起上调，届时更新 `Core/Models/Prices.cs` 的内置单价；OpenAI 若公布 GPT Image 2.5 与 2K / 4K 的单价表，补进生图预计花费；火山引擎 / 阿里云签名、xAI Management API 和各家 usage 字段待真实账号对照账单确认。
+- 截图：README 和文档站首页的效果图仍是网页版截图，需要换成桌面客户端截图。
 
-- 待后续真实账号验收：GPT Image 2.5 Images 未测参数及 Responses、其他 Gemini 型号、原生搜索、Ark Pro 图层拆分与云端会话续接；日期版 Sunburst Images 编辑、Pro/Lite 接入点、Gemini 3.1 Flash Image 生成与编辑的已测范围见待测试记录。安装 canvas-agent 自身依赖后运行原生图像 schema 测试。Batch、显式缓存控制和自定义 safety 不属于当前实时创作范围。
+- 待后续真实账号验收：GPT Image 2.5 Images 未测参数及 Responses、其他 Gemini 型号、原生搜索、Ark Pro 图层拆分与云端会话续接；Batch、显式缓存控制和自定义 safety 不属于当前实时创作范围。
 
 本文档用来记录当前项目后续比较值得处理的事项。
 
-- 本地 Agent 接入后续：按[本地 Agent 接入规划](/zh-CN/docs/progress/local-agent-integration-plan)把 Claude Code CLI Adapter 升级为 Claude Agent SDK Adapter，并完善工具队列体验。
-- Agent Skill 后续：补充网络检索安装、Skill 资源文件管理和可控的本地记忆沉淀。

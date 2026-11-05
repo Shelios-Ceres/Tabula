@@ -1,48 +1,38 @@
 ---
 title: 快速开始
-description: 用最少步骤把无限画布跑起来
+description: 编译并运行无限画布 Windows 桌面客户端
 ---
 
 # 快速开始
 
-如果你只是想先把项目跑起来，优先部署或启动 `web/` 前端。
+无限画布是 Windows 原生桌面客户端，代码在仓库的 `desktop/` 目录。
 
-## Vercel 部署
+## 环境
 
-在 Vercel 中导入仓库即可，根目录 `vercel.json` 会构建 `web/`。当前版本的 AI 请求由浏览器前台直连用户自己的 OpenAI 兼容地址，不需要额外配置服务端。
+- Windows 10 1809 及以上，推荐 Windows 11。
+- .NET 10 SDK。首次编译会从 NuGet 下载 Windows App SDK、Win2D 等依赖。
 
-## 本地启动
+## 编译与运行
 
-```bash
-git clone git@github.com:basketikun/infinite-canvas.git
-cd infinite-canvas
-cd web
-bun install
-bun run dev
-```
-
-启动后访问：
-
-```text
-http://localhost:3000
-```
-
-## Docker 启动
-
-如果你需要基于当前源码构建镜像：
+在仓库根目录执行：
 
 ```bash
-docker build -t infinite-canvas .
-docker run --rm -p 3000:3000 infinite-canvas
+dotnet build desktop/InfiniteCanvas.sln
 ```
 
-## 首次使用建议
+```bash
+desktop/src/InfiniteCanvas.App/bin/x64/Debug/net10.0-windows10.0.19041.0/win-x64/InfiniteCanvas.exe
+```
 
-- 先打开右上角配置弹窗，填入自己的 `Base URL`、`API Key` 和模型名。
-- 如果需要提示词仓库内容，打开 `/prompts` 会由浏览器前端直连拉取并缓存到 IndexedDB。
-- 如果需要跨设备同步画布、素材和生成记录，可在配置弹窗中填写 WebDAV。
+程序为非打包自包含形式，不需要另装 Windows App SDK 运行时。也可以用支持 .NET 10 的 Visual Studio 2026 打开 `desktop/InfiniteCanvas.sln`，选择 x64 直接运行。
+
+## 首次使用
+
+- 打开设置，在「服务商」里添加要用的服务商（OpenAI、Google Gemini、火山方舟、xAI、千问），填入 API Key，再拉取或添加模型。
+- 回到画布列表新建画布，在生成面板选择模型即可生成。
+- 想让 Agent 操作画布：在画布右侧打开「助手」，或者在客户端外的 Agent 里把 `InfiniteCanvas.exe --mcp-bridge` 登记为 MCP 服务器。
 
 ## 说明
 
-- 当前画布项目和“我的素材”主要保存在浏览器本地，WebDAV 同步需要用户自行配置。
-- AI API Key 保存在浏览器本地，并由前端直接请求 OpenAI 兼容接口。
+- 画布、媒体文件和设置保存在 `%LocalAppData%\InfiniteCanvas`，不会上传到任何服务器。
+- API Key 用 Windows DPAPI 按当前用户加密保存，生成请求由客户端直接发往服务商。

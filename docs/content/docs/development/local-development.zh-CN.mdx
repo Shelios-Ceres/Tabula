@@ -1,40 +1,51 @@
 ---
 title: 本地开发
-description: 前端优先的本地开发方式
+description: 桌面客户端的编译、测试与代码结构
 ---
 
 # 本地开发
 
-当前主应用以 `web/` 前端为主，AI 请求由浏览器前台直连用户自己的 OpenAI 兼容接口。
+桌面客户端用 C#、.NET 10 与 WinUI 3（Windows App SDK）编写，画布用 Win2D 绘制，代码在 `desktop/`。
 
-## 1. 启动前端
+## 编译、运行与测试
 
 ```bash
-cd web
+dotnet build desktop/InfiniteCanvas.sln
+```
+
+```bash
+dotnet test desktop/tests/InfiniteCanvas.Tests
+```
+
+编译出的程序在 `desktop/src/InfiniteCanvas.App/bin/x64/Debug/net10.0-windows10.0.19041.0/win-x64/InfiniteCanvas.exe`。
+
+## 用独立数据目录测试
+
+客户端默认读写 `%LocalAppData%\InfiniteCanvas`。测试时把环境变量 `INFINITE_CANVAS_DATA` 指向另一个文件夹，测试实例就使用独立的画布和设置；同时用 `-p:BaseOutputPath=...` 把编译输出放到临时目录，避免和正在运行的客户端冲突。
+
+## 代码结构
+
+| 目录 | 内容 |
+| --- | --- |
+| `desktop/src/InfiniteCanvas.Core` | 画布模型、连线规则、撤销历史、项目与设置存储、模型家族能力表 |
+| `desktop/src/InfiniteCanvas.Providers` | 五家服务商原生适配 |
+| `desktop/src/InfiniteCanvas.Agents` | 本机 Agent 接入：ACP 客户端、画布 MCP 工具与命名管道服务 |
+| `desktop/src/InfiniteCanvas.App` | WinUI 3 界面：`Pages`（画布列表、画布、设置）、`Board`（画布引擎、节点、生成面板、生成调度） |
+| `desktop/tests/InfiniteCanvas.Tests` | 核心规则与请求 / 响应解析测试 |
+
+## 文档站
+
+如果需要调整文档站，在 `docs` 目录执行：
+
+```bash
 bun install
-bun run dev
-```
-
-前端默认访问：
-
-```text
-http://localhost:3000
-```
-
-## 2. 配置模型
-
-打开右上角配置弹窗，填写自己的 `Base URL`、`API Key` 和模型名。第三方提示词和 WebDAV 都由浏览器前端直连。
-
-## 3. 启动文档站
-
-如果需要单独调整文档站，在 `docs` 目录执行：
-
-```bash
 bun run dev
 ```
 
 ## 常见场景
 
-- 改画布、页面和交互：主要看 `web/`
-- 改提示词缓存：主要看 `web/src/services/api/prompts.ts`
+- 改画布、节点和生成面板：主要看 `desktop/src/InfiniteCanvas.App/Board/`
+- 改服务商请求：主要看 `desktop/src/InfiniteCanvas.Providers/`，并在 `desktop/tests/InfiniteCanvas.Tests/ProviderTests.cs` 补用例
+- 改模型能力：主要看 `desktop/src/InfiniteCanvas.Core/Models/ModelFamilies.cs`
+- 改 Agent 与 MCP 工具：主要看 `desktop/src/InfiniteCanvas.Agents/`
 - 改文档站内容：主要看 `docs/content/docs/`
