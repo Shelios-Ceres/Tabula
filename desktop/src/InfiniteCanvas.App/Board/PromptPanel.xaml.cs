@@ -134,7 +134,8 @@ public sealed partial class PromptPanel : UserControl
         foreach (var resource in images.Take(5))
         {
             var path = ProjectStore.AssetPath(_host.Doc.Id, resource.Node.Content!);
-            var thumb = new Border { Width = 28, Height = 28, CornerRadius = new(4), Child = new Image { Stretch = Microsoft.UI.Xaml.Media.Stretch.UniformToFill, Source = new BitmapImage { DecodePixelWidth = 56, UriSource = new Uri(path) } } };
+            var source = Media.IsSvg(path) ? new SvgImageSource(new Uri(path)) : (Microsoft.UI.Xaml.Media.ImageSource)new BitmapImage { DecodePixelWidth = 56, UriSource = new Uri(path) };
+            var thumb = new Border { Width = 28, Height = 28, CornerRadius = new(4), Child = new Image { Stretch = Microsoft.UI.Xaml.Media.Stretch.UniformToFill, Source = source } };
             ToolTipService.SetToolTip(thumb, $"图片{images.IndexOf(resource) + 1}：{resource.Node.Title}");
             InputThumbs.Children.Add(thumb);
         }
@@ -146,15 +147,17 @@ public sealed partial class PromptPanel : UserControl
     private void ShowMarks()
     {
         var node = _node!;
-        var (mask, points) = _host.MarkSupport(node);
-        var show = node.Kind == NodeKind.Image && node.HasContent && (mask || points);
+        var (mask, points, markup) = _host.MarkSupport(node);
+        var show = node.Kind == NodeKind.Image && node.HasContent && (mask || points || markup);
         MarksRow.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
         if (show)
         {
             var parts = new List<string>();
             if (mask && node.Option(NodeKeys.Mask).Length > 0) parts.Add("已涂抹重绘区域");
+            if (markup && node.Option(NodeKeys.Markup).Length > 0) parts.Add("已画标注");
             if (points && NodeKeys.SelectionsOf(node).Count is > 0 and var count) parts.Add($"已标记 {count} 处位置");
-            MarksText.Text = parts.Count > 0 ? string.Join(" · ", parts) : mask ? "涂抹要重绘的区域，其余保持不变" : "点选或框选要修改的位置";
+            MarksText.Text = parts.Count > 0 ? string.Join(" · ", parts)
+                : mask && markup ? "涂抹要重绘的区域，或画圈标注要改的地方" : mask ? "涂抹要重绘的区域，其余保持不变" : "点选或框选要修改的位置";
             ClearMarksButton.Visibility = parts.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         }
         var notes = new[] { (Label: "模型说明", Text: node.Option(NodeKeys.ModelText)), (Label: "参考图", Text: node.Option(NodeKeys.InputNote)) }.Where(n => n.Text.Length > 0).ToList();
@@ -206,8 +209,12 @@ public sealed partial class PromptPanel : UserControl
         {
             if (node.Count > 1) parts.Add($"{node.Count} 张");
             if (resolved is { } ri && ModelFamilies.FindImage(ri.Channel.Vendor, ri.Model.Name) is { } image)
+            {
                 foreach (var value in new[] { image.Tiers.Contains(node.Size) ? node.Size : image.Tiers.FirstOrDefault(), image.Ratios.Contains(node.Ratio) ? node.Ratio : image.Ratios.FirstOrDefault() })
                     if (value is { Length: > 0 } && value != "auto") parts.Add(value);
+                // Animated and vector output change what comes back, so they show on the button too.
+                if (node.Option("outputFormat") is "gif" or "svg" && image.OutputFormats.Contains(node.Option("outputFormat"))) parts.Add(node.Option("outputFormat").ToUpperInvariant());
+            }
         }
         return parts.Count > 0 ? string.Join(" · ", parts) : "参数";
     }
@@ -315,7 +322,25 @@ public sealed partial class PromptPanel : UserControl
                 if (image.Tiers.Length > 0) Combo("分辨率", image.Tiers.Select(t => (t, t == "auto" ? "自动" : t)), node.Size ?? image.Tiers[0], value => node.Size = value);
                 if (image.Ratios.Length > 0) Combo("比例", image.Ratios.Select(r => (r, r == "auto" ? "自动" : r)), node.Ratio ?? image.Ratios[0], value => node.Ratio = value);
                 if (image.Qualities.Length > 0) Combo("质量", image.Qualities.Select(q => (q, q == "auto" ? "自动" : q)), node.Quality ?? "auto", value => node.Quality = value);
-                if (image.OutputFormats.Length > 1) Combo("输出格式", image.OutputFormats.Select(f => (f, f.ToUpperInvariant())), node.Option("outputFormat", image.OutputFormats[0]), value => node.SetOption("outputFormat", value));
+                if (image.Complexities.Length > 0)
+                {
+                    Combo("复杂度", [("auto", "默认（高）"), .. image.Complexities.Select(c => (c, EffortLabels[c]))], node.Option("complexity", "auto"), value => node.SetOption("complexity", value == "auto" ? null : value));
+                    Note("复杂度决定模型动笔前规划多少：低适合局部小改，高适合密集文字和复杂排版，耗时更长。不另收费。");
+                }
+                if (image.OutputFormats.Length > 1) Combo("输出格式", image.OutputFormats.Select(f => (f, f.ToUpperInvariant())), node.Option("outputFormat", image.OutputFormats[0]), value =>
+                {
+                    node.SetOption("outputFormat", value);
+                    // GIF has its own frame settings, so the list is rebuilt.
+                    if (image.OutputFormats.Contains("gif")) DispatcherQueue.TryEnqueue(() => ParamsFlyout_Opening(ParamsPanel, EventArgs.Empty));
+                });
+                var format = node.Option("outputFormat", image.OutputFormats[0]);
+                if (format == "gif" && image.OutputFormats.Contains("gif"))
+                {
+                    Text("GIF 帧数（2–64，留空为 9）", node.Option("frameCount"), value => node.SetOption("frameCount", int.TryParse(value.Trim(), out var frames) ? frames.ToString() : null));
+                    Text("每帧时长（毫秒，20–2000，留空为 200）", node.Option("frameDuration"), value => node.SetOption("frameDuration", int.TryParse(value.Trim(), out var duration) ? duration.ToString() : null));
+                }
+                if (format is "gif" or "svg" && image.OutputFormats.Contains(format))
+                    Note("GIF 和 SVG 只能文生图：不能连接参考图，也没有流式预览；SVG 每次只出 1 张，多张会分开请求。GIF 的帧数、每帧尺寸和张数一起受总像素上限约束，超出时请减少帧数或改用自动分辨率。");
                 if (image.Background) Combo("背景", [("auto", "自动"), ("transparent", "透明"), ("opaque", "不透明")], node.Option("background", "auto"), value => node.SetOption("background", value));
                 if (vendor == Vendor.OpenAI)
                 {
@@ -324,26 +349,33 @@ public sealed partial class PromptPanel : UserControl
                     _params.Children.Add(new Expander { Header = "高级", Content = advanced, IsExpanded = _keepAdvanced, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch });
                     _keepAdvanced = false;
                     _params = advanced;
-                    Combo("调用方式", [("images", "Image API"), ("responses", "Responses 图像工具")], node.Option("openaiApi", "images"), value => node.SetOption("openaiApi", value));
-                    Note("Responses 以后台任务提交后轮询结果，4K、最高画质等长时间生成不怕代理断线，关闭客户端后重开画布也会接着取结果。");
-                    var texts = resolved!.Value.Channel.Models.Where(m => m.Capability == Capability.Text).Select(m => (m.Name, AppSettings.DisplayName(resolved.Value.Channel, m))).ToList();
-                    if (texts.Count > 0)
-                        Combo("Responses 主模型", texts, node.Option("mainModel", texts[0].Item1), value =>
-                        {
-                            // Each model has its own effort levels: start the new one at its lowest and refresh the list.
-                            node.SetOption("mainModel", value);
-                            node.SetOption("mainReasoning", null);
-                            _keepAdvanced = true;
-                            DispatcherQueue.TryEnqueue(() => ParamsFlyout_Opening(ParamsPanel, EventArgs.Empty));
-                        });
-                    else Note("Responses 需要同一服务商下的文本模型作为主模型：请先在设置里给 OpenAI 添加一个文本模型（如 gpt-6-luna）。");
-                    var mainModel = CanvasGenerator.MainModelOf(node, resolved!.Value.Channel);
-                    if (ModelFamilies.ReasoningEfforts(mainModel) is { Length: > 0 } efforts)
-                        Combo("主模型思考强度", efforts.Select(e => (e, EffortLabels[e])), ModelFamilies.SnapReasoning(mainModel, node.Option("mainReasoning"))!, value => node.SetOption("mainReasoning", value));
+                    if (image.ResponsesTool)
+                    {
+                        Combo("调用方式", [("images", "Image API"), ("responses", "Responses 图像工具")], node.Option("openaiApi", "images"), value => node.SetOption("openaiApi", value));
+                        Note("Responses 以后台任务提交后轮询结果，4K、最高画质等长时间生成不怕代理断线，关闭客户端后重开画布也会接着取结果。");
+                        var texts = resolved!.Value.Channel.Models.Where(m => m.Capability == Capability.Text).Select(m => (m.Name, AppSettings.DisplayName(resolved.Value.Channel, m))).ToList();
+                        if (texts.Count > 0)
+                            Combo("Responses 主模型", texts, node.Option("mainModel", texts[0].Item1), value =>
+                            {
+                                // Each model has its own effort levels: start the new one at its lowest and refresh the list.
+                                node.SetOption("mainModel", value);
+                                node.SetOption("mainReasoning", null);
+                                _keepAdvanced = true;
+                                DispatcherQueue.TryEnqueue(() => ParamsFlyout_Opening(ParamsPanel, EventArgs.Empty));
+                            });
+                        else Note("Responses 需要同一服务商下的文本模型作为主模型：请先在设置里给 OpenAI 添加一个文本模型（如 gpt-6-luna）。");
+                        var mainModel = CanvasGenerator.MainModelOf(node, resolved!.Value.Channel);
+                        if (ModelFamilies.ReasoningEfforts(mainModel) is { Length: > 0 } efforts)
+                            Combo("主模型思考强度", efforts.Select(e => (e, EffortLabels[e])), ModelFamilies.SnapReasoning(mainModel, node.Option("mainReasoning"))!, value => node.SetOption("mainReasoning", value));
+                    }
+                    else Note("这个模型只能用 Image API 调用，官方没有列出 Responses 图像工具支持。");
                     Toggle("流式预览（Image API）", node.Option("stream") == "true", value => node.SetOption("stream", value ? "true" : null));
                     Combo("中间预览张数（额外计费）", [("0", "0"), ("1", "1"), ("2", "2"), ("3", "3")], node.Option("partialImages", "0"), value => node.SetOption("partialImages", value));
-                    Toggle("多轮对话改图（Responses）", node.Option("store") == "true", value => node.SetOption("store", value ? "true" : null));
-                    Note("开启后本轮会话保存在 OpenAI；之后在生成结果上继续生成，会接着上一轮修改，保持主体一致。仅 Responses 调用方式生效。");
+                    if (image.ResponsesTool)
+                    {
+                        Toggle("多轮对话改图（Responses）", node.Option("store") == "true", value => node.SetOption("store", value ? "true" : null));
+                        Note("开启后本轮会话保存在 OpenAI；之后在生成结果上继续生成，会接着上一轮修改，保持主体一致。仅 Responses 调用方式生效。");
+                    }
                     _params = ParamsPanel;
                 }
                 if (vendor == Vendor.Google)

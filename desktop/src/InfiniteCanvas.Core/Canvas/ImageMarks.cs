@@ -11,6 +11,8 @@ public static class NodeKeys
 {
     /// <summary>Asset name of a PNG mask the size of the image: transparent pixels mark the area to repaint.</summary>
     public const string Mask = "mask";
+    /// <summary>Asset name of a transparent PNG the size of the image with circles and sketches showing where to change it (GPT Image markup edits).</summary>
+    public const string Markup = "markup";
     /// <summary>JSON list of <see cref="ImageSelection"/> for point / box editing.</summary>
     public const string Selections = "selections";
     /// <summary>Server-side conversation (OpenAI response / Gemini interaction) that produced this image.</summary>
@@ -28,7 +30,7 @@ public static class NodeKeys
     public const string Stack = "stack";
     public const string StackOpen = "stackOpen";
 
-    public static readonly string[] PerImage = [Mask, Selections, ConversationId, ConversationModel, ModelText, InputNote, SourceId, Stack, StackOpen];
+    public static readonly string[] PerImage = [Mask, Markup, Selections, ConversationId, ConversationModel, ModelText, InputNote, SourceId, Stack, StackOpen];
 
     public static List<ImageSelection> SelectionsOf(CanvasNode node) =>
         node.Option(Selections) is { Length: > 0 } json ? Json.Deserialize<List<ImageSelection>>(json) ?? [] : [];

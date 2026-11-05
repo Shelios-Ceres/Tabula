@@ -239,7 +239,7 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
                 // Count finished pictures even when the rest of their batch was stopped.
                 var success = targets.Count(t => t.Status == NodeStatus.Success);
                 UsageStore.Record(channel.Id, model.Name, capability, success, provider.Tokens);
-                if (capability == Capability.Image && success > 0 && provider.Tokens.Total > 0 && snapshot.Option("openaiApi", "images") != "responses")
+                if (capability == Capability.Image && success > 0 && provider.Tokens.Total > 0 && ModelFamilies.OpenAIApi(snapshot, ModelFamilies.FindImage(channel.Vendor, model.Name)) != "responses")
                     UsageStore.RememberImage(Prices.ImageKey(model.Name, snapshot), provider.Tokens.Per(success));
             }
             finally { Finish(cts); }
@@ -369,6 +369,8 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
         ct.ThrowIfCancellationRequested();
         var bytes = File.ReadAllBytes(ProjectStore.AssetPath(doc.Id, node.Content!));
         var mime = node.MimeType ?? Media.MimeOf(node.Content!);
+        // No vendor takes SVG as an input picture, so it goes as a PNG drawn at its own size.
+        if (mime == "image/svg+xml") (bytes, mime) = (await ImageTools.RasterizeSvgAsync(bytes), "image/png");
         var (budget, pixelBudget) = (ReferenceLimits.Budget(limit, count), ReferenceLimits.PixelBudget(limit));
         var supported = mime is "image/png" or "image/jpeg" or "image/webp";
         if (supported && bytes.Length <= budget && pixelBudget == long.MaxValue) return (new(bytes, mime), null);
@@ -424,7 +426,7 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
         return output.ToArray();
     }
 
-    /// <summary>The stored mask is in the original image's coordinates; follow the prepared first reference's oriented dimensions.</summary>
+    /// <summary>A stored mask or markup layer is in the original image's coordinates; follow the prepared first reference's oriented dimensions.</summary>
     private static async Task<MediaInput> LoadMaskAsync(string path, MediaInput reference, CancellationToken ct)
     {
         var bytes = await File.ReadAllBytesAsync(path, ct);
@@ -479,7 +481,7 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
             var decoder = await BitmapDecoder.CreateAsync(stream.AsRandomAccessStream());
             return ((int)decoder.PixelWidth, (int)decoder.PixelHeight);
         }
-        catch { return (0, 0); }
+        catch { return Media.SvgSize(bytes); }
     }
 
     /// <summary>Frame size from the container metadata; (0, 0) when it cannot be read.</summary>
@@ -505,8 +507,11 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
         Tier = family is null || family.Tiers.Contains(node.Size) ? node.Size : null,
         Ratio = family is null || family.Ratios.Contains(node.Ratio) ? node.Ratio : null,
         Quality = family is null || family.Qualities.Contains(node.Quality) ? node.Quality : null,
+        Complexity = family?.Complexities.Contains(node.Option("complexity")) == true ? node.Option("complexity") : null,
         Background = node.Option("background", "auto"),
-        OutputFormat = node.Option("outputFormat", DefaultFormat(family, channel.Vendor)),
+        OutputFormat = node.Option("outputFormat", DefaultFormat(family, channel.Vendor)) is var format && (family is null || family.OutputFormats.Contains(format)) ? format : DefaultFormat(family, channel.Vendor),
+        FrameCount = int.TryParse(node.Option("frameCount"), out var frames) ? frames : null,
+        FrameDurationMs = int.TryParse(node.Option("frameDuration"), out var duration) ? duration : null,
         Compression = int.TryParse(node.Option("compression"), out var compression) ? compression : 100,
         Moderation = node.Option("moderation", "auto"),
         Stream = node.Option("stream") == "true",
@@ -518,7 +523,7 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
         FastPrompt = node.Option("fastPrompt") == "true",
         NegativePrompt = node.Option("negativePrompt"),
         PromptExtend = node.Option("promptExtend", "true") == "true",
-        OpenAIApi = node.Option("openaiApi", "images"),
+        OpenAIApi = ModelFamilies.OpenAIApi(node, family),
         MainModel = MainModelOf(node, channel),
         // The mainline model only rewrites the prompt and calls the tool, so it defaults to its lowest effort.
         MainReasoning = ModelFamilies.SnapReasoning(MainModelOf(node, channel), node.Option("mainReasoning")),
@@ -563,6 +568,8 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
         var editing = source.Kind == NodeKind.Image && source.HasContent;
         var mask = editing && channel.Vendor == Vendor.OpenAI && source.Option(NodeKeys.Mask) is { Length: > 0 } maskAsset && File.Exists(ProjectStore.AssetPath(doc.Id, maskAsset))
             ? await LoadMaskAsync(ProjectStore.AssetPath(doc.Id, maskAsset), images[0], ct) : null;
+        var markup = editing && channel.Vendor == Vendor.OpenAI && family?.Markup == true && source.Option(NodeKeys.Markup) is { Length: > 0 } markupAsset && File.Exists(ProjectStore.AssetPath(doc.Id, markupAsset))
+            ? await LoadMaskAsync(ProjectStore.AssetPath(doc.Id, markupAsset), images[0], ct) : null;
         ct.ThrowIfCancellationRequested();
         var selections = editing && family?.Interactive == true ? NodeKeys.SelectionsOf(source) : [];
         // Continuing a stored conversation: the image is already in it, so only extra inputs are sent again.
@@ -575,9 +582,9 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
             await RunLayersAsync(provider, model, prompt, images, options, targets[0], ct);
             return;
         }
-        // Each request carries as many images as the family allows (the OpenAI Responses image tool returns one;
+        // Each request carries as many images as the family allows (the OpenAI Responses image tool and SVG output return one;
         // Seedream group generation counts references against the same limit); the rest run as parallel requests.
-        var perRequest = channel.Vendor == Vendor.OpenAI && options.OpenAIApi == "responses" ? 1 : Math.Max(1, (family?.MaxImages ?? 1) - (family?.Sequential == true ? images.Count : 0));
+        var perRequest = channel.Vendor == Vendor.OpenAI && (options.OpenAIApi == "responses" || options.OutputFormat == "svg") ? 1 : Math.Max(1, (family?.MaxImages ?? 1) - (family?.Sequential == true ? images.Count : 0));
         var groups = targets.Chunk(perRequest).ToList();
         await Task.WhenAll(groups.Select(async group =>
         {
@@ -597,7 +604,7 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
             });
             try
             {
-                var request = new ImageRequest(model.Name, prompt, images, mask, group.Length, options, model.EndpointId, selections, previousId.Length > 0 ? previousId : null);
+                var request = new ImageRequest(model.Name, prompt, images, mask, group.Length, options, model.EndpointId, selections, previousId.Length > 0 ? previousId : null, markup);
                 ImageResult result;
                 try { result = await provider.GenerateImageAsync(request, progress, ct); }
                 finally { await progress.DrainAsync(); }

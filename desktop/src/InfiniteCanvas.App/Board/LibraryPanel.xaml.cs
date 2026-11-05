@@ -110,7 +110,7 @@ public sealed partial class LibraryPanel : UserControl
         var users = shown.GroupBy(e => e.Node.Content!).ToDictionary(g => g.Key, g => g.First());
         var old = _canvas.ToDictionary(Key);
         _canvas = LibraryStore.Files(ProjectStore.AssetsDir(doc.Id))
-            .Where(file => !file.Name.StartsWith(ProjectStore.MaskPrefix + "-"))
+            .Where(file => !ProjectStore.IsMark(Path.GetFileName(file.Path)))
             .Select(file => users.TryGetValue(Path.GetFileName(file.Path), out var user)
                 ? new LibraryEntry(file.Path, user.Name, file.Kind, true, user.Node)
                 : new LibraryEntry(file.Path, file.Name, file.Kind, true))
@@ -146,7 +146,8 @@ public sealed partial class LibraryPanel : UserControl
             if (entry.Kind == NodeKind.Image)
             {
                 // Library files keep their names, so the same path may hold new content. 200 wide lets a 2:1 image fill the 132 x 100 cell without upscaling.
-                entry.Thumbnail = new BitmapImage { CreateOptions = BitmapCreateOptions.IgnoreImageCache, DecodePixelType = DecodePixelType.Logical, DecodePixelWidth = 200, UriSource = new Uri(entry.Path) };
+                entry.Thumbnail = Media.IsSvg(entry.Path) ? new SvgImageSource(new Uri(entry.Path))
+                    : new BitmapImage { CreateOptions = BitmapCreateOptions.IgnoreImageCache, DecodePixelType = DecodePixelType.Logical, DecodePixelWidth = 200, UriSource = new Uri(entry.Path) };
                 return;
             }
             if (entry.Kind != NodeKind.Video) return;
@@ -257,7 +258,7 @@ public sealed partial class LibraryPanel : UserControl
         try
         {
             var picker = new FileOpenPicker { SuggestedStartLocation = PickerLocationId.PicturesLibrary };
-            foreach (var ext in new[] { ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".mp4", ".mov", ".webm", ".mp3", ".wav", ".m4a", ".aac", ".flac" }) picker.FileTypeFilter.Add(ext);
+            foreach (var ext in new[] { ".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".bmp", ".mp4", ".mov", ".webm", ".mp3", ".wav", ".m4a", ".aac", ".flac" }) picker.FileTypeFilter.Add(ext);
             WinRT.Interop.InitializeWithWindow.Initialize(picker, WinRT.Interop.WindowNative.GetWindowHandle(App.Window));
             await ImportAsync(await picker.PickMultipleFilesAsync());
         }

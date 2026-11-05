@@ -33,7 +33,7 @@ desktop/
 
 | 服务商 | 图片 | 视频 | 文本 | 语音 | 模型列表 |
 | --- | --- | --- | --- | --- | --- |
-| OpenAI | Image API `/v1/images/generations`、multipart `/v1/images/edits`（可选 SSE 预览），或 Responses `image_generation` 工具 | 不支持（Sora API 已于 2026-09-24 下线） | Responses API 流式 | `/v1/audio/speech` | `/v1/models` |
+| OpenAI | Image API `/v1/images/generations`、multipart `/v1/images/edits`（可选 SSE 预览、`markup` 标注改图），或 Responses `image_generation` 工具；GPT Image 2.6 只走 Image API，另有 `complexity` 与 GIF / SVG 输出 | 不支持（Sora API 已于 2026-09-24 下线） | Responses API 流式 | `/v1/audio/speech` | `/v1/models` |
 | Google Gemini | Interactions API（`user_input` 步骤、`response_format` 指定比例与尺寸、思考强度、Google 搜索） | Veo `predictLongRunning` + 轮询 + 带 `x-goog-api-key` 下载 | Interactions API 流式 | — | `/models` |
 | 火山方舟 | `/api/v3/images/generations`（Seedream 5.0 pro/flash/lite、4.5、4.0；组图、流式、联网、推理接入点） | `/api/v3/contents/generations/tasks`（Seedance 2.5 / 2.0 / 1.0） | Chat API 流式 | — | 推荐列表 |
 | xAI | `/v1/images/generations` 与 `/v1/images/edits`（`aspect_ratio`、`resolution`、`quality`，多图用 `images`） | `/v1/videos/generations` + 轮询 | Responses API 流式 | — | `/v1/models` |

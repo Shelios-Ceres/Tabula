@@ -32,7 +32,8 @@ public sealed partial class ProjectsPage : Page
     }
 
     // Logical pixels, set before UriSource: sharp at 150%/200% scaling, and a 16:9 cover filling the card height is never upscaled.
-    public static BitmapImage? Cover(string? path) => path is not null && File.Exists(path) ? new BitmapImage { DecodePixelType = DecodePixelType.Logical, DecodePixelWidth = 320, UriSource = new Uri(path) } : null;
+    public static Microsoft.UI.Xaml.Media.ImageSource? Cover(string? path) => path is null || !File.Exists(path) ? null
+        : Media.IsSvg(path) ? new SvgImageSource(new Uri(path)) : new BitmapImage { DecodePixelType = DecodePixelType.Logical, DecodePixelWidth = 320, UriSource = new Uri(path) };
 
     private static readonly InfiniteCanvas.Core.Canvas.NodeKind[] CoverKinds =
         [InfiniteCanvas.Core.Canvas.NodeKind.Image, InfiniteCanvas.Core.Canvas.NodeKind.Video, InfiniteCanvas.Core.Canvas.NodeKind.Config, InfiniteCanvas.Core.Canvas.NodeKind.Audio, InfiniteCanvas.Core.Canvas.NodeKind.Text, InfiniteCanvas.Core.Canvas.NodeKind.Group];

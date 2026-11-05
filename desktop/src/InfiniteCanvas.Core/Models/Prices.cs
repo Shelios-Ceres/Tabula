@@ -57,17 +57,19 @@ public static class Prices
     // GPT Image: text input, then image output (the Image API's usage.output_tokens). Image input ($8 / 1M at most) is billed as text input here, so edits come out a little low.
     private static readonly (string Prefix, TokenPrice Price)[] OpenAIImage =
     [
+        ("gpt-image-2.6", new(5, 30, 0)),
         ("gpt-image-2", new(5, 30, 0)),
         ("gpt-image-1.5", new(5, 32, 0)),
         ("gpt-image-1-mini", new(2, 8, 0)),
         ("gpt-image-1", new(5, 40, 0)),
     ];
 
-    // OpenAI's published per-image output prices (USD) for low / medium / high at 1024x1024, 1024x1536, 1536x1024; GPT Image 2.5 has no published table.
+    // OpenAI's published per-image output prices (USD) for low / medium / high at 1024x1024, 1024x1536, 1536x1024; GPT Image 2.5 and 2.6 have no published table.
     private static readonly string[] OpenAISizes = ["1024x1024", "1024x1536", "1536x1024"];
     private static readonly string[] OpenAIQualities = ["low", "medium", "high"];
     private static readonly (string Prefix, decimal[][] Table)[] OpenAIPerImage =
     [
+        ("gpt-image-2.6", []),
         ("gpt-image-2.5", []),
         ("gpt-image-2", [[0.006m, 0.005m, 0.005m], [0.053m, 0.041m, 0.041m], [0.211m, 0.165m, 0.165m]]),
         ("gpt-image-1.5", [[0.009m, 0.013m, 0.013m], [0.034m, 0.05m, 0.05m], [0.133m, 0.2m, 0.2m]]),
@@ -133,7 +135,7 @@ public static class Prices
         var tier = family is not null && family.Tiers.Contains(node.Size) ? node.Size : family?.Tiers.FirstOrDefault();
         var count = Math.Clamp(node.Count, 1, 15);
         // Same batching as the generator: inputs are paid once per request.
-        var perRequest = vendor == Vendor.OpenAI && node.Option("openaiApi", "images") == "responses" ? 1 : Math.Max(1, (family?.MaxImages ?? 1) - (family?.Sequential == true ? references : 0));
+        var perRequest = vendor == Vendor.OpenAI && (ModelFamilies.OpenAIApi(node, family) == "responses" || node.Option("outputFormat") == "svg") ? 1 : Math.Max(1, (family?.MaxImages ?? 1) - (family?.Sequential == true ? references : 0));
         var requests = (count + perRequest - 1) / perRequest;
         var prompt = (long)Math.Ceiling((node.Prompt ?? "").Sum(c => c >= 0x2E80 ? 1m : 0.25m));
         var price = Of(channel, model);

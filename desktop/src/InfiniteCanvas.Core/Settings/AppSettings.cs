@@ -246,7 +246,7 @@ public static class SettingsStore
         return new AppSettings
         {
             Channels = [channel],
-            ImageModel = ModelRef.Encode(channel.Id, "gpt-image-2.5-flare"),
+            ImageModel = ModelRef.Encode(channel.Id, "gpt-image-2.6-flare"),
             TextModel = ModelRef.Encode(channel.Id, "gpt-5.5"),
             AudioModel = ModelRef.Encode(channel.Id, "gpt-4o-mini-tts"),
         };

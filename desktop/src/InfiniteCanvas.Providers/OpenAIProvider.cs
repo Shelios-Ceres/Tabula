@@ -9,7 +9,7 @@ namespace InfiniteCanvas.Providers;
 public sealed class OpenAIProvider(ModelChannel channel, HttpClient http) : AiProvider(channel, http)
 {
     private Action<HttpRequestHeaders> Auth => Http.Bearer(Key);
-    private static readonly string[] Formats = ["png", "jpeg", "webp"];
+    private static readonly string[] Formats = ["png", "jpeg", "webp", "gif", "svg"];
 
     public override async Task<ImageResult> GenerateImageAsync(ImageRequest request, IProgress<ImageEvent>? progress, CancellationToken ct)
     {
@@ -17,8 +17,18 @@ public sealed class OpenAIProvider(ModelChannel channel, HttpClient http) : AiPr
         var family = ModelFamilies.FindImage(Vendor.OpenAI, request.Model);
         if (request.Count is < 1 or > 10) throw new ApiException("图片数量必须是 1–10 的整数");
         if (request.References.Count > (family?.MaxReferences ?? 16)) throw new ApiException($"{request.Model} 最多支持 {family?.MaxReferences ?? 16} 张参考图");
-        if (!Formats.Contains(options.OutputFormat)) throw new ApiException("输出格式无效");
-        if (options.OutputFormat == "jpeg" && options.Background == "transparent") throw new ApiException("JPEG 不支持透明背景");
+        if (!Formats.Contains(options.OutputFormat) || family is not null && !family.OutputFormats.Contains(options.OutputFormat))
+            throw new ApiException($"{request.Model} 不支持 {options.OutputFormat.ToUpperInvariant()} 输出");
+        if (options.Background == "transparent" && options.OutputFormat is not ("png" or "webp")) throw new ApiException("透明背景只支持 PNG 或 WebP 输出");
+        // GIF and SVG come from the generations endpoint only, without streaming; SVG is one picture per request.
+        var generationOnly = options.OutputFormat is "gif" or "svg";
+        if (generationOnly && (request.References.Count > 0 || request.Mask is not null || request.Markup is not null))
+            throw new ApiException($"{options.OutputFormat.ToUpperInvariant()} 只能文生图，不能连接参考图，也不能带蒙版或标注");
+        if (options.OutputFormat == "svg" && request.Count != 1) throw new ApiException("SVG 每次只能生成 1 张");
+        if (options.FrameCount is < 2 or > 64) throw new ApiException("GIF 帧数必须是 2–64");
+        if (options.FrameDurationMs is < 20 or > 2000) throw new ApiException("GIF 每帧时长必须是 20–2000 毫秒");
+        if (request.Markup is not null && request.Mask is not null) throw new ApiException("标注不能和涂抹蒙版同时使用，请在局部编辑里清除其中一种");
+        if (options.OpenAIApi == "responses" && (generationOnly || request.Markup is not null)) throw new ApiException("GIF、SVG 输出和标注改图只能用 Image API 调用方式");
         var size = family is null ? "auto" : ModelFamilies.ImageSize(family, options.Tier, options.Ratio) ?? "auto";
         return options.OpenAIApi == "responses"
             ? await ResponsesImageAsync(request, size, progress, ct).ConfigureAwait(false)
@@ -28,14 +38,18 @@ public sealed class OpenAIProvider(ModelChannel channel, HttpClient http) : AiPr
     private async Task<ImageResult> ImagesApiAsync(ImageRequest request, string size, IProgress<ImageEvent>? progress, CancellationToken ct)
     {
         var options = request.Options;
-        var editing = request.References.Count > 0 || request.Mask is not null;
+        var editing = request.References.Count > 0 || request.Mask is not null || request.Markup is not null;
+        var stream = options.Stream && options.OutputFormat is not ("gif" or "svg");
         var fields = new List<(string Key, string Value)>
         {
             ("model", request.Model), ("prompt", request.Prompt), ("n", request.Count.ToString()), ("size", size),
             ("quality", options.Quality ?? "auto"), ("background", options.Background), ("output_format", options.OutputFormat), ("moderation", options.Moderation),
         };
         if (options.OutputFormat is "jpeg" or "webp") fields.Add(("output_compression", options.Compression.ToString()));
-        if (options.Stream) fields.AddRange([("stream", "true"), ("partial_images", Math.Clamp(options.PartialImages, 0, 3).ToString())]);
+        if (options.Complexity is { } complexity) fields.Add(("complexity", complexity));
+        if (options.OutputFormat == "gif" && options.FrameCount is { } frames) fields.Add(("frame_count", frames.ToString()));
+        if (options.OutputFormat == "gif" && options.FrameDurationMs is { } duration) fields.Add(("frame_duration_ms", duration.ToString()));
+        if (stream) fields.AddRange([("stream", "true"), ("partial_images", Math.Clamp(options.PartialImages, 0, 3).ToString())]);
 
         HttpContent content;
         if (editing)
@@ -45,19 +59,27 @@ public sealed class OpenAIProvider(ModelChannel channel, HttpClient http) : AiPr
             var field = request.References.Count > 1 ? "image[]" : "image";
             for (var i = 0; i < request.References.Count; i++) form.Add(File(request.References[i]), field, $"reference-{i + 1}{Ext(request.References[i])}");
             if (request.Mask is { } mask) form.Add(File(mask), "mask", "mask.png");
+            // The annotation layer applies to the first image; any others stay plain references.
+            if (request.Markup is { } markup) form.Add(File(markup), "markup", "markup.png");
             content = form;
         }
         else
         {
             var body = new JsonObject();
             foreach (var (key, value) in fields)
-                body[key] = key switch { "n" or "output_compression" or "partial_images" => JsonValue.Create(int.Parse(value)), "stream" => JsonValue.Create(true), _ => JsonValue.Create(value) };
+                body[key] = key switch
+                {
+                    "n" or "output_compression" or "partial_images" or "frame_count" or "frame_duration_ms" => JsonValue.Create(int.Parse(value)),
+                    "stream" => JsonValue.Create(true),
+                    _ => JsonValue.Create(value),
+                };
             content = Http.Content(body);
         }
 
         var url = $"{Base}/images/{(editing ? "edits" : "generations")}";
-        var mime = "image/" + options.OutputFormat;
-        if (!options.Stream)
+        // SVG arrives as base64 UTF-8 XML.
+        var mime = options.OutputFormat == "svg" ? "image/svg+xml" : "image/" + options.OutputFormat;
+        if (!stream)
         {
             using var response = await Http.SendAsync(HttpMethod.Post, url, Auth, content, ct).ConfigureAwait(false);
             var payload = await Http.ReadJsonAsync(response, ct).ConfigureAwait(false);

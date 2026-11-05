@@ -348,7 +348,15 @@ public sealed partial class NodeView : UserControl
                 // Always the original file, so zooming in shows exactly the generated pixels.
                 // Each new picture fades in once decoded instead of popping in.
                 _image.Opacity = 0;
-                _image.Source = AssetPath is { } image && File.Exists(image) ? new BitmapImage(new Uri(image)) : null;
+                var image = AssetPath is { } asset && File.Exists(asset) ? asset : null;
+                if (Media.IsSvg(image))
+                {
+                    // Vector pictures report through their own source as well as ImageOpened.
+                    var svg = new SvgImageSource(new Uri(image!));
+                    svg.Opened += (_, _) => _image.Opacity = 1;
+                    _image.Source = svg;
+                }
+                else _image.Source = image is null ? null : new BitmapImage(new Uri(image));
                 break;
             case NodeKind.Video or NodeKind.Audio when _player is not null:
                 var file = AssetPath is { } path && File.Exists(path) ? path : null;

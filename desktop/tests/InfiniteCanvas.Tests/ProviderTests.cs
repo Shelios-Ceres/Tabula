@@ -68,6 +68,57 @@ public class ProviderTests
     }
 
     [Fact]
+    public async Task OpenAI_image_2_6_sends_complexity_and_gif_frames_without_streaming()
+    {
+        var (provider, handler) = Create(Vendor.OpenAI, (_, _) => Json($$"""{"data":[{"b64_json":"{{Png}}"}]}"""));
+        var result = await provider.GenerateImageAsync(Image("gpt-image-2.6-flare", count: 2, options: new() { OutputFormat = "gif", Complexity = "low", FrameCount = 12, FrameDurationMs = 120, Stream = true, PartialImages = 2 }), null, default);
+        var (request, body) = handler.Calls.Single();
+        Assert.EndsWith("/v1/images/generations", request.RequestUri!.ToString());
+        var json = JsonNode.Parse(body)!;
+        Assert.Equal(("gif", "low", 12, 120, 2), ((string?)json["output_format"], (string?)json["complexity"], (int?)json["frame_count"], (int?)json["frame_duration_ms"], (int?)json["n"]));
+        // GIF has no streaming or partial images.
+        Assert.Null(json["stream"]);
+        Assert.Null(json["partial_images"]);
+        Assert.Equal("image/gif", result.Images[0].MimeType);
+        await Assert.ThrowsAsync<ApiException>(() => provider.GenerateImageAsync(Image("gpt-image-2.6-flare", options: new() { OutputFormat = "gif", FrameCount = 65 }), null, default));
+        await Assert.ThrowsAsync<ApiException>(() => provider.GenerateImageAsync(Image("gpt-image-2.6-flare", options: new() { OutputFormat = "gif", Background = "transparent" }), null, default));
+        Assert.Single(handler.Calls);
+    }
+
+    [Fact]
+    public async Task OpenAI_image_2_6_svg_is_one_text_to_image_picture()
+    {
+        var svg = Convert.ToBase64String(Encoding.UTF8.GetBytes("""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1536 1024"/>"""));
+        var (provider, handler) = Create(Vendor.OpenAI, (_, _) => Json($$"""{"data":[{"b64_json":"{{svg}}"}]}"""));
+        var result = await provider.GenerateImageAsync(Image("gpt-image-2.6-sunburst", options: new() { OutputFormat = "svg", Complexity = "high" }), null, default);
+        Assert.Equal("image/svg+xml", result.Images.Single().MimeType);
+        var json = JsonNode.Parse(handler.Calls.Single().Body)!;
+        Assert.Equal(("svg", "high", 1), ((string?)json["output_format"], (string?)json["complexity"], (int?)json["n"]));
+        await Assert.ThrowsAsync<ApiException>(() => provider.GenerateImageAsync(Image("gpt-image-2.6-sunburst", count: 2, options: new() { OutputFormat = "svg" }), null, default));
+        await Assert.ThrowsAsync<ApiException>(() => provider.GenerateImageAsync(Image("gpt-image-2.6-sunburst", refs: [Reference], options: new() { OutputFormat = "svg" }), null, default));
+        // Only GPT Image 2.6 has vector and animated output.
+        await Assert.ThrowsAsync<ApiException>(() => provider.GenerateImageAsync(Image("gpt-image-2.5-flare", options: new() { OutputFormat = "gif" }), null, default));
+        Assert.Single(handler.Calls);
+    }
+
+    [Fact]
+    public async Task OpenAI_markup_goes_with_the_edit_and_never_with_a_mask()
+    {
+        var (provider, handler) = Create(Vendor.OpenAI, (_, _) => Json($$"""{"data":[{"b64_json":"{{Png}}"}]}"""));
+        var markup = new MediaInput([4, 5, 6], "image/png");
+        await provider.GenerateImageAsync(new ImageRequest("gpt-image-2.6-flare", "把圈出的杯子换成蓝色", [Reference], null, 1, new() { Complexity = "medium" }, Markup: markup), null, default);
+        var (request, body) = handler.Calls.Single();
+        Assert.EndsWith("/v1/images/edits", request.RequestUri!.ToString());
+        Assert.Contains("name=markup", body);
+        Assert.Contains("filename=markup.png", body);
+        Assert.Contains("name=complexity", body);
+        Assert.DoesNotContain("name=mask", body);
+        await Assert.ThrowsAsync<ApiException>(() => provider.GenerateImageAsync(new ImageRequest("gpt-image-2.6-flare", "改", [Reference], Reference, 1, new(), Markup: markup), null, default));
+        await Assert.ThrowsAsync<ApiException>(() => provider.GenerateImageAsync(new ImageRequest("gpt-image-2.5-flare", "改", [Reference], null, 1, new() { OpenAIApi = "responses", MainModel = "gpt-6-luna" }, Markup: markup), null, default));
+        Assert.Single(handler.Calls);
+    }
+
+    [Fact]
     public async Task OpenAI_stream_reports_partial_and_completed_images()
     {
         var (provider, _) = Create(Vendor.OpenAI, (_, _) => Sse(

@@ -18,20 +18,23 @@ using Rect = Windows.Foundation.Rect;
 namespace InfiniteCanvas.App.Board;
 
 /// <summary>
-/// Local edit marks on one image: a brush mask (GPT Image inpainting) and / or points and boxes (Seedream interactive editing).
-/// The mask is painted at the image's own pixel size so it can be sent as-is.
+/// Local edit marks on one image: a brush mask (GPT Image inpainting), a markup layer (GPT Image 2.5 / 2.6: red circles and sketches
+/// showing where to change it) and / or points and boxes (Seedream interactive editing).
+/// Mask and markup are painted at the image's own pixel size so they can be sent as-is.
 /// </summary>
 public sealed class ImageMarkDialog : ContentDialog
 {
-    private const string Brush = "brush", Eraser = "eraser";
+    private const string Brush = "brush", Pen = "pen", Eraser = "eraser";
+    // Markup is content for the model rather than chrome, so it is a fixed, clearly visible red.
+    private static readonly Color Ink = Color.FromArgb(255, 255, 59, 48);
     private readonly string _imagePath;
     private readonly int _width, _height;
     private readonly double _scale;
-    private readonly byte[]? _initialMask;
+    private readonly byte[]? _initialMask, _initialMarkup;
     private readonly CanvasControl _canvas;
-    private readonly Slider _size = new() { Minimum = 6, Maximum = 120, Value = 36, Width = 160, Header = "笔刷大小" };
+    private readonly Slider _size = new() { Minimum = 2, Maximum = 120, Value = 36, Width = 160, Header = "笔刷大小" };
     private CanvasBitmap? _image;
-    private CanvasRenderTarget? _paint;
+    private CanvasRenderTarget? _paint, _markup;
     private string _tool;
     private Point? _last, _boxStart;
     private Point _pointer;
@@ -41,13 +44,15 @@ public sealed class ImageMarkDialog : ContentDialog
     public List<ImageSelection> Selections { get; }
     /// <summary>The exported PNG mask, or null when nothing is painted.</summary>
     public byte[]? MaskPng { get; private set; }
+    /// <summary>The exported transparent markup layer, or null when nothing is drawn.</summary>
+    public byte[]? MarkupPng { get; private set; }
 
-    public ImageMarkDialog(string imagePath, int width, int height, byte[]? mask, IEnumerable<ImageSelection> selections, bool allowMask, bool allowMarks)
+    public ImageMarkDialog(string imagePath, int width, int height, byte[]? mask, byte[]? markup, IEnumerable<ImageSelection> selections, bool allowMask, bool allowMarks, bool allowMarkup)
     {
         _imagePath = imagePath;
         (_width, _height) = (width, height);
-        _initialMask = mask;
-        _painted = mask is not null;
+        (_initialMask, _initialMarkup) = (mask, markup);
+        _painted = mask is not null || markup is not null;
         Selections = [.. selections];
         // Fit the window: at most 960×620, never below a usable minimum.
         var root = App.Window.XamlRoot.Size;
@@ -64,12 +69,23 @@ public sealed class ImageMarkDialog : ContentDialog
 
         var tools = new SelectorBar();
         void Tool(string text, string tag) => tools.Items.Add(new SelectorBarItem { Text = text, Tag = tag });
-        if (allowMask) { Tool("涂抹重绘区域", Brush); Tool("擦除", Eraser); }
+        if (allowMask) Tool("涂抹重绘区域", Brush);
+        if (allowMarkup) Tool("标注", Pen);
+        if (allowMask || allowMarkup) Tool("擦除", Eraser);
         if (allowMarks) { Tool("点选", ImageSelection.Point); Tool("框选", ImageSelection.Box); }
         tools.SelectedItem = tools.Items[0];
         _tool = (string)tools.Items[0].Tag;
-        tools.SelectionChanged += (s, _) => { _tool = (string)s.SelectedItem.Tag; _size.Visibility = _tool is Brush or Eraser ? Visibility.Visible : Visibility.Collapsed; };
-        _size.Visibility = allowMask ? Visibility.Visible : Visibility.Collapsed;
+        // The pen draws thin lines and the brush broad strokes, so each keeps its own size.
+        var sizes = new Dictionary<string, double> { [Brush] = 36, [Pen] = 8, [Eraser] = 36 };
+        tools.SelectionChanged += (s, _) =>
+        {
+            if (sizes.ContainsKey(_tool)) sizes[_tool] = _size.Value;
+            _tool = (string)s.SelectedItem.Tag;
+            if (sizes.TryGetValue(_tool, out var size)) _size.Value = size;
+            _size.Visibility = sizes.ContainsKey(_tool) ? Visibility.Visible : Visibility.Collapsed;
+        };
+        _size.Value = sizes.GetValueOrDefault(_tool, 36);
+        _size.Visibility = sizes.ContainsKey(_tool) ? Visibility.Visible : Visibility.Collapsed;
 
         var pill = (Style)Application.Current.Resources["ActionButton"];
         var undo = new Button { Content = "撤销上一个选区", Style = pill, Visibility = allowMarks ? Visibility.Visible : Visibility.Collapsed, VerticalAlignment = VerticalAlignment.Bottom };
@@ -96,12 +112,11 @@ public sealed class ImageMarkDialog : ContentDialog
         _canvas.PointerExited += (_, _) => { _pointer = new(-100, -100); _canvas.Invalidate(); };
         _canvas.PointerCaptureLost += (_, _) => { _last = null; _boxStart = null; _canvas.Invalidate(); };
 
-        var hint = (allowMask, allowMarks) switch
-        {
-            (true, true) => "涂抹的区域会被重绘；点选和框选用来告诉模型要改的位置。",
-            (true, false) => "涂抹需要重绘的区域，其余部分保持不变。生成时这张图会作为第一张参考图，蒙版只作用于它。",
-            _ => "点选或框选要修改的位置，并在提示词里描述怎么改；位置会以坐标形式附在提示词后。",
-        };
+        var hints = new List<string>();
+        if (allowMask) hints.Add(allowMarks ? "涂抹的区域会被重绘；点选和框选用来告诉模型要改的位置。" : "涂抹需要重绘的区域，其余部分保持不变。生成时这张图会作为第一张参考图，蒙版只作用于它。");
+        else if (allowMarks) hints.Add("点选或框选要修改的位置，并在提示词里描述怎么改；位置会以坐标形式附在提示词后。");
+        if (allowMarkup) hints.Add("标注：用红笔圈出或画出要改的地方，并在提示词里写怎么改。涂抹和标注只能用其中一种。");
+        var hint = string.Join("\n", hints);
         var content = new StackPanel { Spacing = 12 };
         content.Children.Add(toolbar);
         content.Children.Add(new Border { Child = _canvas, CornerRadius = new(8), HorizontalAlignment = HorizontalAlignment.Center, Background = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["SubtleFillColorSecondaryBrush"] });
@@ -112,16 +127,25 @@ public sealed class ImageMarkDialog : ContentDialog
         {
             var deferral = e.GetDeferral();
             // Always release the deferral: a stuck dialog would block every dialog queued behind it.
-            try { MaskPng = _painted ? await ExportMaskAsync() : null; }
+            try
+            {
+                (MaskPng, MarkupPng) = _painted ? (await ExportMaskAsync(), await ExportMarkupAsync()) : (null, null);
+                // The Image API rejects a mask together with markup.
+                if (MaskPng is not null && MarkupPng is not null)
+                {
+                    e.Cancel = true;
+                    Title = "局部编辑 · 涂抹和标注只能用一种，请擦除其中一种";
+                }
+            }
             catch (Exception ex)
             {
                 App.Log(ex);
                 e.Cancel = true;
-                Title = "局部编辑 · 蒙版导出失败";
+                Title = "局部编辑 · 导出失败";
             }
             finally { deferral.Complete(); }
         };
-        Closed += (_, _) => { _canvas.RemoveFromVisualTree(); _image?.Dispose(); _paint?.Dispose(); };
+        Closed += (_, _) => { _canvas.RemoveFromVisualTree(); _image?.Dispose(); _paint?.Dispose(); _markup?.Dispose(); };
     }
 
     private async Task LoadAsync(CanvasControl sender)
@@ -137,7 +161,8 @@ public sealed class ImageMarkDialog : ContentDialog
             App.Log(ex);
             _image?.Dispose();
             _paint?.Dispose();
-            (_image, _paint) = (null, null);
+            _markup?.Dispose();
+            (_image, _paint, _markup) = (null, null, null);
             Title = "局部编辑 · 图片载入失败";
         }
     }
@@ -147,6 +172,14 @@ public sealed class ImageMarkDialog : ContentDialog
         using (var stream = File.OpenRead(_imagePath).AsRandomAccessStream()) _image = await CanvasBitmap.LoadAsync(sender, stream);
         _paint = new CanvasRenderTarget(sender, _width, _height, 96);
         using (var ds = _paint.CreateDrawingSession()) ds.Clear(Colors.Transparent);
+        _markup = new CanvasRenderTarget(sender, _width, _height, 96);
+        using (var markupStream = new MemoryStream(_initialMarkup ?? []))
+        using (var layer = _initialMarkup is null ? null : await CanvasBitmap.LoadAsync(sender, markupStream.AsRandomAccessStream()))
+        using (var ds = _markup.CreateDrawingSession())
+        {
+            ds.Clear(Colors.Transparent);
+            if (layer is not null) ds.DrawImage(layer, new Rect(0, 0, _width, _height));
+        }
         if (_initialMask is null) return;
         // An existing mask is transparent where it repaints; show those pixels as painted.
         using var maskStream = new MemoryStream(_initialMask);
@@ -163,11 +196,12 @@ public sealed class ImageMarkDialog : ContentDialog
 
     private void Draw(CanvasControl sender, CanvasDrawEventArgs args)
     {
-        if (_image is null || _paint is null) return;
+        if (_image is null || _paint is null || _markup is null) return;
         var ds = args.DrawingSession;
         var view = new Rect(0, 0, sender.Width, sender.Height);
         ds.DrawImage(_image, view);
         ds.DrawImage(_paint, view, new Rect(0, 0, _width, _height), 0.5f);
+        ds.DrawImage(_markup, view, new Rect(0, 0, _width, _height));
         for (var i = 0; i < Selections.Count; i++)
         {
             var s = Selections[i];
@@ -192,7 +226,7 @@ public sealed class ImageMarkDialog : ContentDialog
             using var dash = new CanvasStrokeStyle { DashStyle = CanvasDashStyle.Dash };
             ds.DrawRectangle(new Rect(start, _pointer), _accent, 2, dash);
         }
-        if (_tool is Brush or Eraser)
+        if (_tool is Brush or Pen or Eraser)
         {
             // Dark halo under a white ring keeps the cursor visible on any image.
             var (x, y, r) = ((float)_pointer.X, (float)_pointer.Y, (float)(_size.Value / 2));
@@ -205,7 +239,7 @@ public sealed class ImageMarkDialog : ContentDialog
     {
         _pointer = e.GetCurrentPoint(_canvas).Position;
         _canvas.CapturePointer(e.Pointer);
-        if (_tool is Brush or Eraser) { _last = _pointer; Stroke(_pointer); }
+        if (_tool is Brush or Pen or Eraser) { _last = _pointer; Stroke(_pointer); }
         else if (_tool == ImageSelection.Box) _boxStart = _pointer;
         else if (_tool == ImageSelection.Point) Selections.Add(new(ImageSelection.Point, Fraction(_pointer.X, _canvas.Width), Fraction(_pointer.Y, _canvas.Height)));
         _canvas.Invalidate();
@@ -233,17 +267,21 @@ public sealed class ImageMarkDialog : ContentDialog
 
     private static double Fraction(double value, double size) => Math.Clamp(value / size, 0, 1);
 
+    /// <summary>The brush paints the mask, the pen draws markup, and the eraser clears both layers.</summary>
     private void Stroke(Point to)
     {
-        if (_paint is null || _last is not { } from) return;
+        if (_paint is null || _markup is null || _last is not { } from) return;
         var erase = _tool == Eraser;
         var radius = (float)(_size.Value / 2 / _scale);
-        using var ds = _paint.CreateDrawingSession();
-        if (erase) ds.Blend = CanvasBlend.Copy;
-        var color = erase ? Colors.Transparent : _accent;
         using var round = new CanvasStrokeStyle { StartCap = CanvasCapStyle.Round, EndCap = CanvasCapStyle.Round };
-        ds.DrawLine(ToImage(from), ToImage(to), color, radius * 2, round);
-        ds.FillCircle(ToImage(to), radius, color);
+        (CanvasRenderTarget Layer, Color Color)[] layers = erase ? [(_paint, Colors.Transparent), (_markup, Colors.Transparent)] : [_tool == Pen ? (_markup, Ink) : (_paint, _accent)];
+        foreach (var (layer, color) in layers)
+        {
+            using var ds = layer.CreateDrawingSession();
+            if (erase) ds.Blend = CanvasBlend.Copy;
+            ds.DrawLine(ToImage(from), ToImage(to), color, radius * 2, round);
+            ds.FillCircle(ToImage(to), radius, color);
+        }
         _last = to;
         if (!erase) _painted = true;
     }
@@ -251,10 +289,33 @@ public sealed class ImageMarkDialog : ContentDialog
     private void ClearAll()
     {
         Selections.Clear();
-        if (_paint is not null)
-            using (var ds = _paint.CreateDrawingSession()) ds.Clear(Colors.Transparent);
+        foreach (var layer in new[] { _paint, _markup }.OfType<CanvasRenderTarget>())
+            using (var ds = layer.CreateDrawingSession()) ds.Clear(Colors.Transparent);
         _painted = false;
         _canvas.Invalidate();
+    }
+
+    /// <summary>The markup layer as drawn: red strokes on transparent pixels, the size of the image.</summary>
+    private async Task<byte[]?> ExportMarkupAsync()
+    {
+        if (_markup is null) return null;
+        var pixels = _markup.GetPixelBytes();
+        var any = false;
+        for (var i = 3; i < pixels.Length && !any; i += 4) any = pixels[i] > 0;
+        if (!any) return null;
+        using var stream = new InMemoryRandomAccessStream();
+        await _markup.SaveAsync(stream, CanvasBitmapFileFormat.Png);
+        return await BytesAsync(stream);
+    }
+
+    private static async Task<byte[]> BytesAsync(InMemoryRandomAccessStream stream)
+    {
+        var bytes = new byte[stream.Size];
+        stream.Seek(0);
+        using var reader = new DataReader(stream);
+        await reader.LoadAsync((uint)stream.Size);
+        reader.ReadBytes(bytes);
+        return bytes;
     }
 
     /// <summary>Painted pixels become fully transparent (repaint here); everything else is opaque white.</summary>
@@ -273,11 +334,6 @@ public sealed class ImageMarkDialog : ContentDialog
         using var bitmap = CanvasBitmap.CreateFromBytes(_canvas.Device, mask, _width, _height, DirectXPixelFormat.B8G8R8A8UIntNormalized);
         using var stream = new InMemoryRandomAccessStream();
         await bitmap.SaveAsync(stream, CanvasBitmapFileFormat.Png);
-        var bytes = new byte[stream.Size];
-        stream.Seek(0);
-        using var reader = new DataReader(stream);
-        await reader.LoadAsync((uint)stream.Size);
-        reader.ReadBytes(bytes);
-        return bytes;
+        return await BytesAsync(stream);
     }
 }

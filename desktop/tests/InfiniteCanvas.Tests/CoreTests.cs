@@ -1,3 +1,4 @@
+using System.Text;
 using InfiniteCanvas.Core.Canvas;
 using InfiniteCanvas.Core.Models;
 using InfiniteCanvas.Core.Settings;
@@ -128,6 +129,44 @@ public class CoreTests
         Assert.Equal("qwen-image", ModelFamilies.FindImage(Vendor.Qwen, "qwen-image-2.1-pro")!.Id);
         Assert.Contains("8:1", ModelFamilies.FindImage(Vendor.Google, "gemini-nano-banana-2.1")!.Ratios);
         Assert.Equal(["1k", "1.5k", "2k"], ModelFamilies.FindImage(Vendor.XAI, "grok-imagine-image-2.0")!.Tiers);
+    }
+
+    [Fact]
+    public void GPT_Image_2_6_has_complexity_gif_svg_and_markup_on_the_Image_API_only()
+    {
+        foreach (var model in new[] { "gpt-image-2.6-flare", "gpt-image-2.6-sunburst" })
+        {
+            var family = ModelFamilies.FindImage(Vendor.OpenAI, model)!;
+            Assert.Equal("gpt-image-2.6", family.Id);
+            Assert.Equal(["low", "medium", "high"], family.Complexities);
+            Assert.Contains("max", family.Qualities);
+            Assert.Equal(["png", "jpeg", "webp", "gif", "svg"], family.OutputFormats);
+            Assert.True(family.Markup);
+            Assert.False(family.ResponsesTool);
+            Assert.Equal("3840x2160", ModelFamilies.ImageSize(family, "4K", "16:9"));
+        }
+        var previous = ModelFamilies.FindImage(Vendor.OpenAI, "gpt-image-2.5-flare")!;
+        Assert.Equal((true, true, 0), (previous.Markup, previous.ResponsesTool, previous.Complexities.Length));
+        Assert.DoesNotContain("gif", previous.OutputFormats);
+        // A node left on the Responses mode falls back to the Image API for 2.6.
+        var node = new CanvasNode();
+        node.SetOption("openaiApi", "responses");
+        Assert.Equal(("images", "responses"), (ModelFamilies.OpenAIApi(node, ModelFamilies.FindImage(Vendor.OpenAI, "gpt-image-2.6-flare")), ModelFamilies.OpenAIApi(node, previous)));
+        Assert.Equal("gpt-image-2.6-flare", ModelFamilies.Recommended(Vendor.OpenAI)[0]);
+    }
+
+    [Fact]
+    public void Svg_size_comes_from_width_and_height_or_the_view_box()
+    {
+        static (int, int) Size(string svg) => Media.SvgSize(Encoding.UTF8.GetBytes(svg));
+        Assert.Equal((800, 600), Size("""<svg xmlns="http://www.w3.org/2000/svg" width="800px" height="600"/>"""));
+        Assert.Equal((1536, 1024), Size("""<svg xmlns="http://www.w3.org/2000/svg" width="100%" viewBox="0 0 1536 1024"/>"""));
+        Assert.Equal((0, 0), Size("""<svg xmlns="http://www.w3.org/2000/svg"/>"""));
+        Assert.Equal((0, 0), Size("not xml"));
+        Assert.Equal((0, 0), Media.SvgSize([0x89, 0x50, 0x4E, 0x47]));
+        Assert.Equal(("image/svg+xml", ".svg", NodeKind.Image), (Media.MimeOf("图片-003.svg"), Media.Extension("image/svg+xml"), Media.KindOf("a.SVG")));
+        Assert.True(Media.IsSvg("图片-003.SVG"));
+        Assert.True(ProjectStore.IsMark("标注-001.png") && ProjectStore.IsMark("蒙版-002.png") && !ProjectStore.IsMark("图片-001.png"));
     }
 
     [Fact]
@@ -523,6 +562,7 @@ public class CoreTests
         Assert.Equal(20m, Prices.Default(Vendor.Google, "gemini-3.1-flash-tts-preview")!.Media);
         Assert.Null(Prices.Default(Vendor.Google, "gemma-4"));
         Assert.Equal(30m, Prices.Default(Vendor.OpenAI, "gpt-image-2.5-flare")!.Output);
+        Assert.Equal((5m, 30m), Prices.Default(Vendor.OpenAI, "gpt-image-2.6-sunburst") is { } image26 ? (image26.Input, image26.Output) : default);
         Assert.Null(Prices.Default(Vendor.Ark, "doubao-seedream-5-0-pro-260628"));
 
         var channel = new ModelChannel { Vendor = Vendor.Google, Models = [new() { Name = "gemini-3-pro-image-preview" }, new() { Name = "gemini-3.8-flash", Price = new(1, 10, 0) }] };
@@ -551,6 +591,8 @@ public class CoreTests
         // OpenAI: the published per-size table at 1024 sizes.
         Assert.Equal(0.106m, Estimate(Vendor.OpenAI, "gpt-image-2", size: "1K", ratio: "1:1", quality: "medium", count: 2)!.Amount);
         Assert.Null(Estimate(Vendor.OpenAI, "gpt-image-2", size: "2K", ratio: "1:1", quality: "medium"));
+        // GPT Image 2.6 has no per-image table, so gpt-image-2's must not apply to it.
+        Assert.Null(Estimate(Vendor.OpenAI, "gpt-image-2.6-flare", size: "1K", ratio: "1:1", quality: "medium"));
         Assert.Null(Estimate(Vendor.Ark, "doubao-seedream-9"));
 
         // No published price for GPT Image 2.5: the last run with the same settings is used once there is one.
@@ -581,14 +623,15 @@ public class CoreTests
         var doc = new CanvasDocument();
         var image = new CanvasNode { Kind = NodeKind.Image, Content = "图片-001.png" };
         image.SetOption(NodeKeys.Mask, "蒙版-001.png");
+        image.SetOption(NodeKeys.Markup, "标注-001.png");
         doc.Nodes.Add(image);
         var dir = ProjectStore.AssetsDir(doc.Id);
         Directory.CreateDirectory(dir);
         try
         {
-            foreach (var name in new[] { "图片-001.png", "图片-002.png", "蒙版-001.png", "蒙版-002.png" }) File.WriteAllText(Path.Combine(dir, name), "");
+            foreach (var name in new[] { "图片-001.png", "图片-002.png", "蒙版-001.png", "蒙版-002.png", "标注-001.png", "标注-002.png" }) File.WriteAllText(Path.Combine(dir, name), "");
             ProjectStore.PruneMasks(doc);
-            Assert.Equal(["图片-001.png", "图片-002.png", "蒙版-001.png"], Directory.GetFiles(dir).Select(f => Path.GetFileName(f)).Order(StringComparer.Ordinal));
+            Assert.Equal(["图片-001.png", "图片-002.png", "标注-001.png", "蒙版-001.png"], Directory.GetFiles(dir).Select(f => Path.GetFileName(f)).Order(StringComparer.Ordinal));
         }
         finally { Directory.Delete(Path.GetDirectoryName(dir)!, true); }
     }

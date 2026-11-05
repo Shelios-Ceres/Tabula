@@ -29,6 +29,11 @@ public sealed class ImageOptions
     public bool FastPrompt { get; init; }
     public string? NegativePrompt { get; init; }
     public bool PromptExtend { get; init; } = true;
+    /// <summary>GPT Image 2.6: how much planning the model does (low / medium / high); null leaves the model default (high).</summary>
+    public string? Complexity { get; init; }
+    /// <summary>GPT Image 2.6 GIF output: frames (2–64) and milliseconds per frame (20–2000); null keeps the API defaults (9 frames, 200 ms).</summary>
+    public int? FrameCount { get; init; }
+    public int? FrameDurationMs { get; init; }
     /// <summary>OpenAI only: "images" (Image API) or "responses" (image_generation tool via a mainline model).</summary>
     public string OpenAIApi { get; init; } = "images";
     public string? MainModel { get; init; }
@@ -49,8 +54,9 @@ public sealed class ImageOptions
 
 /// <param name="Selections">Ark interactive editing: points / boxes on the references, in 0–1 fractions.</param>
 /// <param name="PreviousId">Continue a stored conversation (OpenAI response ID / Gemini interaction ID).</param>
+/// <param name="Markup">GPT Image markup edits: a transparent annotation layer the size of the first reference.</param>
 public sealed record ImageRequest(string Model, string Prompt, IReadOnlyList<MediaInput> References, MediaInput? Mask, int Count, ImageOptions Options, string? EndpointId = null,
-    IReadOnlyList<Core.Canvas.ImageSelection>? Selections = null, string? PreviousId = null);
+    IReadOnlyList<Core.Canvas.ImageSelection>? Selections = null, string? PreviousId = null, MediaInput? Markup = null);
 
 /// <summary>Layer metadata from Ark layer decomposition; Box is [left, top, right, bottom] in 0–1000 of the base image.</summary>
 public sealed record ImageLayer(int ZIndex, string? Name, string? Description, double[]? Box);

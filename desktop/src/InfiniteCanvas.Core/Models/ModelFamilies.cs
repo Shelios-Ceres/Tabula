@@ -30,6 +30,12 @@ public sealed record ImageFamily(string Id, Vendor Vendor, string Pattern)
     public bool Interactive { get; init; }
     public bool FastPrompt { get; init; }
     public bool Mask { get; init; }
+    /// <summary>GPT Image 2.5 / 2.6: a transparent annotation layer over the first image shows where to change it (<c>markup</c>, never with a mask).</summary>
+    public bool Markup { get; init; }
+    /// <summary>GPT Image 2.6: how much planning the model does before drawing (<c>complexity</c>); empty for models without the setting.</summary>
+    public string[] Complexities { get; init; } = [];
+    /// <summary>OpenAI: documented as a model for the Responses image_generation tool.</summary>
+    public bool ResponsesTool { get; init; }
     public bool Background { get; init; }
     public bool NegativePrompt { get; init; }
     /// <summary>Ark only: documented total-pixel ceiling for explicit WIDTHxHEIGHT sizes; the top tier uses all of it.</summary>
@@ -45,9 +51,11 @@ public static class ModelFamilies
     // Order matters: more specific patterns first.
     public static readonly ImageFamily[] Image =
     [
-        new("gpt-image-2.5", Vendor.OpenAI, "^gpt-image-2\\.5") { Tiers = ["auto", "1K", "2K", "4K"], Ratios = TableRatios, MaxReferences = 16, MaxImages = 10, OutputFormats = ["png", "jpeg", "webp"], Qualities = ["auto", "low", "medium", "high", "xhigh", "max"], Stream = true, Mask = true, Background = true },
-        new("gpt-image-1", Vendor.OpenAI, "^gpt-image-1") { Tiers = ["auto", "1K"], Ratios = ["1:1", "3:2", "2:3"], MaxReferences = 16, MaxImages = 10, OutputFormats = ["png", "jpeg", "webp"], Qualities = ["auto", "low", "medium", "high"], Stream = true, Mask = true, Background = true },
-        new("gpt-image", Vendor.OpenAI, "^gpt-image") { Tiers = ["auto", "1K", "2K", "4K"], Ratios = TableRatios, MaxReferences = 16, MaxImages = 10, OutputFormats = ["png", "jpeg", "webp"], Qualities = ["auto", "low", "medium", "high"], Stream = true, Mask = true, Background = true },
+        // GPT Image 2.6 runs on the Image API only (its model pages list no Responses support); GIF and SVG are generation-only outputs.
+        new("gpt-image-2.6", Vendor.OpenAI, "^gpt-image-2\\.6") { Tiers = ["auto", "1K", "2K", "4K"], Ratios = TableRatios, MaxReferences = 16, MaxImages = 10, OutputFormats = ["png", "jpeg", "webp", "gif", "svg"], Qualities = ["auto", "low", "medium", "high", "xhigh", "max"], Complexities = ["low", "medium", "high"], Stream = true, Mask = true, Markup = true, Background = true },
+        new("gpt-image-2.5", Vendor.OpenAI, "^gpt-image-2\\.5") { Tiers = ["auto", "1K", "2K", "4K"], Ratios = TableRatios, MaxReferences = 16, MaxImages = 10, OutputFormats = ["png", "jpeg", "webp"], Qualities = ["auto", "low", "medium", "high", "xhigh", "max"], Stream = true, Mask = true, Markup = true, Background = true, ResponsesTool = true },
+        new("gpt-image-1", Vendor.OpenAI, "^gpt-image-1") { Tiers = ["auto", "1K"], Ratios = ["1:1", "3:2", "2:3"], MaxReferences = 16, MaxImages = 10, OutputFormats = ["png", "jpeg", "webp"], Qualities = ["auto", "low", "medium", "high"], Stream = true, Mask = true, Background = true, ResponsesTool = true },
+        new("gpt-image", Vendor.OpenAI, "^gpt-image") { Tiers = ["auto", "1K", "2K", "4K"], Ratios = TableRatios, MaxReferences = 16, MaxImages = 10, OutputFormats = ["png", "jpeg", "webp"], Qualities = ["auto", "low", "medium", "high"], Stream = true, Mask = true, Background = true, ResponsesTool = true },
         new("gemini-nano-banana-2.1", Vendor.Google, "^gemini-nano-banana-2\\.1") { Tiers = ["1K", "2K", "4K"], Ratios = [.. StandardRatios, "1:4", "4:1", "1:8", "8:1"], MaxReferences = 14, ThinkingLevels = ["auto", "minimal", "medium", "high"], WebSearch = true, ImageSearch = true, OutputFormats = ["jpeg"] },
         new("gemini-3.1-flash-lite-image", Vendor.Google, "^gemini-3\\.1-flash-lite-image") { Tiers = ["1K"], Ratios = StandardRatios, MaxReferences = 14, ThinkingLevels = ["auto", "minimal", "high"], OutputFormats = ["jpeg"] },
         new("gemini-3.1-flash-image", Vendor.Google, "^gemini-3\\.1-flash-image") { Tiers = ["512", "1K", "2K", "4K"], Ratios = [.. StandardRatios, "1:4", "4:1", "1:8", "8:1"], MaxReferences = 14, ThinkingLevels = ["auto", "minimal", "high"], WebSearch = true, ImageSearch = true, OutputFormats = ["jpeg"] },
@@ -100,6 +108,9 @@ public static class ModelFamilies
         return string.Join(" ", words.Select(word => word is "gpt" or "tts" || Regex.IsMatch(word, @"^[a-z]\d[a-z]$") ? word.ToUpperInvariant() : char.ToUpperInvariant(word[0]) + word[1..]));
     }
 
+    /// <summary>A node's OpenAI call mode ("images" or "responses"); models not documented for the Responses image tool always use the Image API.</summary>
+    public static string OpenAIApi(CanvasNode node, ImageFamily? family) => family?.ResponsesTool == false ? "images" : node.Option("openaiApi", "images");
+
     /// <summary>DashScope routes multimodal models (VL/Audio/QVQ/Omni and the versioned qwen3.x line) to multimodal-generation.</summary>
     public static bool QwenMultimodal(string model) => Regex.IsMatch(Normalize(model), "vl|audio|qvq|omni|^qwen3\\.\\d+-");
 
@@ -125,7 +136,7 @@ public static class ModelFamilies
 
     public static IReadOnlyList<string> Recommended(Vendor vendor) => vendor switch
     {
-        Vendor.OpenAI => ["gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2", "gpt-5.5", "gpt-4o-mini-tts"],
+        Vendor.OpenAI => ["gpt-image-2.6-flare", "gpt-image-2.6-sunburst", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2", "gpt-5.5", "gpt-4o-mini-tts"],
         Vendor.Google => ["gemini-nano-banana-2.1", "gemini-3-pro-image", "gemini-3.1-flash-image", "gemini-3.1-flash-lite-image", "gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts"],
         Vendor.Ark => ["doubao-seedream-5-0-pro-260628", "doubao-seedream-5-0-flash-260915", "doubao-seedream-5-0-260128", "doubao-seedream-4-5-251128", "doubao-seedream-4-0-250828"],
         Vendor.XAI => ["grok-imagine-image-2.0"],

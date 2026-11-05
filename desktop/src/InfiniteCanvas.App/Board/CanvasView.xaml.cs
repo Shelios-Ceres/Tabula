@@ -60,6 +60,7 @@ public sealed partial class CanvasView : UserControl
     /// <summary>Image tools above a single selected picture.</summary>
     private readonly Border _imageBar;
     private Button? _imageMarkButton;
+    private Button[] _pixelTools = [];
     private readonly TextBlock _selectionCount = new() { Style = (Style)Application.Current.Resources["SecondaryCaption"], VerticalAlignment = VerticalAlignment.Center, Margin = new(10, 0, 6, 0) };
     private readonly List<string> _order = [];
     private Thickness _safe = new(0, 68, 0, 72);
@@ -558,11 +559,14 @@ public sealed partial class CanvasView : UserControl
             return button;
         }
         _imageMarkButton = Add("", "局部编辑", EditMarksCoreAsync);
-        Add("", "裁剪", node => ImageTools.CropAsync(this, node));
-        Add("", "拆分", node => ImageTools.SplitAsync(this, node));
-        Add("", "多角度", node => ImageTools.AngleAsync(this, node));
-        Add("", "本地放大", UpscaleAsync);
-        Add("", "反推提示词", node => ImageTools.ReversePromptAsync(this, node));
+        _pixelTools =
+        [
+            Add("", "裁剪", node => ImageTools.CropAsync(this, node)),
+            Add("", "拆分", node => ImageTools.SplitAsync(this, node)),
+            Add("", "多角度", node => ImageTools.AngleAsync(this, node)),
+            Add("", "本地放大", UpscaleAsync),
+            Add("", "反推提示词", node => ImageTools.ReversePromptAsync(this, node)),
+        ];
         row.Children.Add(new Microsoft.UI.Xaml.Shapes.Rectangle { Style = (Style)Application.Current.Resources["ToolbarDivider"] });
         Add("", "加入资料库", AddToLibraryAsync);
         Add("", "用默认应用打开", node =>
@@ -600,7 +604,9 @@ public sealed partial class CanvasView : UserControl
         _imageBar.Visibility = node is null ? Visibility.Collapsed : Visibility.Visible;
         if (node is null) return;
         if (_imageMarkButton is not null)
-            _imageMarkButton.Visibility = MarkSupport(node) is var (mask, points) && (mask || points) ? Visibility.Visible : Visibility.Collapsed;
+            _imageMarkButton.Visibility = MarkSupport(node) is var (mask, points, markup) && (mask || points || markup) ? Visibility.Visible : Visibility.Collapsed;
+        // SVG has no pixels for the bitmap tools.
+        foreach (var tool in _pixelTools) tool.Visibility = Media.IsSvg(node.Content) ? Visibility.Collapsed : Visibility.Visible;
         var topLeft = ToScreen(node.X, node.Y);
         var right = ToScreen(node.Right, node.Y).X;
         var (width, height) = (Math.Max(_imageBar.ActualWidth, 300), Math.Max(_imageBar.ActualHeight, 44));
@@ -1375,10 +1381,11 @@ public sealed partial class CanvasView : UserControl
             menu.Items.Add(new MenuFlyoutSeparator());
             menu.Items.Add(Item("用默认应用打开", "", () => Process.Start(new ProcessStartInfo(path) { UseShellExecute = true })));
             menu.Items.Add(Item("在资源管理器中显示", "", () => Process.Start("explorer.exe", $"/select,\"{path}\"")));
-            if (node.Kind == NodeKind.Image && MarkSupport(node) is var (mask, points) && (mask || points))
-                menu.Items.Insert(0, Item(mask ? "局部重绘（涂抹蒙版）…" : "局部编辑（点选 / 框选）…", "", () => EditMarksAsync(node)));
-            if (node.Kind == NodeKind.Image) menu.Items.Add(Item("本地放大…", "", () => TrackLocalAsync(() => UpscaleAsync(node))));
-            if (node.Kind == NodeKind.Image)
+            if (node.Kind == NodeKind.Image && MarkSupport(node) is var (mask, points, markup) && (mask || points || markup))
+                menu.Items.Insert(0, Item(mask && markup ? "局部编辑（涂抹 / 标注）…" : mask ? "局部重绘（涂抹蒙版）…" : "局部编辑（点选 / 框选）…", "", () => EditMarksAsync(node)));
+            var bitmap = node.Kind == NodeKind.Image && !Media.IsSvg(node.Content);
+            if (bitmap) menu.Items.Add(Item("本地放大…", "", () => TrackLocalAsync(() => UpscaleAsync(node))));
+            if (bitmap)
             {
                 menu.Items.Add(Item("裁剪…", "\uE7A8", () => TrackLocalAsync(() => ImageTools.CropAsync(this, node))));
                 menu.Items.Add(Item("拆分…", "\uF0E2", () => TrackLocalAsync(() => ImageTools.SplitAsync(this, node))));
@@ -1501,7 +1508,7 @@ public sealed partial class CanvasView : UserControl
                 var items = new List<IStorageItem>();
                 foreach (var file in files) items.Add(await StorageFile.GetFileFromPathAsync(file));
                 data.SetStorageItems(items);
-                if (files.Count == 1 && Media.KindOf(files[0]) == NodeKind.Image) data.SetBitmap(RandomAccessStreamReference.CreateFromFile((StorageFile)items[0]));
+                if (files.Count == 1 && Media.KindOf(files[0]) == NodeKind.Image && !Media.IsSvg(files[0])) data.SetBitmap(RandomAccessStreamReference.CreateFromFile((StorageFile)items[0]));
             }
             if (texts.Count > 0) data.SetText(string.Join("\n\n", texts));
             Clipboard.SetContent(data);
@@ -1523,7 +1530,7 @@ public sealed partial class CanvasView : UserControl
         ClosePreview();
         var path = ProjectStore.AssetPath(Doc.Id, node.Content!);
         if (!File.Exists(path)) return;
-        var image = new Image { Source = new BitmapImage(new Uri(path)), Stretch = Stretch.Uniform, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        var image = new Image { Source = Media.IsSvg(path) ? new SvgImageSource(new Uri(path)) : new BitmapImage(new Uri(path)), Stretch = Stretch.Uniform, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
         // The picture fits and centres in the visible area at 100 %; zooming enlarges it from there.
         var frame = new Grid { Children = { image } };
         var scroller = new ScrollViewer
@@ -1653,7 +1660,7 @@ public sealed partial class CanvasView : UserControl
     public async Task ImportWithPickerAsync(Point? world = null)
     {
         var picker = new FileOpenPicker { SuggestedStartLocation = PickerLocationId.PicturesLibrary };
-        foreach (var ext in new[] { ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".mp4", ".mov", ".webm", ".mp3", ".wav", ".m4a", ".aac", ".flac" }) picker.FileTypeFilter.Add(ext);
+        foreach (var ext in new[] { ".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".bmp", ".mp4", ".mov", ".webm", ".mp3", ".wav", ".m4a", ".aac", ".flac" }) picker.FileTypeFilter.Add(ext);
         WinRT.Interop.InitializeWithWindow.Initialize(picker, WinRT.Interop.WindowNative.GetWindowHandle(App.Window));
         var files = await picker.PickMultipleFilesAsync();
         if (files.Count > 0) await ImportFilesAsync(files.Select(f => f.Path).ToList(), world ?? ViewCenterWorld);
@@ -1664,7 +1671,7 @@ public sealed partial class CanvasView : UserControl
         var picker = new FileOpenPicker();
         var extensions = node.Kind switch
         {
-            NodeKind.Image => new[] { ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp" },
+            NodeKind.Image => new[] { ".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".bmp" },
             NodeKind.Video => [".mp4", ".mov", ".webm"],
             _ => [".mp3", ".wav", ".m4a", ".aac", ".flac"],
         };
@@ -1750,23 +1757,29 @@ public sealed partial class CanvasView : UserControl
         node.Error = null;
     }
 
-    /// <summary>What local editing the node's current image model offers: a repaint mask (GPT Image) and / or points and boxes (Seedream 5.0 pro / flash).</summary>
-    public (bool Mask, bool Points) MarkSupport(CanvasNode node)
+    /// <summary>
+    /// What local editing the node's current image model offers: a repaint mask and a markup layer (GPT Image) and / or points and boxes
+    /// (Seedream 5.0 pro / flash). SVG pictures have no pixels to mark.
+    /// </summary>
+    public (bool Mask, bool Points, bool Markup) MarkSupport(CanvasNode node)
     {
         var settings = SettingsStore.Current;
-        if (settings.Resolve(settings.ModelFor(Capability.Image, node.Model)) is not { } resolved) return (false, false);
+        if (Media.IsSvg(node.Content) || settings.Resolve(settings.ModelFor(Capability.Image, node.Model)) is not { } resolved) return (false, false, false);
         var family = ModelFamilies.FindImage(resolved.Channel.Vendor, resolved.Model.Name);
-        return (resolved.Channel.Vendor == Vendor.OpenAI && family?.Mask == true, family?.Interactive == true);
+        var openAI = resolved.Channel.Vendor == Vendor.OpenAI;
+        return (openAI && family?.Mask == true, family?.Interactive == true, openAI && family?.Markup == true);
     }
 
     public Task EditMarksAsync(CanvasNode node) => IsClosing ? Task.CompletedTask : TrackLocalAsync(() => EditMarksCoreAsync(node));
 
     private async Task EditMarksCoreAsync(CanvasNode node)
     {
-        var (allowMask, allowPoints) = MarkSupport(node);
-        if (!allowMask && !allowPoints)
+        var (allowMask, allowPoints, allowMarkup) = MarkSupport(node);
+        if (!allowMask && !allowPoints && !allowMarkup)
         {
-            await Dialogs.MessageAsync("当前模型不支持局部编辑", "GPT Image 支持涂抹蒙版局部重绘，Seedream 5.0 pro / flash 支持点选和框选。请先在下方面板把模型切换到这些型号。");
+            await Dialogs.MessageAsync(Media.IsSvg(node.Content) ? "SVG 不能局部编辑" : "当前模型不支持局部编辑", Media.IsSvg(node.Content)
+                ? "局部编辑需要位图，SVG 矢量图请直接用提示词修改。"
+                : "GPT Image 支持涂抹蒙版局部重绘，GPT Image 2.5 / 2.6 还支持画圈标注，Seedream 5.0 pro / flash 支持点选和框选。请先在下方面板把模型切换到这些型号。");
             return;
         }
         try
@@ -1781,10 +1794,13 @@ public sealed partial class CanvasView : UserControl
             }
             var maskPath = node.Option(NodeKeys.Mask) is { Length: > 0 } maskAsset ? ProjectStore.AssetPath(Doc.Id, maskAsset) : null;
             var mask = maskPath is not null && File.Exists(maskPath) ? await File.ReadAllBytesAsync(maskPath) : null;
-            var dialog = new ImageMarkDialog(path, width, height, mask, NodeKeys.SelectionsOf(node), allowMask, allowPoints);
+            var markupPath = node.Option(NodeKeys.Markup) is { Length: > 0 } markupAsset ? ProjectStore.AssetPath(Doc.Id, markupAsset) : null;
+            var markup = markupPath is not null && File.Exists(markupPath) ? await File.ReadAllBytesAsync(markupPath) : null;
+            var dialog = new ImageMarkDialog(path, width, height, mask, markup, NodeKeys.SelectionsOf(node), allowMask, allowPoints, allowMarkup);
             if (await Dialogs.ShowAsync(dialog) != ContentDialogResult.Primary) return;
             History.Record();
             node.SetOption(NodeKeys.Mask, dialog.MaskPng is { } png ? ProjectStore.SaveAsset(Doc.Id, png, "image/png", ProjectStore.MaskPrefix) : null);
+            node.SetOption(NodeKeys.Markup, dialog.MarkupPng is { } layer ? ProjectStore.SaveAsset(Doc.Id, layer, "image/png", ProjectStore.MarkupPrefix) : null);
             NodeKeys.SetSelections(node, dialog.Selections);
             RaiseChanged();
             _panel.Refresh();
@@ -1800,6 +1816,7 @@ public sealed partial class CanvasView : UserControl
     {
         History.Record();
         node.SetOption(NodeKeys.Mask, null);
+        node.SetOption(NodeKeys.Markup, null);
         NodeKeys.SetSelections(node, []);
         RaiseChanged();
     }

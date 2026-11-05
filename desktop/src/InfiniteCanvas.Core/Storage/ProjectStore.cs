@@ -1,5 +1,8 @@
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Xml;
+using System.Xml.Linq;
 using InfiniteCanvas.Core.Canvas;
 using Microsoft.VisualBasic.FileIO;
 
@@ -19,8 +22,10 @@ public static class ProjectStore
     public static string AssetsDir(string id) => Path.Combine(ProjectsDir, id, "assets");
     public static string AssetPath(string id, string name) => Path.Combine(AssetsDir(id), name);
     public static string LibraryDir(string id) => Path.Combine(ProjectsDir, id, "library");
-    /// <summary>Masks are numbered like media (蒙版-001.png) but belong to their node's marks, not to the canvas's files.</summary>
-    public const string MaskPrefix = "蒙版";
+    /// <summary>Masks and markup layers are numbered like media (蒙版-001.png, 标注-001.png) but belong to their node's marks, not to the canvas's files.</summary>
+    public const string MaskPrefix = "蒙版", MarkupPrefix = "标注";
+
+    public static bool IsMark(string fileName) => fileName.StartsWith(MaskPrefix + "-") || fileName.StartsWith(MarkupPrefix + "-");
 
     public static List<ProjectInfo> List()
     {
@@ -110,7 +115,7 @@ public static class ProjectStore
     }
 
     /// <summary>
-    /// Delete mask files that no node references any more. Pictures, videos and audio stay after their nodes are deleted from the canvas;
+    /// Delete mask and markup files that no node references any more. Pictures, videos and audio stay after their nodes are deleted from the canvas;
     /// only deleting them from the canvas's files in the side panel removes them. Only safe once the canvas is closed: its undo history is gone.
     /// </summary>
     public static void PruneMasks(CanvasDocument doc)
@@ -120,7 +125,7 @@ public static class ProjectStore
             var dir = AssetsDir(doc.Id);
             if (!Directory.Exists(dir)) return;
             var used = doc.Nodes.SelectMany(n => n.Options.Values).ToHashSet();
-            foreach (var file in Directory.GetFiles(dir, MaskPrefix + "-*").Where(f => !used.Contains(Path.GetFileName(f))))
+            foreach (var file in Directory.GetFiles(dir).Where(f => IsMark(Path.GetFileName(f)) && !used.Contains(Path.GetFileName(f))))
                 try { File.Delete(file); }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { /* Still open elsewhere: the next prune retries. */ }
         }
@@ -158,6 +163,7 @@ public static class Media
         "image/jpeg" => ".jpg",
         "image/webp" => ".webp",
         "image/gif" => ".gif",
+        "image/svg+xml" => ".svg",
         "video/mp4" => ".mp4",
         "video/quicktime" => ".mov",
         "audio/mpeg" => ".mp3",
@@ -176,6 +182,7 @@ public static class Media
         ".jpg" or ".jpeg" => "image/jpeg",
         ".webp" => "image/webp",
         ".gif" => "image/gif",
+        ".svg" => "image/svg+xml",
         ".bmp" => "image/bmp",
         ".mp4" => "video/mp4",
         ".mov" => "video/quicktime",
@@ -193,7 +200,28 @@ public static class Media
     {
         var mime when mime.StartsWith("video/") => NodeKind.Video,
         var mime when mime.StartsWith("audio/") => NodeKind.Audio,
-        _ when Path.GetExtension(path).ToLowerInvariant() is ".png" or ".jpg" or ".jpeg" or ".webp" or ".gif" or ".bmp" => NodeKind.Image,
+        _ when Path.GetExtension(path).ToLowerInvariant() is ".png" or ".jpg" or ".jpeg" or ".webp" or ".gif" or ".svg" or ".bmp" => NodeKind.Image,
         _ => null,
     };
+
+    /// <summary>Vector pictures show and export as they are, but pixel tools and raster-only vendors need them drawn first.</summary>
+    public static bool IsSvg(string? path) => path is not null && Path.GetExtension(path).Equals(".svg", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Pixel size an SVG declares: its width / height in px, else its viewBox; (0, 0) when it is not SVG or says neither.</summary>
+    public static (int Width, int Height) SvgSize(byte[] bytes)
+    {
+        try
+        {
+            // Files come from vendors and imports: DTDs (and with them entity expansion) are ignored.
+            using var reader = XmlReader.Create(new MemoryStream(bytes), new XmlReaderSettings { DtdProcessing = DtdProcessing.Ignore });
+            var root = XDocument.Load(reader).Root;
+            if (root?.Name.LocalName != "svg") return (0, 0);
+            static double Px(string? value) => value is not null && double.TryParse(value.Trim().Replace("px", ""), CultureInfo.InvariantCulture, out var number) ? number : 0;
+            var (width, height) = (Px((string?)root.Attribute("width")), Px((string?)root.Attribute("height")));
+            if ((width <= 0 || height <= 0) && ((string?)root.Attribute("viewBox"))?.Split([' ', ','], StringSplitOptions.RemoveEmptyEntries) is { Length: 4 } box)
+                (width, height) = (Px(box[2]), Px(box[3]));
+            return width > 0 && height > 0 ? ((int)Math.Round(width), (int)Math.Round(height)) : (0, 0);
+        }
+        catch (XmlException) { return (0, 0); }
+    }
 }

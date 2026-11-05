@@ -2,6 +2,7 @@ using System.Numerics;
 using InfiniteCanvas.Core.Canvas;
 using InfiniteCanvas.Core.Storage;
 using Microsoft.Graphics.Canvas;
+using Microsoft.Graphics.Canvas.Svg;
 using Microsoft.Graphics.Canvas.UI.Xaml;
 using Microsoft.UI;
 using Microsoft.UI.Xaml;
@@ -34,6 +35,24 @@ public static class ImageTools
             await Dialogs.MessageAsync("无法打开图片", "这张图片无法解码，或尺寸超过显卡支持的最大位图尺寸。");
             return null;
         }
+    }
+
+    /// <summary>Draw an SVG at the size it declares (1024 × 1024 when it declares none, keeping its own aspect inside) and encode it as PNG.</summary>
+    public static async Task<byte[]> RasterizeSvgAsync(byte[] svg)
+    {
+        var device = CanvasDevice.GetSharedDevice();
+        using var input = new MemoryStream(svg);
+        using var document = await CanvasSvgDocument.LoadAsync(device, input.AsRandomAccessStream());
+        var (width, height) = Media.SvgSize(svg) is { Width: > 0 } size ? size : (1024, 1024);
+        using var target = new CanvasRenderTarget(device, width, height, 96);
+        using (var session = target.CreateDrawingSession())
+        {
+            session.Clear(Colors.Transparent);
+            session.DrawSvg(document, new Size(width, height));
+        }
+        using var output = new MemoryStream();
+        await target.SaveAsync(output.AsRandomAccessStream(), CanvasBitmapFileFormat.Png);
+        return output.ToArray();
     }
 
     /// <summary>Cut a pixel box out of the bitmap; JPEG stays JPEG, everything else becomes PNG.</summary>
