@@ -31,7 +31,9 @@ public class CoreTests
     {
         // GPT Image 2.6 has no published per-size table, so there is nothing to look up for any ratio: no estimate until a run with the same settings has been seen.
         var channel = new ModelChannel { Vendor = Vendor.OpenAI };
-        var node = new CanvasNode { Kind = NodeKind.Image, Prompt = "全身立绘", Size = "2K", Ratio = "1:3", Quality = "medium", Count = 1 };
+        // The ledger of last runs lives in the test data folder between runs, so the quality is made unique to start from "never run".
+        var quality = Guid.NewGuid().ToString("N");
+        var node = new CanvasNode { Kind = NodeKind.Image, Prompt = "全身立绘", Size = "2K", Ratio = "1:3", Quality = quality, Count = 1 };
         Assert.Null(Prices.EstimateImage(channel, "gpt-image-2.6-flare", node, 0));
         UsageStore.RememberImage(Prices.ImageKey("gpt-image-2.6-flare", node), new TokenUsage(40, 1000));
         var estimate = Prices.EstimateImage(channel, "gpt-image-2.6-flare", node, 0);
@@ -39,7 +41,7 @@ public class CoreTests
         Assert.Equal("USD", estimate.Currency);
         Assert.Contains("上次", estimate.Basis);
         // The key names the ratio, so a run at another ratio is not mistaken for this one.
-        Assert.Null(Prices.EstimateImage(channel, "gpt-image-2.6-flare", new CanvasNode { Kind = NodeKind.Image, Prompt = "x", Size = "2K", Ratio = "9:21", Quality = "medium", Count = 1 }, 0));
+        Assert.Null(Prices.EstimateImage(channel, "gpt-image-2.6-flare", new CanvasNode { Kind = NodeKind.Image, Prompt = "x", Size = "2K", Ratio = "9:21", Quality = quality, Count = 1 }, 0));
     }
 
     private static byte[] Pixels(int width, int height, byte blue = 10, byte green = 20, byte red = 30, byte alpha = 255) =>
