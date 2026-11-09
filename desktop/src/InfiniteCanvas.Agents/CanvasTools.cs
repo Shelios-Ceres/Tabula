@@ -289,6 +289,8 @@ public static class CanvasTools
     private static async Task<string> ReplaceMediaAsync(ICanvasHost host, string nodeId, string path)
     {
         if (Media.ImportProblem(path) is { } problem) throw new McpException($"{path}：{problem}");
+        // What was checked is what is used: the normalised path, never the text as the agent wrote it.
+        path = Path.GetFullPath(path);
         var (canvas, node) = await host.OnUiAsync(() =>
         {
             var node = Find(host, nodeId);
@@ -297,11 +299,16 @@ public static class CanvasTools
             if (node.Status == NodeStatus.Loading || host.IsRunning(node.Id)) throw new McpException("节点正在生成，请等它结束或先停止后再替换");
             return (host.Document, node);
         });
-        await await host.OnUiAsync(() =>
+        try
         {
-            if (!ReferenceEquals(canvas, host.Document) || host.Document.Find(node.Id) != node) throw new McpException("画布已切换或节点已被删除，请重新读取当前画布");
-            return host.ReplaceMediaAsync(node, Path.GetFullPath(path));
-        });
+            await await host.OnUiAsync(() =>
+            {
+                if (!ReferenceEquals(canvas, host.Document) || host.Document.Find(node.Id) != node) throw new McpException("画布已切换或节点已被删除，请重新读取当前画布");
+                return host.ReplaceMediaAsync(node, path);
+            });
+        }
+        // A file that cannot be copied (held open, no permission) is the agent's to read, like a failed import.
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { throw new McpException($"文件复制失败：{ex.Message}"); }
         return Json(new { NodeId = node.Id, File = node.Content, Note = "节点上的提示词和模型参数没有清除，重新生成会盖掉替换进去的文件；旧文件仍在画布文件夹里，可以撤销。" });
     }
 

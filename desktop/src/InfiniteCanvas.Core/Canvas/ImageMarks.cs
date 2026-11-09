@@ -35,6 +35,15 @@ public static class NodeKeys
 
     public static readonly string[] PerImage = [Mask, Markup, Selections, ConversationId, ConversationModel, ModelText, InputNote, SourceId, Stack, StackOpen, Layout, Gap];
 
+    /// <summary>
+    /// Options for an output of <paramref name="from"/>: its settings without the per-image keys and the one-off layer split. The output keeps what says
+    /// where it belongs (its source and its batch), so a retried member stays in its stack and can be retried again.
+    /// </summary>
+    public static Dictionary<string, string> OutputOptions(CanvasNode from, CanvasNode to) =>
+        from.Options.Where(o => !PerImage.Contains(o.Key) && o.Key != "layers")
+            .Concat(to.Options.Where(o => o.Key is SourceId or Stack or StackOpen))
+            .ToDictionary(o => o.Key, o => o.Value);
+
     public static List<ImageSelection> SelectionsOf(CanvasNode node) =>
         node.Option(Selections) is { Length: > 0 } json ? Json.Deserialize<List<ImageSelection>>(json) ?? [] : [];
 

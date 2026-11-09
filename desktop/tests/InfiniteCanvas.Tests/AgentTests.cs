@@ -29,9 +29,15 @@ public class AgentTests
         public IReadOnlyCollection<string> Selection => Selected;
         public Viewport Viewport { get; set; } = new(0, 0, 1);
         public (double X, double Y) ViewCenter => (500, 400);
+        /// <summary>True while this thread is inside OnUiAsync: the stand-in for "on the UI thread", since the fake runs the action where it is called.</summary>
+        [ThreadStatic] public static bool OnUi;
         public Task<T> OnUiAsync<T>(Func<T> action)
         {
-            var result = action();
+            var nested = OnUi;
+            OnUi = true;
+            T result;
+            try { result = action(); }
+            finally { OnUi = nested; }
             AfterUi?.Invoke();
             return Task.FromResult(result);
         }
@@ -101,6 +107,7 @@ public class AgentTests
         }
         public Task ReplaceMediaAsync(CanvasNode node, string path)
         {
+            if (Unreadable.Contains(Path.GetFileName(path))) return Task.FromException(new IOException("文件被占用"));
             RecordHistory();
             Replaced.Add((node.Id, path));
             node.Content = Path.GetFileName(path);
@@ -776,6 +783,17 @@ public class AgentTests
             Assert.Equal(("新图.webp", image.Id, 1), (image.Content, Parse(ok.Text).GetProperty("nodeId").GetString(), host.Records));
             Assert.Equal([(image.Id, picture)], host.Replaced);
 
+            // The path is normalised once and used as checked: a trailing space no longer hides the file's kind.
+            Assert.False((await session.CallAsync("canvas_replace_media", new() { ["nodeId"] = image.Id, ["path"] = picture + " " })).IsError);
+            Assert.Equal([(image.Id, picture), (image.Id, picture)], host.Replaced);
+            host.Replaced.RemoveAt(1);
+
+            // A file the host cannot copy comes back with its reason, not as a bare failure.
+            host.Unreadable.Add("占用.png");
+            var locked = await session.CallAsync("canvas_replace_media", new() { ["nodeId"] = image.Id, ["path"] = TempMedia(dir, "占用.png") });
+            Assert.True(locked.IsError);
+            Assert.Contains("文件被占用", locked.Text);
+
             foreach (var (id, path) in new[] { (image.Id, clip), (text.Id, picture), (busy.Id, picture), ("missing", picture), (image.Id, Path.Combine(dir, "gone.png")), (image.Id, @"\\server\a.png"), (image.Id, "a.png") })
                 Assert.True((await session.CallAsync("canvas_replace_media", new() { ["nodeId"] = id, ["path"] = path })).IsError, $"{id} {path}");
             Assert.Single(host.Replaced);
@@ -819,6 +837,10 @@ public class AgentTests
         host.Document.Nodes.Add(cat);
         host.Document.Nodes.Add(dog);
         var folder = Path.GetDirectoryName(InfiniteCanvas.Core.Storage.ProjectStore.LibraryDir(host.Document.Id))!;
+        // The open library panel answers Changed by touching the UI, so rename and remove must raise it inside OnUiAsync (other tests' events arrive on other threads).
+        var changedOnUi = 0;
+        void CountOnUi() { if (FakeHost.OnUi) changedOnUi++; }
+        LibraryStore.Changed += CountOnUi;
         try
         {
             await using var session = await Session.StartAsync(host);
@@ -834,6 +856,7 @@ public class AgentTests
             Assert.Equal(["猫.png"], await ListAsync());
             Assert.False((await session.CallAsync("library_add", new() { ["nodeId"] = dog.Id })).IsError);
 
+            changedOnUi = 0;
             Assert.False((await session.CallAsync("library_rename", new() { ["name"] = "猫", ["newName"] = "小猫" })).IsError);
             Assert.Equal(["小猫.png", "狗.png"], await ListAsync());
             Assert.False((await session.CallAsync("library_rename", new() { ["name"] = "小猫.png", ["newName"] = "小猫二.PNG" })).IsError);
@@ -849,11 +872,16 @@ public class AgentTests
             Assert.Equal(["missing", @"..\evil.png"], removed.GetProperty("failed").EnumerateArray().Select(f => f.GetProperty("name").GetString()!).ToArray());
             Assert.Equal(["狗.png"], await ListAsync());
             Assert.Equal(0, host.Records);
+            Assert.Equal(3, changedOnUi); // two renames and one remove
 
             var tools = await session.Client.ListToolsAsync();
             Assert.All(new[] { "library_add", "library_rename", "library_remove" }, name => Assert.True(tools.Single(t => t.Name == name).ProtocolTool.Annotations?.DestructiveHint));
         }
-        finally { if (Directory.Exists(folder)) Directory.Delete(folder, true); }
+        finally
+        {
+            LibraryStore.Changed -= CountOnUi;
+            if (Directory.Exists(folder)) Directory.Delete(folder, true);
+        }
     }
 
     private static (CanvasNode Lead, CanvasNode Second, CanvasNode Third) OpenAgentStack(FakeHost host)

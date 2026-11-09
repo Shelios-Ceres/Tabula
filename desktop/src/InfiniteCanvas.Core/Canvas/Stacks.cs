@@ -76,6 +76,10 @@ public static class Stacks
     /// <summary>The layout named by a tool argument (stack, row, grid; any case); null when it is none of them.</summary>
     public static StackLayout? ParseLayout(string? text) => text?.Trim().ToLowerInvariant() switch { "stack" => StackLayout.Stack, "row" => StackLayout.Row, "grid" => StackLayout.Grid, _ => null };
 
+    /// <summary>The gap a node asks for between the members of its next batch. Agents can set options freely, so anything but a finite, non-negative number is the default.</summary>
+    public static double GapOf(CanvasNode node) =>
+        double.TryParse(node.Option(NodeKeys.Gap), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var gap) && double.IsFinite(gap) && gap >= 0 ? gap : Gap;
+
     /// <summary>
     /// Mark the members as an opened stack and return where each one goes (row or grid from the lead's top-left); the caller moves them, at once or gliding.
     /// The one place both the stack button and the agent tools open a stack, so they cannot disagree.

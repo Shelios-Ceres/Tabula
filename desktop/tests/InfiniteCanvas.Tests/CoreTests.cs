@@ -8,9 +8,20 @@ namespace InfiniteCanvas.Tests;
 
 internal static class TestEnvironment
 {
-    /// <summary>Point ProjectStore.Root at a throwaway folder before any test runs, so no test touches the real data folder.</summary>
+    /// <summary>
+    /// Point ProjectStore.Root at a throwaway folder before any test runs, so no test touches the real data folder, and delete library files
+    /// instead of recycling them, so a test run leaves nothing in the machine's Recycle Bin.
+    /// </summary>
     [System.Runtime.CompilerServices.ModuleInitializer]
-    internal static void Isolate() => Environment.SetEnvironmentVariable("INFINITE_CANVAS_DATA", Path.Combine(Path.GetTempPath(), "InfiniteCanvas.Tests"));
+    internal static void Isolate()
+    {
+        Environment.SetEnvironmentVariable("INFINITE_CANVAS_DATA", Path.Combine(Path.GetTempPath(), "InfiniteCanvas.Tests"));
+        LibraryStore.Recycle = path =>
+        {
+            File.Delete(path);
+            return true;
+        };
+    }
 }
 
 public class CoreTests
@@ -123,6 +134,36 @@ public class CoreTests
         Assert.Contains(NodeKeys.Gap, NodeKeys.PerImage);
     }
 
+    [Theory]
+    [InlineData("12.5", 12.5)]
+    [InlineData("0", 0d)]
+    [InlineData(null, Stacks.Gap)]
+    [InlineData("abc", Stacks.Gap)]
+    [InlineData("-1", Stacks.Gap)]
+    [InlineData("NaN", Stacks.Gap)]
+    [InlineData("Infinity", Stacks.Gap)]
+    public void A_batch_gap_set_through_raw_options_is_used_only_when_finite_and_not_negative(string? option, double expected)
+    {
+        var node = CanvasNode.Create(NodeKind.Image, 0, 0);
+        node.SetOption(NodeKeys.Gap, option);
+        Assert.Equal(expected, Stacks.GapOf(node));
+    }
+
+    [Fact]
+    public void A_retried_output_takes_its_source_settings_but_stays_in_its_stack_and_keeps_its_source()
+    {
+        var source = CanvasNode.Create(NodeKind.Config, 0, 0);
+        foreach (var (key, value) in new[] { ("background", "transparent"), ("layers", "true"), (NodeKeys.Mask, "蒙版-001.png"), (NodeKeys.Layout, "row"), (NodeKeys.Gap, "40"), (NodeKeys.Stack, "other") }) source.SetOption(key, value);
+        var retry = CanvasNode.Create(NodeKind.Image, 0, 0);
+        foreach (var (key, value) in new[] { (NodeKeys.SourceId, source.Id), (NodeKeys.Stack, "node-lead"), (NodeKeys.StackOpen, "true"), (NodeKeys.InputNote, "旧说明"), ("background", "opaque") }) retry.SetOption(key, value);
+
+        var options = NodeKeys.OutputOptions(source, retry);
+
+        Assert.Equal(new Dictionary<string, string> { ["background"] = "transparent", [NodeKeys.SourceId] = source.Id, [NodeKeys.Stack] = "node-lead", [NodeKeys.StackOpen] = "true" }, options);
+        // A new output has nothing of its own yet: it gets the settings only.
+        Assert.Equal(["background"], NodeKeys.OutputOptions(source, CanvasNode.Create(NodeKind.Image, 0, 0)).Keys);
+    }
+
     /// <summary>Stands in for the shell in tests: the file is simply deleted, so nothing lands in the real Recycle Bin.</summary>
     private static bool DeleteInstead(string path)
     {
@@ -170,10 +211,14 @@ public class CoreTests
         try
         {
             var plain = Path.Combine(dir, "plain.png");
-            File.WriteAllBytes(plain, [1]);
-            Assert.True(ProjectStore.RecycleSilently(plain));
-            Assert.False(File.Exists(plain));
-            Assert.True(ProjectStore.RecycleSilently(plain)); // already gone
+            Assert.True(ProjectStore.RecycleSilently(plain)); // nothing there to recycle
+            // Really recycling leaves the file in the machine's Recycle Bin, so that one step runs only on request (after a change to RecycleSilently).
+            if (Environment.GetEnvironmentVariable("INFINITE_CANVAS_TEST_RECYCLE_BIN") == "1")
+            {
+                File.WriteAllBytes(plain, [1]);
+                Assert.True(ProjectStore.RecycleSilently(plain));
+                Assert.False(File.Exists(plain));
+            }
 
             // A file held open would make the ordinary shell call raise an error dialog and wait; here it just fails and stays.
             var held = Path.Combine(dir, "held.png");

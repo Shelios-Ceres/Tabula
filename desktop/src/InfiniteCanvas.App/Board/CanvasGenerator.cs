@@ -269,7 +269,7 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
             if (target != source && !sibling) target.SetOption(NodeKeys.SourceId, source.Id);
         }
         // A batch stays one card on the canvas until the user opens it, unless the run asked for a row or a grid.
-        Stacks.FormBatch(targets, Stacks.ParseLayout(settings.Option(NodeKeys.Layout)) ?? StackLayout.Stack, double.TryParse(settings.Option(NodeKeys.Gap), System.Globalization.CultureInfo.InvariantCulture, out var gap) ? gap : Stacks.Gap);
+        Stacks.FormBatch(targets, Stacks.ParseLayout(settings.Option(NodeKeys.Layout)) ?? StackLayout.Stack, Stacks.GapOf(settings));
         return targets;
     }
 
@@ -293,7 +293,7 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
         to.Resolution = from.Resolution;
         to.GenerateAudio = from.GenerateAudio;
         // Masks, selections and conversation IDs describe the source image only, and layer split is a one-off operation, so outputs never inherit them.
-        to.Options = from.Options.Where(o => !NodeKeys.PerImage.Contains(o.Key) && o.Key != "layers").ToDictionary(o => o.Key, o => o.Value);
+        to.Options = NodeKeys.OutputOptions(from, to);
     }
 
     private void Fail(IEnumerable<CanvasNode> targets, string message, bool keepTask)

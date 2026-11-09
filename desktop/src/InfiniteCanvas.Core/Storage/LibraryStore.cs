@@ -57,6 +57,9 @@ public static class LibraryStore
     // ---------- By name, for agents ----------
     // A library file is only ever reached by looking its name up among the files of this canvas's library folder, so no name can leave it.
 
+    /// <summary>How a file is recycled when the caller passes no function: silently through the shell. Tests point it elsewhere so nothing lands in the machine's Recycle Bin.</summary>
+    public static Func<string, bool> Recycle { get; set; } = ProjectStore.RecycleSilently;
+
     /// <summary>A file name (with or without extension, any case) among this canvas's library files; null when there is none.</summary>
     public static LibraryItem? Find(string projectId, string name)
     {
@@ -83,7 +86,7 @@ public static class LibraryStore
     /// </summary>
     public static async Task<string> PutAsync(string projectId, string sourcePath, bool replace, Func<string, bool>? recycle = null)
     {
-        recycle ??= ProjectStore.RecycleSilently;
+        recycle ??= Recycle;
         var dir = ProjectStore.LibraryDir(projectId);
         var name = await Task.Run(() =>
         {
@@ -139,7 +142,7 @@ public static class LibraryStore
     /// <summary>Move library files to the recycle bin by name, silently. Each name that cannot be removed is reported with its reason and its file stays; the rest are still removed.</summary>
     public static (List<string> Removed, List<(string Name, string Reason)> Failed) RemoveNames(string projectId, IEnumerable<string> names, Func<string, bool>? recycle = null)
     {
-        recycle ??= ProjectStore.RecycleSilently;
+        recycle ??= Recycle;
         var removed = new List<string>();
         var failed = new List<(string, string)>();
         foreach (var name in names)
