@@ -37,6 +37,8 @@ public sealed class CanvasAgentHost(CanvasView view) : ICanvasHost
     public void Generate(CanvasNode node, bool recordHistory = true) => _ = view.Generator.GenerateAsync(node, recordHistory);
     public string? Group(IReadOnlyCollection<string> ids, string? title) => view.GroupNodes(ids, title)?.Id;
     public void Ungroup(IReadOnlyCollection<string> ids) => view.UngroupNodes(ids);
+    public IReadOnlyList<string> AddToGroup(string groupId, IReadOnlyCollection<string> ids, bool fit) => view.AddToGroupNodes(view.Doc.Find(groupId)!, ids, fit);
+    public IReadOnlyList<string> RemoveFromGroup(IReadOnlyCollection<string> ids, bool fit) => view.RemoveFromGroupNodes(ids, fit);
     public async Task<IReadOnlyList<string>> ImportAsync(IReadOnlyList<string> paths, double x, double y) => await view.ImportFilesAsync(paths, new Windows.Foundation.Point(x, y));
     public Task AddToLibraryAsync(CanvasNode node) => view.AddToLibraryAsync(node);
 

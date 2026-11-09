@@ -35,6 +35,10 @@ public interface ICanvasHost
     string? Group(IReadOnlyCollection<string> ids, string? title);
     /// <summary>Release nodes from their groups, or every member of the given groups. No history record.</summary>
     void Ungroup(IReadOnlyCollection<string> ids);
+    /// <summary>Move nodes (collapsed stacks whole) into an existing group; groups left empty are deleted. The moved node IDs. No history record.</summary>
+    IReadOnlyList<string> AddToGroup(string groupId, IReadOnlyCollection<string> ids, bool fit);
+    /// <summary>Take nodes (collapsed stacks whole) out of their groups; groups left empty are deleted. The released node IDs. No history record.</summary>
+    IReadOnlyList<string> RemoveFromGroup(IReadOnlyCollection<string> ids, bool fit);
     /// <summary>Import media files as new nodes from a world point (one undo step); the new node IDs.</summary>
     Task<IReadOnlyList<string>> ImportAsync(IReadOnlyList<string> paths, double x, double y);
     /// <summary>Copy a node's media into this canvas's library, named after the node.</summary>
@@ -44,13 +48,13 @@ public interface ICanvasHost
 /// <summary>One canvas_apply_ops step; fields not used by the op type are ignored.</summary>
 public sealed class CanvasOp
 {
-    [Description("add_node、update_node、delete_nodes、connect、disconnect、select、set_viewport、run_generation、group、ungroup")]
+    [Description("add_node、update_node、delete_nodes、connect、disconnect、select、set_viewport、run_generation、group、ungroup、group_add、group_remove")]
     public string Type { get; set; } = "";
     [Description("add_node：给新节点起的临时名，本批后续操作可用它代替节点 ID")]
     public string? Ref { get; set; }
-    [Description("update_node / run_generation 的节点 ID（或本批的 ref）")]
+    [Description("update_node / run_generation 的节点 ID（或本批的 ref）；group_add 的目标分组 ID（或本批的 ref）")]
     public string? Id { get; set; }
-    [Description("delete_nodes / select / group / ungroup 的节点 ID 列表（ungroup 也可以直接给分组 ID）")]
+    [Description("delete_nodes / select / group / ungroup / group_add / group_remove 的节点 ID 列表（ungroup 也可以直接给分组 ID）")]
     public List<string>? Ids { get; set; }
     [Description("add_node 的类型：text、image、video、audio、config")]
     public string? Kind { get; set; }
@@ -83,6 +87,8 @@ public sealed class CanvasOp
     public string? To { get; set; }
     [Description("set_viewport：缩放倍数，X / Y 为要移到视口中央的世界坐标")]
     public double? Zoom { get; set; }
+    [Description("group_add / group_remove：是否按成员重算分组边界，默认 true")]
+    public bool? Fit { get; set; }
 }
 
 /// <summary>MCP tools over the open canvas.</summary>
@@ -91,9 +97,10 @@ public static class CanvasTools
     public const string Instructions = """
         你正在操作用户在「无限画布」桌面客户端里当前打开的画布。
         - 先用 canvas_get_state 了解节点、连线、选区和可用模型；用户说「这张图」「选中的」时指的是 selection 里的节点。
+        - canvas_get_state 默认不带提示词、文本正文和生成参数；要读这些用 canvas_get_node（或 detail=full）。画布很大时先用 rect 或 groupId 缩小范围。
         - 生成图片、文本或语音用 canvas_generate（这个版本不支持生成视频，视频节点只用来放导入的视频）：它会新建节点、连上参考节点并立刻开始生成。生成是异步的，用 generation_get_status 查看结果，不要在没有结果时声称已经完成。
         - 增删改节点、连线、选择和视口用 canvas_apply_ops，一次调用就是一步撤销。
-        - 需要看图片内容时用 canvas_get_image；资料库（这个画布自己的常用素材）用 library_list / library_place / library_add；编组用 canvas_apply_ops 的 group / ungroup。
+        - 需要看图片内容时用 canvas_get_image；资料库（这个画布自己的常用素材）用 library_list / library_place / library_add；编组用 canvas_apply_ops 的 group / ungroup，把节点加入或移出已有分组（分组 ID 和连线不变）用 group_add / group_remove。
         - 节点 ID 只用工具返回的值，不要编造；模型 ID 只用 canvas_get_state.models 里列出的。
         """;
 
@@ -102,15 +109,24 @@ public static class CanvasTools
 
     public static IEnumerable<McpServerTool> Create(ICanvasHost host) =>
     [
-        McpServerTool.Create(() => host.OnUiAsync(() => State(host)), new()
+        McpServerTool.Create((
+            [Description("brief（默认）或 full；full 带提示词、正文和生成参数")] string? detail = null,
+            [Description("只返回这些节点")] List<string>? ids = null,
+            [Description("只返回这个分组节点和它的成员")] string? groupId = null,
+            [Description("世界坐标矩形 [left, top, right, bottom]，只返回与它相交的节点")] List<double>? rect = null) => host.OnUiAsync(() => State(host, detail, ids, groupId, rect)), new()
         {
             Name = "canvas_get_state", ReadOnly = true,
-            Description = "读取当前画布：节点（类型、位置、尺寸、状态、文本、提示词、模型、媒体尺寸）、连线、选中的节点、视口，以及各类生成可用的模型 ID。",
+            Description = "读取当前画布。默认只返回节点的精简字段（类型、位置、尺寸、状态、媒体文件、分组、摞），不含提示词、正文和生成参数；可用 ids / groupId / rect 缩小范围，detail=full 返回完整字段。",
+        }),
+        McpServerTool.Create(([Description("要读取的节点 ID")] List<string> ids) => host.OnUiAsync(() => Json(new { Nodes = FindAll(host, ids).Select(n => Full(host, n)) })), new()
+        {
+            Name = "canvas_get_node", ReadOnly = true,
+            Description = "读取节点的完整信息（提示词、文本正文、模型、比例、分辨率、options 等）。",
         }),
         McpServerTool.Create(([Description("按顺序执行的操作")] List<CanvasOp> ops) => host.OnUiAsync(() => Apply(host, ops)), new()
         {
             Name = "canvas_apply_ops", Destructive = true,
-            Description = "批量修改画布，整批算一步撤销。type 支持 add_node、update_node、delete_nodes、connect、disconnect、select、set_viewport、run_generation；add_node 可用 ref 给新节点起名，供本批后续操作引用。",
+            Description = "批量修改画布，整批算一步撤销。type 支持 add_node、update_node、delete_nodes、connect、disconnect、select、set_viewport、run_generation、group、ungroup、group_add、group_remove；add_node 可用 ref 给新节点起名，供本批后续操作引用。",
         }),
         McpServerTool.Create((
             [Description("image、text、audio")] string mode,
@@ -204,9 +220,35 @@ public static class CanvasTools
     private static CanvasNode Find(ICanvasHost host, string? id) =>
         id is not null && host.Document.Find(id) is { } node ? node : throw new McpException($"找不到节点「{id}」，请先用 canvas_get_state 获取节点 ID");
 
+    /// <summary>The nodes for these IDs, in the order given; every unknown ID is named in one error.</summary>
+    private static List<CanvasNode> FindAll(ICanvasHost host, IEnumerable<string> ids)
+    {
+        var missing = ids.Where(id => host.Document.Find(id) is null).ToList();
+        if (missing.Count > 0) throw new McpException($"找不到节点「{string.Join("、", missing)}」，请先用 canvas_get_state 获取节点 ID");
+        return ids.Select(id => host.Document.Find(id)!).ToList();
+    }
+
     private static string? Clip(string? text, int max) => text is null || text.Length <= max ? text : text[..max] + "…";
 
-    private static object Summary(ICanvasHost host, CanvasNode n) => new
+    private static string? FileOf(CanvasNode n) => n.Kind is NodeKind.Image or NodeKind.Video or NodeKind.Audio && n.HasContent ? n.Content : null;
+
+    /// <summary>What an overview needs: no prompts, text or generation settings, which repeat across a batch and dominate the payload.</summary>
+    private static object Brief(ICanvasHost host, CanvasNode n) => new
+    {
+        n.Id,
+        Kind = n.Kind.ToString().ToLowerInvariant(),
+        n.Title,
+        X = Math.Round(n.X), Y = Math.Round(n.Y), Width = Math.Round(n.Width), Height = Math.Round(n.Height),
+        Status = n.Status.ToString().ToLowerInvariant(),
+        Running = host.IsRunning(n.Id) ? true : (bool?)null,
+        n.Error,
+        File = FileOf(n),
+        n.GroupId,
+        Stack = Stacks.Of(n),
+        StackOpen = Stacks.IsOpen(n) ? true : (bool?)null,
+    };
+
+    private static object Full(ICanvasHost host, CanvasNode n) => new
     {
         n.Id,
         Kind = n.Kind.ToString().ToLowerInvariant(),
@@ -225,9 +267,31 @@ public static class CanvasTools
         n.GroupId,
     };
 
-    private static string State(ICanvasHost host)
+    private static string State(ICanvasHost host, string? detail, List<string>? ids, string? groupId, List<double>? rect)
     {
+        if (detail is not (null or "brief" or "full")) throw new McpException($"detail 只能是 brief 或 full，收到「{detail}」");
         var doc = host.Document;
+        IEnumerable<CanvasNode> matching = doc.Nodes;
+        if (ids is not null)
+        {
+            var wanted = FindAll(host, ids).ToHashSet();
+            matching = matching.Where(wanted.Contains);
+        }
+        if (groupId is not null)
+        {
+            var group = Find(host, groupId);
+            if (group.Kind != NodeKind.Group) throw new McpException($"「{groupId}」不是分组节点");
+            var wanted = CanvasGraph.GroupMembers(doc, groupId).Append(group).ToHashSet();
+            matching = matching.Where(wanted.Contains);
+        }
+        if (rect is not null)
+        {
+            if (rect.Count != 4 || rect.Any(v => !double.IsFinite(v)) || rect[2] <= rect[0] || rect[3] <= rect[1]) throw new McpException("rect 必须是 4 个有限数 [left, top, right, bottom]，且 right > left、bottom > top");
+            var area = new Rect(rect[0], rect[1], rect[2], rect[3]);
+            matching = matching.Where(n => area.Intersects(Rect.Of(n)));
+        }
+        var nodes = matching.ToList();
+        var kept = nodes.Select(n => n.Id).ToHashSet();
         var settings = SettingsStore.Current;
         object Models(Capability capability) => settings.ModelsFor(capability).Select(id => new { Id = id, Label = settings.Label(id) }).ToList();
         return Json(new
@@ -235,8 +299,8 @@ public static class CanvasTools
             Canvas = new { doc.Id, doc.Title },
             Viewport = new { host.Viewport.X, host.Viewport.Y, Zoom = host.Viewport.K, Center = new { host.ViewCenter.X, host.ViewCenter.Y } },
             Selection = host.Selection,
-            Nodes = doc.Nodes.Select(n => Summary(host, n)),
-            Connections = doc.Connections.Select(c => new { c.From, c.To }),
+            Nodes = nodes.Select(n => detail == "full" ? Full(host, n) : Brief(host, n)),
+            Connections = doc.Connections.Where(c => kept.Contains(c.From) && kept.Contains(c.To)).Select(c => new { c.From, c.To }),
             Models = new { Image = Models(Capability.Image), Text = Models(Capability.Text), Audio = Models(Capability.Audio) },
         });
     }
@@ -294,6 +358,15 @@ public static class CanvasTools
         if (CanvasGraph.NormalizeConnection(from, to, true) is not { } pair) return false;
         if (!doc.Connections.Any(c => c.From == pair.From && c.To == pair.To)) doc.Connections.Add(CanvasConnection.Create(pair.From, pair.To));
         return true;
+    }
+
+    /// <summary>The op's node IDs, all validated before anything changes: every one must exist and none may be a group (groups never nest).</summary>
+    private static List<string> GroupMembersOf(ICanvasHost host, CanvasOp op, Func<string?, string> resolve)
+    {
+        var ids = (op.Ids ?? []).Select(resolve).ToList();
+        if (ids.Count == 0) throw new McpException("ids 不能为空");
+        if (FindAll(host, ids).Any(n => n.Kind == NodeKind.Group)) throw new McpException("分组不能嵌套，ids 里不能有分组节点");
+        return ids;
     }
 
     public static string Apply(ICanvasHost host, IReadOnlyList<CanvasOp> ops)
@@ -373,10 +446,25 @@ public static class CanvasTools
                         results.Add(new { Index = index, Started = Run(host, Find(host, Resolve(op.Id)), recordHistory: false) });
                         break;
                     case "group":
-                        var members = (op.Ids ?? []).Select(Resolve).Where(id => doc.Find(id) is not null).ToList();
-                        var groupId = host.Group(members, op.Title) ?? throw new McpException("至少要有两个节点，且它们不能已经在同一个分组里");
+                        var requested = (op.Ids ?? []).Select(Resolve).ToList();
+                        var members = requested.Where(id => doc.Find(id) is not null).ToList();
+                        if (members.Count < 2)
+                        {
+                            var gone = requested.Except(members).ToList();
+                            throw new McpException("至少要有两个节点" + (gone.Count > 0 ? $"；这些节点已不存在（同批里被删除或解散的分组也算）：{string.Join("、", gone)}" : ""));
+                        }
+                        var groupId = host.Group(members, op.Title) ?? throw new McpException("这些节点已经都在同一个分组里，或少于两个可编组节点");
                         if (op.Ref is not null) refs[op.Ref] = groupId;
                         results.Add(new { Index = index, GroupId = groupId, op.Ref });
+                        break;
+                    case "group_add":
+                        var groupTarget = Find(host, Resolve(op.Id));
+                        if (groupTarget.Kind != NodeKind.Group) throw new McpException("group_add 的 id 必须是分组节点");
+                        var added = host.AddToGroup(groupTarget.Id, GroupMembersOf(host, op, Resolve), op.Fit ?? true);
+                        results.Add(new { Index = index, GroupId = groupTarget.Id, Added = added });
+                        break;
+                    case "group_remove":
+                        results.Add(new { Index = index, Removed = host.RemoveFromGroup(GroupMembersOf(host, op, Resolve), op.Fit ?? true) });
                         break;
                     case "ungroup":
                         host.Ungroup((op.Ids ?? []).Select(Resolve).Where(id => doc.Find(id) is not null).ToList());
@@ -441,8 +529,8 @@ public static class CanvasTools
         {
             Nodes = nodes.Select(n => new
             {
-                Node = Summary(host, n),
-                Batch = Stacks.Of(n) is { } stack ? Stacks.Members(host.Document, stack).Select(member => Summary(host, member)).ToList() : null,
+                Node = Brief(host, n),
+                Batch = Stacks.Of(n) is { } stack ? Stacks.Members(host.Document, stack).Select(member => new { member.Id, Status = member.Status.ToString().ToLowerInvariant(), File = FileOf(member), member.Error }).ToList() : null,
                 Outputs = host.Document.Connections.Where(c => c.From == n.Id).Select(c => host.Document.Find(c.To)).OfType<CanvasNode>()
                     .Where(o => o.Kind != NodeKind.Config).Select(o => new { o.Id, Status = o.Status.ToString().ToLowerInvariant(), o.Error, File = o.Content }),
             }),

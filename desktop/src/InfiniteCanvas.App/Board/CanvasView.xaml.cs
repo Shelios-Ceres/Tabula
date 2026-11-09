@@ -1234,6 +1234,26 @@ public sealed partial class CanvasView : UserControl
         return group;
     }
 
+    /// <summary>Move nodes (collapsed stacks whole) into an existing group, which keeps its ID, title and connections; the caller records history.</summary>
+    public List<string> AddToGroupNodes(CanvasNode group, IReadOnlyCollection<string> ids, bool fit) => Regroup(ids, group.Id, fit);
+
+    /// <summary>Take nodes (collapsed stacks whole) out of their groups; the caller records history.</summary>
+    public List<string> RemoveFromGroupNodes(IReadOnlyCollection<string> ids, bool fit) => Regroup(ids, null, fit);
+
+    private List<string> Regroup(IReadOnlyCollection<string> ids, string? groupId, bool fit)
+    {
+        var moved = new List<string>();
+        Batch(() =>
+        {
+            var (nodes, left) = CanvasGraph.MoveToGroup(Doc, WithStacks(ids), groupId);
+            moved = nodes.Select(n => n.Id).ToList();
+            // Before the empty ones go: fitting skips groups without members, and RemoveEmptyGroups trims this set.
+            if (fit) foreach (var id in left.Append(groupId).OfType<string>()) CanvasGraph.FitGroup(Doc, id);
+            RemoveEmptyGroups(left);
+        });
+        return moved;
+    }
+
     public void Ungroup()
     {
         if (!Doc.Nodes.Any(n => _selected.Contains(n.Id) && (n.Kind == NodeKind.Group || n.GroupId is not null))) return;

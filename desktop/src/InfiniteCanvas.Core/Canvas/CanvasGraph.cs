@@ -111,6 +111,24 @@ public static class CanvasGraph
         return new(bounds.Left - GroupPadding, bounds.Top - GroupTopPadding, bounds.Right + GroupPadding, bounds.Bottom + GroupPadding);
     }
 
+    /// <summary>Set GroupId on the given non-group nodes (ids already stack-expanded); the moved nodes and the groups they left. Positions never change.</summary>
+    public static (List<CanvasNode> Moved, HashSet<string> Left) MoveToGroup(CanvasDocument doc, IReadOnlyCollection<string> ids, string? groupId)
+    {
+        var moved = doc.Nodes.Where(n => n.Kind != NodeKind.Group && n.GroupId != groupId && ids.Contains(n.Id)).ToList();
+        var left = moved.Select(n => n.GroupId).OfType<string>().ToHashSet();
+        foreach (var node in moved) node.GroupId = groupId;
+        return (moved, left);
+    }
+
+    /// <summary>Resize a group to GroupRect of its members; no change when it has none.</summary>
+    public static void FitGroup(CanvasDocument doc, string groupId)
+    {
+        var members = GroupMembers(doc, groupId).ToList();
+        if (members.Count == 0 || doc.Find(groupId) is not { } group) return;
+        var rect = GroupRect(members);
+        (group.X, group.Y, group.Width, group.Height) = (rect.Left, rect.Top, rect.Width, rect.Height);
+    }
+
     /// <summary>The innermost (smallest) group whose area contains the node centre.</summary>
     public static CanvasNode? ContainingGroup(CanvasDocument doc, CanvasNode node)
     {

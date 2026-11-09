@@ -16,6 +16,33 @@ internal static class TestEnvironment
 public class CoreTests
 {
     [Fact]
+    public void MoveToGroup_changes_only_group_ids_and_reports_the_groups_left_and_FitGroup_matches_the_members()
+    {
+        var doc = new CanvasDocument();
+        var (a, b, c) = (CanvasNode.Create(NodeKind.Text, 0, 0), CanvasNode.Create(NodeKind.Text, 800, 0), CanvasNode.Create(NodeKind.Text, 3000, 0));
+        var (one, two) = (new CanvasNode { Kind = NodeKind.Group, Title = "一" }, new CanvasNode { Kind = NodeKind.Group, Title = "二" });
+        (a.GroupId, b.GroupId, c.GroupId) = (one.Id, one.Id, two.Id);
+        foreach (var node in new[] { one, two, a, b, c }) doc.Nodes.Add(node);
+        var position = (c.X, c.Y);
+
+        var (moved, left) = CanvasGraph.MoveToGroup(doc, new[] { c.Id, a.Id, one.Id }.ToHashSet(), one.Id);
+
+        Assert.Equal([c.Id], moved.Select(n => n.Id));
+        Assert.True(left.SetEquals([two.Id]));
+        Assert.Equal(one.Id, c.GroupId);
+        Assert.Equal(("一", position), (one.Title, (c.X, c.Y)));
+        CanvasGraph.FitGroup(doc, one.Id);
+        var rect = CanvasGraph.GroupRect([a, b, c]);
+        Assert.Equal((rect.Left, rect.Top, rect.Width, rect.Height), (one.X, one.Y, one.Width, one.Height));
+
+        var (released, _) = CanvasGraph.MoveToGroup(doc, new[] { a.Id, b.Id, c.Id }.ToHashSet(), null);
+        Assert.Equal(3, released.Count);
+        var size = (one.X, one.Width);
+        CanvasGraph.FitGroup(doc, one.Id);
+        Assert.Equal(size, (one.X, one.Width));
+    }
+
+    [Fact]
     public void Collapsed_stack_selection_expands_all_members_but_open_members_stay_independent()
     {
         var doc = new CanvasDocument();

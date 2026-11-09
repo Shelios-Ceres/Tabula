@@ -56,6 +56,8 @@ public sealed class SharedCanvasHost(DispatcherQueue ui) : ICanvasHost
     public Task<(byte[] Bytes, string MimeType)?> LoadImageAsync(CanvasNode node, int maxEdge) => Canvas.LoadImageAsync(node, maxEdge);
     public string? Group(IReadOnlyCollection<string> ids, string? title) => Canvas.Group(ids, title);
     public void Ungroup(IReadOnlyCollection<string> ids) => Canvas.Ungroup(ids);
+    public IReadOnlyList<string> AddToGroup(string groupId, IReadOnlyCollection<string> ids, bool fit) => Canvas.AddToGroup(groupId, ids, fit);
+    public IReadOnlyList<string> RemoveFromGroup(IReadOnlyCollection<string> ids, bool fit) => Canvas.RemoveFromGroup(ids, fit);
     public Task<IReadOnlyList<string>> ImportAsync(IReadOnlyList<string> paths, double x, double y) => Canvas.ImportAsync(paths, x, y);
     public Task AddToLibraryAsync(CanvasNode node) => Canvas.AddToLibraryAsync(node);
 }

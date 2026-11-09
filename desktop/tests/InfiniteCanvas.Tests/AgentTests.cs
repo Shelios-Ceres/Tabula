@@ -55,16 +55,35 @@ public class AgentTests
         }
         public string? Group(IReadOnlyCollection<string> ids, string? title)
         {
-            if (ids.Count < 2) return null;
+            var members = Document.Nodes.Where(n => n.Kind != NodeKind.Group && Stacks.Expand(Document, ids).Contains(n.Id)).ToList();
+            if (members.Count < 2 || members.All(n => n.GroupId is not null && n.GroupId == members[0].GroupId)) return null;
             var group = new CanvasNode { Kind = NodeKind.Group, Title = title ?? "分组" };
             Document.Nodes.Insert(0, group);
-            foreach (var node in Document.Nodes.Where(n => ids.Contains(n.Id))) node.GroupId = group.Id;
+            foreach (var node in members) node.GroupId = group.Id;
             return group.Id;
         }
         public void Ungroup(IReadOnlyCollection<string> ids)
         {
             ids = Stacks.Expand(Document, ids);
-            foreach (var node in Document.Nodes.Where(n => ids.Contains(n.Id) || n.GroupId is not null && ids.Contains(n.GroupId))) node.GroupId = null;
+            var released = Document.Nodes.Where(n => ids.Contains(n.Id) || n.GroupId is not null && ids.Contains(n.GroupId)).ToList();
+            var old = released.Select(n => n.GroupId).OfType<string>().Concat(ids).ToHashSet();
+            foreach (var node in released) node.GroupId = null;
+            RemoveEmptyGroups(old);
+        }
+        public IReadOnlyList<string> AddToGroup(string groupId, IReadOnlyCollection<string> ids, bool fit) => Regroup(ids, groupId, fit);
+        public IReadOnlyList<string> RemoveFromGroup(IReadOnlyCollection<string> ids, bool fit) => Regroup(ids, null, fit);
+        private List<string> Regroup(IReadOnlyCollection<string> ids, string? groupId, bool fit)
+        {
+            var (moved, left) = CanvasGraph.MoveToGroup(Document, Stacks.Expand(Document, ids), groupId);
+            if (fit) foreach (var id in left.Append(groupId).OfType<string>()) CanvasGraph.FitGroup(Document, id);
+            RemoveEmptyGroups(left);
+            return moved.Select(n => n.Id).ToList();
+        }
+        private void RemoveEmptyGroups(HashSet<string> ids)
+        {
+            ids.RemoveWhere(id => Document.Nodes.Any(n => n.GroupId == id));
+            foreach (var group in Document.Nodes.Where(n => n.Kind == NodeKind.Group && ids.Contains(n.Id)).ToList()) Document.Nodes.Remove(group);
+            foreach (var connection in Document.Connections.Where(c => ids.Contains(c.From) || ids.Contains(c.To)).ToList()) Document.Connections.Remove(connection);
         }
         public List<string> Imported { get; } = [];
         public Task<IReadOnlyList<string>> ImportAsync(IReadOnlyList<string> paths, double x, double y)
@@ -118,6 +137,177 @@ public class AgentTests
         Assert.All(host.Document.Nodes.Where(n => n.Kind == NodeKind.Text), n => Assert.Null(n.GroupId));
         var single = Parse(CanvasTools.Apply(host, [new CanvasOp { Type = "group", Ids = [host.Document.Nodes.Last().Id] }]));
         Assert.Contains("至少要有两个节点", single.GetProperty("results")[0].GetProperty("error").GetString());
+    }
+
+    private static (FakeHost Host, CanvasNode Group, CanvasNode A, CanvasNode B) GroupedPair()
+    {
+        var host = new FakeHost();
+        var a = CanvasNode.Create(NodeKind.Text, 100, 100);
+        var b = CanvasNode.Create(NodeKind.Text, 600, 100);
+        var rect = CanvasGraph.GroupRect([a, b]);
+        var group = new CanvasNode { Kind = NodeKind.Group, Title = "旧分组", X = rect.Left, Y = rect.Top, Width = rect.Width, Height = rect.Height };
+        a.GroupId = b.GroupId = group.Id;
+        foreach (var node in new[] { group, a, b }) host.Document.Nodes.Add(node);
+        return (host, group, a, b);
+    }
+
+    [Fact]
+    public void Group_after_ungroup_in_one_batch_names_the_group_that_is_gone()
+    {
+        var (host, group, a, _) = GroupedPair();
+        var result = Parse(CanvasTools.Apply(host,
+        [
+            new CanvasOp { Type = "ungroup", Ids = [group.Id] },
+            new CanvasOp { Type = "group", Ids = [group.Id, a.Id] },
+        ]));
+        var error = result.GetProperty("results")[1].GetProperty("error").GetString();
+        Assert.Contains("至少要有两个节点", error);
+        Assert.Contains(group.Id, error);
+    }
+
+    [Fact]
+    public void Group_add_keeps_the_group_id_and_connections_and_deletes_the_group_it_empties()
+    {
+        var (host, group, a, b) = GroupedPair();
+        var other = CanvasNode.Create(NodeKind.Text, 100, 700);
+        var solo = CanvasNode.Create(NodeKind.Text, 900, 700);
+        var second = new CanvasNode { Kind = NodeKind.Group, Title = "第二组", X = 850, Y = 650, Width = 400, Height = 300 };
+        solo.GroupId = second.Id;
+        foreach (var node in new[] { second, other, solo }) host.Document.Nodes.Add(node);
+        host.Document.Connections.Add(CanvasConnection.Create(other.Id, group.Id));
+        var before = (group.X, group.Y, group.Width, group.Height);
+
+        var result = Parse(CanvasTools.Apply(host, [new CanvasOp { Type = "group_add", Id = group.Id, Ids = [other.Id, solo.Id] }]));
+
+        Assert.Equal(1, host.Records);
+        Assert.Equal([other.Id, solo.Id], result.GetProperty("results")[0].GetProperty("added").EnumerateArray().Select(e => e.GetString()!).ToArray());
+        Assert.All(new[] { a, b, other, solo }, n => Assert.Equal(group.Id, n.GroupId));
+        Assert.Equal("旧分组", host.Document.Find(group.Id)!.Title);
+        Assert.Single(host.Document.Connections);
+        Assert.Null(host.Document.Find(second.Id));
+        var rect = CanvasGraph.GroupRect([a, b, other, solo]);
+        Assert.Equal((rect.Left, rect.Top, rect.Width, rect.Height), (group.X, group.Y, group.Width, group.Height));
+        Assert.NotEqual(before, (group.X, group.Y, group.Width, group.Height));
+        Assert.True(host.History.Undo());
+        Assert.Equal(second.Id, host.Document.Find(solo.Id)!.GroupId);
+    }
+
+    [Fact]
+    public void Group_add_without_fit_leaves_the_group_size_and_remove_releases_members()
+    {
+        var (host, group, a, b) = GroupedPair();
+        var outside = CanvasNode.Create(NodeKind.Text, 3000, 3000);
+        host.Document.Nodes.Add(outside);
+        var size = (group.X, group.Y, group.Width, group.Height);
+        CanvasTools.Apply(host, [new CanvasOp { Type = "group_add", Id = group.Id, Ids = [outside.Id], Fit = false }]);
+        Assert.Equal(size, (group.X, group.Y, group.Width, group.Height));
+        Assert.Equal(group.Id, outside.GroupId);
+
+        var removed = Parse(CanvasTools.Apply(host, [new CanvasOp { Type = "group_remove", Ids = [outside.Id, a.Id] }]));
+        Assert.Equal(2, removed.GetProperty("results")[0].GetProperty("removed").GetArrayLength());
+        Assert.Null(outside.GroupId);
+        Assert.Null(a.GroupId);
+        Assert.Equal(CanvasGraph.GroupRect([b]).Left, group.X);
+
+        CanvasTools.Apply(host, [new CanvasOp { Type = "group_remove", Ids = [b.Id] }]);
+        Assert.Null(host.Document.Find(group.Id));
+    }
+
+    [Fact]
+    public void Group_add_moves_collapsed_stacks_whole_but_open_members_alone()
+    {
+        var (host, group, _, _) = GroupedPair();
+        var first = CanvasNode.Create(NodeKind.Image, 0, 2000);
+        var second = CanvasNode.Create(NodeKind.Image, 0, 2000);
+        Stacks.Form([first, second]);
+        host.Document.Nodes.Add(first);
+        host.Document.Nodes.Add(second);
+        CanvasTools.Apply(host, [new CanvasOp { Type = "group_add", Id = group.Id, Ids = [first.Id], Fit = false }]);
+        Assert.Equal((group.Id, group.Id), (first.GroupId, second.GroupId));
+
+        CanvasTools.Apply(host, [new CanvasOp { Type = "group_remove", Ids = [first.Id, second.Id], Fit = false }]);
+        first.SetOption(NodeKeys.StackOpen, "true");
+        second.SetOption(NodeKeys.StackOpen, "true");
+        CanvasTools.Apply(host, [new CanvasOp { Type = "group_add", Id = group.Id, Ids = [first.Id], Fit = false }]);
+        Assert.Equal((group.Id, (string?)null), (first.GroupId, second.GroupId));
+    }
+
+    [Fact]
+    public void Group_add_and_remove_reject_bad_input_without_changing_the_document()
+    {
+        var (host, group, a, _) = GroupedPair();
+        var text = CanvasNode.Create(NodeKind.Text, 0, 0);
+        host.Document.Nodes.Add(text);
+        var original = host.Document.Nodes.Select(n => InfiniteCanvas.Core.Json.Serialize(n)).ToList();
+        var result = Parse(CanvasTools.Apply(host,
+        [
+            new CanvasOp { Type = "group_add", Id = text.Id, Ids = [a.Id] },
+            new CanvasOp { Type = "group_add", Id = group.Id, Ids = [group.Id] },
+            new CanvasOp { Type = "group_add", Id = group.Id, Ids = [text.Id, "missing"] },
+            new CanvasOp { Type = "group_remove", Ids = [group.Id] },
+            new CanvasOp { Type = "group_remove", Ids = ["missing"] },
+        ]));
+        var errors = result.GetProperty("results").EnumerateArray().Select(r => r.GetProperty("error").GetString()!).ToList();
+        Assert.Equal(5, errors.Count);
+        Assert.Contains("必须是分组节点", errors[0]);
+        Assert.Contains("不能嵌套", errors[1]);
+        Assert.Contains("missing", errors[2]);
+        Assert.Contains("不能嵌套", errors[3]);
+        Assert.Equal(original, host.Document.Nodes.Select(n => InfiniteCanvas.Core.Json.Serialize(n)).ToList());
+    }
+
+    [Fact]
+    public void Group_reports_already_grouped_apart_from_missing_nodes()
+    {
+        var (host, _, a, b) = GroupedPair();
+        var result = Parse(CanvasTools.Apply(host, [new CanvasOp { Type = "group", Ids = [a.Id, b.Id] }]));
+        Assert.Contains("已经都在同一个分组", result.GetProperty("results")[0].GetProperty("error").GetString());
+    }
+
+    [Fact]
+    public async Task Get_state_is_brief_by_default_filters_and_get_node_returns_full_fields()
+    {
+        var host = new FakeHost();
+        var (group, inside, outside) = (new CanvasNode { Kind = NodeKind.Group, Title = "组", X = 0, Y = 0, Width = 500, Height = 400 }, CanvasNode.Create(NodeKind.Image, 100, 100), CanvasNode.Create(NodeKind.Text, 2000, 2000));
+        inside.Prompt = "一只猫";
+        inside.Content = "图片-001.png";
+        inside.GroupId = group.Id;
+        outside.Content = "正文内容";
+        outside.SetOption("watermark", "true");
+        foreach (var added in new[] { group, inside, outside }) host.Document.Nodes.Add(added);
+        host.Document.Connections.Add(CanvasConnection.Create(inside.Id, outside.Id));
+        host.Document.Connections.Add(CanvasConnection.Create(inside.Id, group.Id));
+        await using var server = new CanvasMcpServer(host);
+        await using var pipe = new NamedPipeClientStream(".", server.PipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
+        await pipe.ConnectAsync(5000);
+        await using var client = await McpClient.CreateAsync(new StreamClientTransport(pipe, pipe, null));
+        async Task<JsonElement> Call(string tool, Dictionary<string, object?>? args = null) => Parse(((TextContentBlock)(await client.CallToolAsync(tool, args)).Content[0]).Text);
+
+        var brief = await Call("canvas_get_state");
+        var node = brief.GetProperty("nodes").EnumerateArray().Single(n => n.GetProperty("id").GetString() == inside.Id);
+        Assert.False(node.TryGetProperty("prompt", out _) || node.TryGetProperty("options", out _) || node.TryGetProperty("text", out _));
+        Assert.Equal("图片-001.png", node.GetProperty("file").GetString());
+        Assert.Equal(3, brief.GetProperty("nodes").GetArrayLength());
+
+        var full = await Call("canvas_get_state", new() { ["detail"] = "full" });
+        Assert.Equal("一只猫", full.GetProperty("nodes").EnumerateArray().Single(n => n.GetProperty("id").GetString() == inside.Id).GetProperty("prompt").GetString());
+
+        var byGroup = await Call("canvas_get_state", new() { ["groupId"] = group.Id });
+        Assert.Equal(2, byGroup.GetProperty("nodes").GetArrayLength());
+        Assert.Equal(1, byGroup.GetProperty("connections").GetArrayLength());
+        var byIds = await Call("canvas_get_state", new() { ["ids"] = new[] { inside.Id, outside.Id } });
+        Assert.Equal(1, byIds.GetProperty("connections").GetArrayLength());
+        var byRect = await Call("canvas_get_state", new() { ["rect"] = new[] { 1900d, 1900d, 2500d, 2500d } });
+        Assert.Equal([outside.Id], byRect.GetProperty("nodes").EnumerateArray().Select(n => n.GetProperty("id").GetString()!).ToArray());
+        Assert.Equal(0, byRect.GetProperty("connections").GetArrayLength());
+
+        foreach (var bad in new Dictionary<string, object?>[] { new() { ["detail"] = "x" }, new() { ["ids"] = new[] { "missing" } }, new() { ["groupId"] = inside.Id }, new() { ["rect"] = new[] { 5d, 5d, 1d, 9d } }, new() { ["rect"] = new[] { 1d, 2d } } })
+            Assert.True((await client.CallToolAsync("canvas_get_state", bad)).IsError);
+
+        var detail = await Call("canvas_get_node", new() { ["ids"] = new[] { inside.Id, outside.Id } });
+        Assert.Equal("一只猫", detail.GetProperty("nodes")[0].GetProperty("prompt").GetString());
+        Assert.Equal("正文内容", detail.GetProperty("nodes")[1].GetProperty("text").GetString());
+        Assert.True((await client.CallToolAsync("canvas_get_node", new Dictionary<string, object?> { ["ids"] = new[] { "missing" } })).IsError);
     }
 
     [Theory]
@@ -395,7 +585,7 @@ public class AgentTests
         await using var pipe = new NamedPipeClientStream(".", name, PipeDirection.InOut, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
         await pipe.ConnectAsync(5000);
         await using var client = await McpClient.CreateAsync(new StreamClientTransport(pipe, pipe, null));
-        Assert.Equal(9, (await client.ListToolsAsync()).Count);
+        Assert.Equal(10, (await client.ListToolsAsync()).Count);
     }
 
     [Fact]
@@ -408,7 +598,7 @@ public class AgentTests
         await using var client = await McpClient.CreateAsync(new StreamClientTransport(pipe, pipe, null));
 
         var tools = await client.ListToolsAsync();
-        Assert.Equal(["canvas_apply_ops", "canvas_generate", "canvas_get_image", "canvas_get_state", "canvas_run_generation", "generation_get_status", "library_add", "library_list", "library_place"], tools.Select(t => t.Name).Order());
+        Assert.Equal(["canvas_apply_ops", "canvas_generate", "canvas_get_image", "canvas_get_node", "canvas_get_state", "canvas_run_generation", "generation_get_status", "library_add", "library_list", "library_place"], tools.Select(t => t.Name).Order());
 
         var generated = await client.CallToolAsync("canvas_generate", new Dictionary<string, object?> { ["mode"] = "image", ["prompt"] = "一只猫", ["ratio"] = "1:1" });
         var nodeId = Parse(((TextContentBlock)generated.Content[0]).Text).GetProperty("nodeId").GetString();
