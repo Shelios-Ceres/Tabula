@@ -52,7 +52,7 @@ public static class ModelFamilies
     public static readonly ImageFamily[] Image =
     [
         // GPT Image 2.6 runs on the Image API only (its model pages list no Responses support); GIF and SVG are generation-only outputs.
-        new("gpt-image-2.6", Vendor.OpenAI, "^gpt-image-2\\.6") { Tiers = ["auto", "1K", "2K", "4K"], Ratios = [.. TableRatios, "1:3"], MaxReferences = 16, MaxImages = 10, OutputFormats = ["png", "jpeg", "webp", "gif", "svg"], Qualities = ["auto", "low", "medium", "high", "xhigh", "max"], Complexities = ["low", "medium", "high"], Stream = true, Mask = true, Markup = true, Background = true },
+        new("gpt-image-2.6", Vendor.OpenAI, "^gpt-image-2\\.6") { Tiers = ["auto", "1K", "2K", "4K"], Ratios = [.. TableRatios, "1:3", "3:1"], MaxReferences = 16, MaxImages = 10, OutputFormats = ["png", "jpeg", "webp", "gif", "svg"], Qualities = ["auto", "low", "medium", "high", "xhigh", "max"], Complexities = ["low", "medium", "high"], Stream = true, Mask = true, Markup = true, Background = true },
         new("gpt-image-2.5", Vendor.OpenAI, "^gpt-image-2\\.5") { Tiers = ["auto", "1K", "2K", "4K"], Ratios = TableRatios, MaxReferences = 16, MaxImages = 10, OutputFormats = ["png", "jpeg", "webp"], Qualities = ["auto", "low", "medium", "high", "xhigh", "max"], Stream = true, Mask = true, Markup = true, Background = true, ResponsesTool = true },
         new("gpt-image-1", Vendor.OpenAI, "^gpt-image-1") { Tiers = ["auto", "1K"], Ratios = ["1:1", "3:2", "2:3"], MaxReferences = 16, MaxImages = 10, OutputFormats = ["png", "jpeg", "webp"], Qualities = ["auto", "low", "medium", "high"], Stream = true, Mask = true, Background = true, ResponsesTool = true },
         new("gpt-image", Vendor.OpenAI, "^gpt-image") { Tiers = ["auto", "1K", "2K", "4K"], Ratios = TableRatios, MaxReferences = 16, MaxImages = 10, OutputFormats = ["png", "jpeg", "webp"], Qualities = ["auto", "low", "medium", "high"], Stream = true, Mask = true, Background = true, ResponsesTool = true },
@@ -166,13 +166,13 @@ public static class ModelFamilies
         return Capability.Text;
     }
 
-    // GPT Image fixed size table by tier and ratio; also used for DashScope (sent as W*H). 1:3 is listed for GPT Image 2.6 only (its Ratios), and is exactly 1:3, the tallest the API allows.
+    // GPT Image fixed size table by tier and ratio; also used for DashScope (sent as W*H). 1:3 and 3:1 are listed for GPT Image 2.6 only (its Ratios) and are exactly 1:3 and 3:1, the most extreme the API allows.
     private static readonly Dictionary<string, Dictionary<string, string>> TierTable = new()
     {
-        ["1K"] = new() { ["1:1"] = "1024x1024", ["2:3"] = "1024x1536", ["3:2"] = "1536x1024", ["4:3"] = "1024x768", ["3:4"] = "768x1024", ["4:5"] = "1024x1280", ["5:4"] = "1280x1024", ["16:9"] = "1536x864", ["9:16"] = "864x1536", ["21:9"] = "2016x864", ["9:21"] = "864x2016", ["1:3"] = "672x2016" },
-        ["2K"] = new() { ["1:1"] = "2048x2048", ["2:3"] = "1360x2048", ["3:2"] = "2048x1360", ["4:3"] = "2048x1536", ["3:4"] = "1536x2048", ["4:5"] = "1600x2000", ["5:4"] = "2000x1600", ["16:9"] = "2048x1152", ["9:16"] = "1152x2048", ["21:9"] = "2688x1152", ["9:21"] = "1152x2688", ["1:3"] = "896x2688" },
+        ["1K"] = new() { ["1:1"] = "1024x1024", ["2:3"] = "1024x1536", ["3:2"] = "1536x1024", ["4:3"] = "1024x768", ["3:4"] = "768x1024", ["4:5"] = "1024x1280", ["5:4"] = "1280x1024", ["16:9"] = "1536x864", ["9:16"] = "864x1536", ["21:9"] = "2016x864", ["9:21"] = "864x2016", ["1:3"] = "672x2016", ["3:1"] = "2016x672" },
+        ["2K"] = new() { ["1:1"] = "2048x2048", ["2:3"] = "1360x2048", ["3:2"] = "2048x1360", ["4:3"] = "2048x1536", ["3:4"] = "1536x2048", ["4:5"] = "1600x2000", ["5:4"] = "2000x1600", ["16:9"] = "2048x1152", ["9:16"] = "1152x2048", ["21:9"] = "2688x1152", ["9:21"] = "1152x2688", ["1:3"] = "896x2688", ["3:1"] = "2688x896" },
         // Largest multiples of 16 within 8,294,400 px and a 3840 px edge, each within 0.5% of its ratio; 21:9 is capped by the edge.
-        ["4K"] = new() { ["1:1"] = "2880x2880", ["2:3"] = "2352x3520", ["3:2"] = "3520x2352", ["4:3"] = "3312x2496", ["3:4"] = "2496x3312", ["4:5"] = "2576x3216", ["5:4"] = "3216x2576", ["16:9"] = "3840x2160", ["9:16"] = "2160x3840", ["21:9"] = "3840x1648", ["9:21"] = "1648x3840", ["1:3"] = "1280x3840" },
+        ["4K"] = new() { ["1:1"] = "2880x2880", ["2:3"] = "2352x3520", ["3:2"] = "3520x2352", ["4:3"] = "3312x2496", ["3:4"] = "2496x3312", ["4:5"] = "2576x3216", ["5:4"] = "3216x2576", ["16:9"] = "3840x2160", ["9:16"] = "2160x3840", ["21:9"] = "3840x1648", ["9:21"] = "1648x3840", ["1:3"] = "1280x3840", ["3:1"] = "3840x1280" },
     };
 
     private static readonly Dictionary<string, string> QwenFixedSizes = new() { ["16:9"] = "1664*928", ["4:3"] = "1472*1104", ["1:1"] = "1328*1328", ["3:4"] = "1104*1472", ["9:16"] = "928*1664" };

@@ -58,21 +58,27 @@ public class ProviderTests
 
     [Theory]
     [InlineData("gpt-image-2.6-sunburst", "1K", "672x2016")]
+    [InlineData("gpt-image-2.6-sunburst", "1K", "2016x672", "3:1")]
+    [InlineData("gpt-image-2.6-sunburst", "2K", "2688x896", "3:1")]
+    [InlineData("gpt-image-2.6-sunburst", "4K", "3840x1280", "3:1")]
+    [InlineData("gpt-image-2.6-flare", "1K", "2016x672", "3:1")]
+    [InlineData("gpt-image-2.6-flare", "2K", "2688x896", "3:1")]
+    [InlineData("gpt-image-2.6-flare", "4K", "3840x1280", "3:1")]
     [InlineData("gpt-image-2.6-sunburst", "2K", "896x2688")]
     [InlineData("gpt-image-2.6-sunburst", "4K", "1280x3840")]
     [InlineData("gpt-image-2.6-flare", "1K", "672x2016")]
     [InlineData("gpt-image-2.6-flare", "2K", "896x2688")]
     [InlineData("gpt-image-2.6-flare", "4K", "1280x3840")]
-    public async Task OpenAI_gpt_image_2_6_sends_a_true_1_to_3_size(string model, string tier, string size)
+    public async Task OpenAI_gpt_image_2_6_sends_a_true_1_to_3_or_3_to_1_size(string model, string tier, string size, string ratio = "1:3")
     {
         var (provider, handler) = Create(Vendor.OpenAI, (_, _) => Json($$"""{"data":[{"b64_json":"{{Png}}"}]}"""));
-        await provider.GenerateImageAsync(Image(model, options: new() { Tier = tier, Ratio = "1:3" }), null, default);
+        await provider.GenerateImageAsync(Image(model, options: new() { Tier = tier, Ratio = ratio }), null, default);
         Assert.Equal(size, (string?)JsonNode.Parse(handler.Calls.Single().Body)!["size"]);
 
         // The documented custom-size rules for GPT Image 2.6: multiples of 16, ratio from 1:3 to 3:1, an edge of at most 3840, 655,360 to 8,294,400 pixels.
         var (width, height) = (int.Parse(size.Split('x')[0]), int.Parse(size.Split('x')[1]));
         Assert.Equal((0, 0), (width % 16, height % 16));
-        Assert.Equal(3 * width, height);
+        if (ratio == "1:3") Assert.Equal(3 * width, height); else Assert.Equal(3 * height, width);
         Assert.True(Math.Max(width, height) <= 3840 && width * height is >= 655_360 and <= 8_294_400);
     }
 
@@ -83,9 +89,9 @@ public class ProviderTests
         var offered = new List<string>();
         foreach (var model in models)
             foreach (var vendor in new[] { Vendor.OpenAI, Vendor.Qwen })
-                if (ModelFamilies.FindImage(vendor, model) is { } family && family.Ratios.Contains("1:3")) offered.Add(model);
+                if (ModelFamilies.FindImage(vendor, model) is { } family && family.Ratios.Contains("1:3") && family.Ratios.Contains("3:1")) offered.Add(model);
         Assert.Equal(["gpt-image-2.6-sunburst", "gpt-image-2.6-flare"], offered);
-        Assert.Equal(["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "16:9", "9:16", "21:9", "9:21", "1:3"], ModelFamilies.FindImage(Vendor.OpenAI, "gpt-image-2.6-flare")!.Ratios);
+        Assert.Equal(["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "16:9", "9:16", "21:9", "9:21", "1:3", "3:1"], ModelFamilies.FindImage(Vendor.OpenAI, "gpt-image-2.6-flare")!.Ratios);
 
         // A node that kept 1:3 from a 2.6 model and then moved to another GPT Image model gets the 1:1 size, not 1:3 or some other tall one.
         // (For Qwen the generator drops a ratio the model does not list before it reaches the provider.)
@@ -97,6 +103,11 @@ public class ProviderTests
         Assert.Equal("auto", ModelFamilies.ImageSize(sixth, "auto", "1:3"));
         Assert.Equal("auto", ModelFamilies.ImageSize(sixth, "auto", "9:21"));
         Assert.Equal("1280x3840", ModelFamilies.ImageSize(sixth, "4K", "1:3"));
+        Assert.Equal("auto", ModelFamilies.ImageSize(sixth, "auto", "3:1"));
+        Assert.Equal("3840x1280", ModelFamilies.ImageSize(sixth, "4K", "3:1"));
+        // The other GPT Image models do not send 3:1 either: a left-over one becomes 1:1.
+        foreach (var model in new[] { "gpt-image-2.5-flare", "gpt-image-1.5" })
+            Assert.Equal(ModelFamilies.ImageSize(ModelFamilies.FindImage(Vendor.OpenAI, model)!, "2K", "1:1"), ModelFamilies.ImageSize(ModelFamilies.FindImage(Vendor.OpenAI, model)!, "2K", "3:1"));
     }
 
     [Fact]
