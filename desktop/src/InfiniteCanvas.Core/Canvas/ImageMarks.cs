@@ -33,7 +33,10 @@ public static class NodeKeys
     /// <summary>How the next batch from this node is laid out (stack, row, grid) and the gap between its members; a property of the run, so outputs never inherit it.</summary>
     public const string Layout = "layout", Gap = "gap";
 
-    public static readonly string[] PerImage = [Mask, Markup, Selections, ConversationId, ConversationModel, ModelText, InputNote, SourceId, Stack, StackOpen, Layout, Gap];
+    /// <summary>JSON <see cref="ComposeSpec"/> of the composition that made this image, kept for "re-compose with the last settings"; it describes this image only, so outputs never inherit it.</summary>
+    public const string Compose = "compose";
+
+    public static readonly string[] PerImage = [Mask, Markup, Selections, ConversationId, ConversationModel, ModelText, InputNote, SourceId, Stack, StackOpen, Layout, Gap, Compose];
 
     /// <summary>
     /// Options for an output of <paramref name="from"/>: its settings without the per-image keys and the one-off layer split. The output keeps what says

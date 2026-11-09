@@ -105,6 +105,18 @@ public class AgentTests
             Imported.AddRange(imported);
             return Task.FromResult(new ImportResult(imported.Select(_ => Ids.New("node")).ToList(), failed.Select(p => new ImportFailure(p, "文件被占用")).ToList()));
         }
+        /// <summary>Specs the host was asked to compose; it adds one picture node and records one undo step, like the real one.</summary>
+        public List<ComposeSpec> Composed { get; } = [];
+        public double ComposeScale { get; set; } = 1;
+        public Task<(string Id, int Width, int Height, double Scale)> ComposeAsync(ComposeSpec spec)
+        {
+            RecordHistory();
+            Composed.Add(spec);
+            var node = new CanvasNode { Kind = NodeKind.Image, Title = $"拼版 · {spec.Cells.Count} 张", Content = "图片-900.png", Status = NodeStatus.Success };
+            Document.Nodes.Add(node);
+            foreach (var cell in spec.Cells) Document.Connections.Add(CanvasConnection.Create(cell.NodeId, node.Id));
+            return Task.FromResult((node.Id, 1000, 500, ComposeScale));
+        }
         public Task ReplaceMediaAsync(CanvasNode node, string path)
         {
             if (Unreadable.Contains(Path.GetFileName(path))) return Task.FromException(new IOException("文件被占用"));
@@ -618,7 +630,7 @@ public class AgentTests
         await using var pipe = new NamedPipeClientStream(".", name, PipeDirection.InOut, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
         await pipe.ConnectAsync(5000);
         await using var client = await McpClient.CreateAsync(new StreamClientTransport(pipe, pipe, null));
-        Assert.Equal(15, (await client.ListToolsAsync()).Count);
+        Assert.Equal(16, (await client.ListToolsAsync()).Count);
     }
 
     [Fact]
@@ -631,7 +643,7 @@ public class AgentTests
         await using var client = await McpClient.CreateAsync(new StreamClientTransport(pipe, pipe, null));
 
         var tools = await client.ListToolsAsync();
-        Assert.Equal(["canvas_apply_ops", "canvas_generate", "canvas_get_image", "canvas_get_node", "canvas_get_state", "canvas_import_file", "canvas_replace_media", "canvas_run_generation", "generation_get_status", "library_add", "library_list", "library_place", "library_remove", "library_rename", "usage_summary"], tools.Select(t => t.Name).Order());
+        Assert.Equal(["canvas_apply_ops", "canvas_compose", "canvas_generate", "canvas_get_image", "canvas_get_node", "canvas_get_state", "canvas_import_file", "canvas_replace_media", "canvas_run_generation", "generation_get_status", "library_add", "library_list", "library_place", "library_remove", "library_rename", "usage_summary"], tools.Select(t => t.Name).Order());
 
         var generated = await client.CallToolAsync("canvas_generate", new Dictionary<string, object?> { ["mode"] = "image", ["prompt"] = "一只猫", ["ratio"] = "1:1" });
         var nodeId = Parse(((TextContentBlock)generated.Content[0]).Text).GetProperty("nodeId").GetString();
@@ -1201,7 +1213,7 @@ public class AgentTests
         Assert.Null(Stacks.Of(third));
         Assert.Equal(group.Id, third.GroupId);
         Assert.NotNull(host.Document.Find(group.Id)); // the group stays, with the kept card in it
-        Assert.Equal([(input.Id, third.Id), (third.Id, config.Id)], host.Document.Connections.Select(c => (c.From, c.To)).Order());
+        Assert.Equal(new[] { (input.Id, third.Id), (third.Id, config.Id) }.Order().ToList(), host.Document.Connections.Select(c => (c.From, c.To)).Order().ToList());
 
         Assert.True(host.History.Undo());
         Assert.Equal(3, host.Document.Nodes.Count(n => n.Kind == NodeKind.Image));
@@ -1333,6 +1345,82 @@ public class AgentTests
             new CanvasOp { Type = "update_node", Id = "final", Title = "稿" },
         ]));
         Assert.Equal(2, refs.GetProperty("results").GetArrayLength());
+    }
+
+    private static CanvasNode Bitmap(FakeHost host, string title, string file = "图片-001.png")
+    {
+        var node = new CanvasNode { Kind = NodeKind.Image, Title = title, Content = file, Status = NodeStatus.Success, Width = 340, Height = 240 };
+        host.Document.Nodes.Add(node);
+        return node;
+    }
+
+    [Fact]
+    public async Task Canvas_compose_passes_the_order_and_defaults_to_the_host_and_is_one_undo_step()
+    {
+        var host = new FakeHost();
+        var (a, b, c) = (Bitmap(host, "正面"), Bitmap(host, "侧面", "图片-002.jpg"), Bitmap(host, "背面", "图片-003.webp"));
+        await using var session = await Session.StartAsync(host);
+
+        var plain = await session.CallAsync("canvas_compose", new() { ["ids"] = new[] { c.Id, a.Id, b.Id } });
+        Assert.False(plain.IsError);
+        var spec = Assert.Single(host.Composed);
+        Assert.Equal([c.Id, a.Id, b.Id], spec.Cells.Select(x => x.NodeId));
+        Assert.All(spec.Cells, x => Assert.Null(x.Top));
+        Assert.Equal(("row", 0, 64, 64, "#FFFFFF", "height"), (spec.Layout, spec.Columns, spec.Gap, spec.Margin, spec.Background, spec.Fit));
+        var json = Parse(plain.Text);
+        Assert.Equal((1000, 500, 1d), (json.GetProperty("width").GetInt32(), json.GetProperty("height").GetInt32(), json.GetProperty("scale").GetDouble()));
+        Assert.False(json.TryGetProperty("note", out _));
+        Assert.Equal(1, host.Records);
+        Assert.Equal(3, host.Document.Connections.Count(x => x.To == json.GetProperty("nodeId").GetString()));
+        Assert.True(host.History.Undo());
+        Assert.Equal(3, host.Document.Nodes.Count);
+        Assert.Empty(host.Document.Connections);
+
+        host.ComposeScale = 0.5;
+        var custom = await session.CallAsync("canvas_compose", new() { ["ids"] = new[] { a.Id, b.Id }, ["layout"] = " Grid ", ["columns"] = 2, ["gap"] = 8, ["margin"] = 0, ["background"] = "transparent", ["fit"] = "WIDTH" });
+        Assert.Equal(("grid", 2, 8, 0, "transparent", "width"), (host.Composed[1].Layout, host.Composed[1].Columns, host.Composed[1].Gap, host.Composed[1].Margin, host.Composed[1].Background, host.Composed[1].Fit));
+        Assert.Contains("50%", Parse(custom.Text).GetProperty("note").GetString());
+    }
+
+    [Fact]
+    public async Task Canvas_compose_marks_reach_the_spec_and_every_bad_request_is_refused_before_the_host_is_called()
+    {
+        var host = new FakeHost();
+        var (a, b) = (Bitmap(host, "A"), Bitmap(host, "B", "图片-002.png"));
+        var svg = Bitmap(host, "矢量", "图.svg");
+        var text = new CanvasNode { Kind = NodeKind.Text, Title = "文", Content = "字" };
+        var empty = new CanvasNode { Kind = NodeKind.Image, Title = "空" };
+        host.Document.Nodes.Add(text);
+        host.Document.Nodes.Add(empty);
+        await using var session = await Session.StartAsync(host);
+
+        var aligned = await session.CallAsync("canvas_compose", new() { ["ids"] = new[] { a.Id, b.Id }, ["marks"] = new[] { new[] { 0.1, 0.9 }, new[] { 0.2, 0.6 } } });
+        Assert.False(aligned.IsError);
+        Assert.Equal([(0.1, 0.9), (0.2, 0.6)], host.Composed[0].Cells.Select(x => (x.Top!.Value, x.Bottom!.Value)));
+
+        var before = (host.Composed.Count, host.Records, host.Document.Nodes.Count);
+        var bad = new Dictionary<string, object?>[]
+        {
+            new() { ["ids"] = new[] { a.Id } },                                             // one picture
+            new() { ["ids"] = new[] { a.Id, "missing" } },
+            new() { ["ids"] = new[] { a.Id, svg.Id } },                                     // SVG has no pixels
+            new() { ["ids"] = new[] { a.Id, text.Id } },
+            new() { ["ids"] = new[] { a.Id, empty.Id } },
+            new() { ["ids"] = new[] { a.Id, b.Id }, ["layout"] = "diagonal" },
+            new() { ["ids"] = new[] { a.Id, b.Id }, ["fit"] = "both" },
+            new() { ["ids"] = new[] { a.Id, b.Id }, ["gap"] = -1 },
+            new() { ["ids"] = new[] { a.Id, b.Id }, ["margin"] = -1 },
+            new() { ["ids"] = new[] { a.Id, b.Id }, ["columns"] = -1 },
+            new() { ["ids"] = new[] { a.Id, b.Id }, ["background"] = "white" },
+            new() { ["ids"] = new[] { a.Id, b.Id }, ["marks"] = new[] { new[] { 0.1, 0.9 } } },                       // one mark for two pictures
+            new() { ["ids"] = new[] { a.Id, b.Id }, ["marks"] = new[] { new[] { 0.1, 0.9 }, new[] { 0.5 } } },        // not a pair
+            new() { ["ids"] = new[] { a.Id, b.Id }, ["marks"] = new[] { new[] { 0.9, 0.1 }, new[] { 0.2, 0.6 } } },   // top below bottom
+            new() { ["ids"] = new[] { a.Id, b.Id }, ["marks"] = new[] { new[] { 0.1, 1.5 }, new[] { 0.2, 0.6 } } },
+            new() { ["ids"] = new[] { a.Id, b.Id }, ["marks"] = new[] { new[] { 0.1, 0.9 }, new[] { 0.2, 0.6 } }, ["layout"] = "column" },
+            new() { ["ids"] = new[] { a.Id, b.Id }, ["marks"] = new[] { new[] { 0.1, 0.9 }, new[] { 0.2, 0.6 } }, ["fit"] = "width" },
+        };
+        foreach (var args in bad) Assert.True((await session.CallAsync("canvas_compose", args)).IsError, string.Join(",", args.Select(p => p.Key)));
+        Assert.Equal(before, (host.Composed.Count, host.Records, host.Document.Nodes.Count));
     }
 
     [Fact]

@@ -42,6 +42,8 @@ public interface ICanvasHost
     IReadOnlyList<string> RemoveFromGroup(IReadOnlyCollection<string> ids, bool fit);
     /// <summary>Import media files as new nodes from a world point (one undo step). Never shows a dialog: files that cannot be imported come back in Failed.</summary>
     Task<ImportResult> ImportAsync(IReadOnlyList<string> paths, double x, double y);
+    /// <summary>Compose image nodes into one new image node to their right, connected from each (one undo step): its ID, pixel size and the down-scale applied (1 when none). Never shows a dialog.</summary>
+    Task<(string Id, int Width, int Height, double Scale)> ComposeAsync(ComposeSpec spec);
     /// <summary>Give a media node a new file of its kind, keeping its ID, position, width, group, stack and connections (one undo step). Throws when the copy fails; never shows a dialog.</summary>
     Task ReplaceMediaAsync(CanvasNode node, string path);
     /// <summary>Copy a node's media into this canvas's library, named after the node; its file name. A name already taken is an error unless <paramref name="replace"/>.</summary>
@@ -117,6 +119,7 @@ public static class CanvasTools
         - 生成图片、文本或语音用 canvas_generate（这个版本不支持生成视频，视频节点只用来放导入的视频）：它会新建节点、连上参考节点并立刻开始生成。生成是异步的，用 generation_get_status 查看结果，不要在没有结果时声称已经完成。
         - 增删改节点、连线、选择和视口用 canvas_apply_ops，一次调用就是一步撤销。
         - 需要看图片内容时用 canvas_get_image；资料库（这个画布自己的常用素材）用 library_list / library_place / library_add；一次生成多张时用 layout=row 或 grid 直接排开，已有的一批用 stack_open / stack_close 展开或收起，挑定稿用 keep_one（留下一批里的一张）和 promote（让一张图取代另一张，占它的位置和连线）；编组用 canvas_apply_ops 的 group / ungroup，把节点加入或移出已有分组（分组 ID 和连线不变）用 group_add / group_remove。
+        - 要把单独生成的多个视角拼成转面图、对比图时用 canvas_compose，不要自己在本地拼；人物大小不一时用 marks 按头顶和脚底对齐。
         - 节点 ID 只用工具返回的值，不要编造；模型 ID 只用 canvas_get_state.models 里列出的。
         """;
 
@@ -204,6 +207,19 @@ public static class CanvasTools
             Description = "把本机文件导入画布，成为新的图片 / 视频 / 音频节点（文件会复制进画布自己的文件夹），返回 nodeIds，导入不了的文件列在 failed: [{path, reason}] 里。只导入用户在对话里明确点名的文件，不要自己翻找或导入其他本机文件。",
         }),
         McpServerTool.Create(async (
+            [Description("要拼的图片节点 ID，顺序就是排版顺序；只接受带内容的位图图片节点（不能是 SVG），至少两张")] List<string> ids,
+            [Description("row（一行，默认）、column（一列）、grid（网格）")] string? layout = null,
+            [Description("grid 的列数，0 或省略表示自动（约为张数的平方根）")] int? columns = null,
+            [Description("格子之间的间距，像素，默认 64")] int? gap = null,
+            [Description("外边距，像素，默认 64")] int? margin = null,
+            [Description("背景：#RRGGBB 或 transparent（透明时出 PNG），默认 #FFFFFF")] string? background = null,
+            [Description("height（等高，默认，取最矮的一张，谁都不放大）或 width（等宽）")] string? fit = null,
+            [Description("按头顶和脚底对齐人物：和 ids 一一对应的 [top, bottom] 列表，0 ≤ top < bottom ≤ 1（占图片高度的比例）；只能用于 layout=row 且 fit=height，要么每张都给、要么都不给")] List<List<double>>? marks = null) => await ComposeToolAsync(host, ids, layout, columns, gap, margin, background, fit, marks), new()
+        {
+            Name = "canvas_compose",
+            Description = "把多张图片节点按顺序拼成一张新图（一行 / 一列 / 网格），放在它们右侧并从每张连线过来，整个操作一步撤销；只接受位图，返回新节点 ID 和输出尺寸（过大时会按显卡上限等比缩小并在 note 里说明）。人物大小不一时用 marks 按头顶和脚底对齐。参数记在结果节点上，用户可以右键「按上次设置重新拼」。",
+        }),
+        McpServerTool.Create(async (
             [Description("要替换内容的图片、视频或音频节点 ID")] string nodeId,
             [Description("新文件的绝对路径，类型必须和节点一致（图片换图片）")] string path) => await ReplaceMediaAsync(host, nodeId, path), new()
         {
@@ -288,6 +304,29 @@ public static class CanvasTools
         failed.AddRange(result.Failed);
         if (result.Ids.Count == 0 && failed.Count > 0) throw new McpException($"没有文件被导入：{string.Join("；", failed.Select(f => $"{f.Path}（{f.Reason}）"))}");
         return Json(new { NodeIds = result.Ids, Failed = failed.Count > 0 ? failed : null });
+    }
+
+    /// <summary>Everything is checked on the UI thread before anything is drawn, so a bad request never starts a render or changes the canvas.</summary>
+    private static async Task<string> ComposeToolAsync(ICanvasHost host, List<string> ids, string? layout, int? columns, int? gap, int? margin, string? background, string? fit, List<List<double>>? marks)
+    {
+        var (canvas, spec) = await host.OnUiAsync(() =>
+        {
+            var nodes = FindAll(host, ids);
+            foreach (var node in nodes)
+                if (node.Kind != NodeKind.Image || !node.HasContent || Media.IsSvg(node.Content)) throw new McpException($"节点「{node.Id}」不是带内容的位图图片，只能拼位图图片节点");
+            if (marks is not null && marks.Count != ids.Count) throw new McpException($"marks 要和 ids 一一对应：收到 {marks.Count} 项，ids 有 {ids.Count} 张");
+            if (marks?.FindIndex(m => m.Count != 2) is >= 0 and var bad) throw new McpException($"marks 的第 {bad + 1} 项必须是 [top, bottom]");
+            var cells = ids.Select((id, i) => marks is null ? new ComposeCell(id) : new ComposeCell(id, marks[i][0], marks[i][1])).ToList();
+            var spec = new ComposeSpec(cells, layout?.Trim().ToLowerInvariant() ?? "row", columns ?? 0, gap ?? 64, margin ?? 64, background?.Trim() ?? "#FFFFFF", fit?.Trim().ToLowerInvariant() ?? "height");
+            if (ImageCompose.Problem(spec) is { } problem) throw new McpException(problem);
+            return (host.Document, spec);
+        });
+        var composed = await await host.OnUiAsync(() =>
+        {
+            if (!ReferenceEquals(canvas, host.Document)) throw new McpException("画布已切换，请重新读取当前画布后再拼版");
+            return host.ComposeAsync(spec);
+        });
+        return Json(new { NodeId = composed.Id, composed.Width, composed.Height, Scale = composed.Scale, Note = composed.Scale < 1 ? $"超过显卡的位图上限，已等比缩小到 {composed.Scale:P0}" : null });
     }
 
     private static async Task<string> ReplaceMediaAsync(ICanvasHost host, string nodeId, string path)

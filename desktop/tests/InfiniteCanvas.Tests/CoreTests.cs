@@ -26,6 +26,149 @@ internal static class TestEnvironment
 
 public class CoreTests
 {
+    private static ComposeSpec Spec(int count, string layout = "row", int columns = 0, string fit = "height", int gap = 64, int margin = 64, string background = "#FFFFFF") =>
+        new(Enumerable.Range(0, count).Select(i => new ComposeCell($"n{i}")).ToList(), layout, columns, gap, margin, background, fit);
+
+    [Fact]
+    public void Compose_row_of_four_4K_portraits_is_8960_by_3968_without_scaling()
+    {
+        var result = ImageCompose.Layout(Spec(4), Enumerable.Repeat((2160, 3840), 4).ToList(), 0);
+        Assert.Equal((8960, 3968, 1d), (result.Width, result.Height, result.Scale));
+        Assert.Equal(2288, result.Cells[1].Cell.X);
+        Assert.Equal([64, 2288, 4512, 6736], result.Cells.Select(c => c.Cell.X));
+        Assert.All(result.Cells, c => Assert.Equal((64, 3840, 2160), (c.Cell.Y, c.Cell.Height, c.Cell.Width)));
+        Assert.All(result.Cells, c => Assert.Equal((c.Cell.X, c.Cell.Y, 2160d, 3840d), (c.X, c.Y, c.Width, c.Height)));
+    }
+
+    [Fact]
+    public void Compose_never_enlarges_a_picture_when_heights_differ_and_fit_by_width_uses_the_smallest_width()
+    {
+        var mixed = ImageCompose.Layout(Spec(2), [(2160, 3840), (1152, 2048)], 0);
+        Assert.All(mixed.Cells, c => Assert.Equal(2048d, c.Height));
+        Assert.True(mixed.Cells[0].Width <= 2160 && mixed.Cells[1].Width <= 1152);
+        Assert.Equal(1152d, mixed.Cells[0].Width);
+
+        var wide = ImageCompose.Layout(Spec(2, "column", fit: "width"), [(2000, 1000), (1000, 1500)], 0);
+        Assert.All(wide.Cells, c => Assert.Equal(1000d, c.Width));
+        Assert.Equal([500d, 1500d], wide.Cells.Select(c => c.Height));
+        // Column: cells under each other with the gap between, margin all round.
+        Assert.Equal((1000 + 128, 500 + 1500 + 64 + 128), (wide.Width, wide.Height));
+        Assert.Equal(64 + 500 + 64, wide.Cells[1].Cell.Y);
+
+        // A row by width: cells as tall as the tallest picture, shorter ones centred.
+        var row = ImageCompose.Layout(Spec(2, fit: "width"), [(2000, 1000), (1000, 1500)], 0);
+        Assert.Equal(1500, row.Cells[0].Cell.Height);
+        Assert.Equal(row.Cells[0].Cell.Y + 500d, row.Cells[0].Y);
+    }
+
+    [Fact]
+    public void Compose_grid_takes_columns_from_the_count_or_the_setting_and_centres_narrow_pictures()
+    {
+        var five = Enumerable.Repeat((1000, 1000), 5).ToList();
+        var auto = ImageCompose.Layout(Spec(5, "grid"), five, 0);
+        Assert.Equal([64, 1128, 2192, 64, 1128], auto.Cells.Select(c => c.Cell.X));
+        Assert.Equal([64, 64, 64, 1128, 1128], auto.Cells.Select(c => c.Cell.Y)); // 3 columns, 2 rows
+        Assert.Equal((3 * 1000 + 2 * 64 + 128, 2 * 1000 + 64 + 128), (auto.Width, auto.Height));
+
+        var two = ImageCompose.Layout(Spec(5, "grid", columns: 2), five, 0);
+        Assert.Equal([64, 1128, 64, 1128, 64], two.Cells.Select(c => c.Cell.X));
+        Assert.Equal([64, 64, 1128, 1128, 2192], two.Cells.Select(c => c.Cell.Y)); // 2 columns, 3 rows
+        Assert.Single(ImageCompose.Layout(Spec(5, "grid", columns: 99), five, 0).Cells.Select(c => c.Cell.Y).Distinct()); // more columns than pictures: capped at 5, one row
+
+        var narrow = ImageCompose.Layout(Spec(2, "grid", columns: 2), [(1000, 1000), (500, 1000)], 0);
+        Assert.Equal(1000d, narrow.Cells[0].Width);
+        Assert.Equal(narrow.Cells[1].Cell.X + 250d, narrow.Cells[1].X);
+    }
+
+    [Fact]
+    public void Compose_over_the_device_limit_shrinks_everything_evenly_and_under_it_leaves_the_scale_at_one()
+    {
+        var sizes = Enumerable.Repeat((2160, 3840), 4).ToList();
+        var shrunk = ImageCompose.Layout(Spec(4), sizes, 8192);
+        Assert.Equal(8192, shrunk.Width);
+        Assert.InRange(shrunk.Scale, 0.9142, 0.9143);
+        Assert.True(shrunk.Height <= 8192);
+        Assert.Equal((int)Math.Round(2288 * shrunk.Scale), shrunk.Cells[1].Cell.X); // gap and margin shrink with the pictures
+        Assert.Equal((int)Math.Round(64 * shrunk.Scale), shrunk.Cells[0].Cell.X);
+        Assert.Equal(1d, ImageCompose.Layout(Spec(4), sizes, 16384).Scale);
+        Assert.Equal(1d, ImageCompose.Layout(Spec(4), sizes, 0).Scale);
+        // No edge leaves the output, and neighbouring cells meet at the gap without overlapping.
+        Assert.All(shrunk.Cells, c => Assert.True(c.Cell.X + c.Cell.Width <= shrunk.Width && c.Cell.Y + c.Cell.Height <= shrunk.Height));
+        Assert.True(shrunk.Cells.Zip(shrunk.Cells.Skip(1)).All(p => p.First.Cell.X + p.First.Cell.Width < p.Second.Cell.X));
+    }
+
+    [Fact]
+    public void Compose_two_line_alignment_scales_figures_to_the_same_height_and_puts_their_feet_on_one_line()
+    {
+        var spec = new ComposeSpec([new("a", 0.10, 0.90), new("b", 0.20, 0.60)]);
+        var result = ImageCompose.Layout(spec, [(2160, 3840), (2160, 3840)], 0);
+        var (a, b) = (result.Cells[0], result.Cells[1]);
+        Assert.Equal(1080d, a.Width, 6); // A is halved
+        Assert.Equal(1920d, a.Height, 6);
+        Assert.Equal((2160d, 3840d), (b.Width, b.Height)); // B is not scaled
+        Assert.Equal((0.90 - 0.10) * a.Height, (0.60 - 0.20) * b.Height, 6);
+        Assert.Equal(1536d, (0.90 - 0.10) * a.Height, 6);
+        Assert.Equal(2304d, a.Y - a.Cell.Y + 0.90 * a.Height, 6); // feet at y = 2304 inside the cell, both
+        Assert.Equal(2304d, b.Y - b.Cell.Y + 0.60 * b.Height, 6);
+        Assert.Equal(576d, a.Y - a.Cell.Y, 6);
+        Assert.Equal(3840, a.Cell.Height);
+        Assert.Equal(3840, b.Cell.Height);
+        // Cells follow the scaled widths.
+        Assert.Equal((1080, 2160), (a.Cell.Width, b.Cell.Width));
+
+        foreach (var bad in new ComposeSpec[]
+        {
+            new([new("a", 0.1, 0.9), new("b")]),                      // only one is marked
+            new([new("a", 0.9, 0.1), new("b", 0.2, 0.6)]),             // top below bottom
+            new([new("a", 0.5, 0.5), new("b", 0.2, 0.6)]),             // equal
+            new([new("a", -0.1, 0.9), new("b", 0.2, 0.6)]),
+            new([new("a", 0.1, 1.5), new("b", 0.2, 0.6)]),
+            new([new("a", double.NaN, 0.9), new("b", 0.2, 0.6)]),
+            new([new("a", 0.1, 0.9), new("b", 0.2, 0.6)], "column"),   // only a row aligns
+            new([new("a", 0.1, 0.9), new("b", 0.2, 0.6)], Fit: "width"),
+        })
+            Assert.Throws<ArgumentException>(() => ImageCompose.Layout(bad, [(100, 200), (100, 200)], 0));
+    }
+
+    [Fact]
+    public void Compose_spec_survives_json_and_bad_specs_are_named()
+    {
+        var spec = new ComposeSpec([new("a", 0.1, 0.9), new("b", 0.2, 0.6)], "row", 3, 10, 20, "#112233", "height");
+        var back = InfiniteCanvas.Core.Json.Deserialize<ComposeSpec>(InfiniteCanvas.Core.Json.Serialize(spec))!;
+        Assert.Equal(spec.Layout, back.Layout);
+        Assert.Equal((spec.Columns, spec.Gap, spec.Margin, spec.Background, spec.Fit), (back.Columns, back.Gap, back.Margin, back.Background, back.Fit));
+        Assert.Equal(spec.Cells, back.Cells);
+
+        Assert.Equal((255, 128, 0, 255), ImageCompose.ParseBackground("#FF8000") is { } c ? (c.R, c.G, c.B, c.A) : default);
+        Assert.Equal((byte)0, ImageCompose.ParseBackground("Transparent")!.Value.A);
+        Assert.All(new[] { "", "FF8000", "#FF80", "#GG0000", "red", "#FF8000FF" }, text => Assert.Null(ImageCompose.ParseBackground(text)));
+        Assert.Null(ImageCompose.ParseBackground(null));
+
+        Assert.Null(ImageCompose.Problem(Spec(2)));
+        Assert.NotNull(ImageCompose.Problem(Spec(1)));
+        Assert.NotNull(ImageCompose.Problem(Spec(2, "diagonal")));
+        Assert.NotNull(ImageCompose.Problem(Spec(2, fit: "both")));
+        Assert.NotNull(ImageCompose.Problem(Spec(2, gap: -1)));
+        Assert.NotNull(ImageCompose.Problem(Spec(2, margin: -1)));
+        Assert.NotNull(ImageCompose.Problem(Spec(2, columns: -1)));
+        Assert.NotNull(ImageCompose.Problem(Spec(2, background: "white")));
+        Assert.Throws<ArgumentException>(() => ImageCompose.Layout(Spec(2), [(10, 10)], 0));      // sizes do not match
+        Assert.Throws<ArgumentException>(() => ImageCompose.Layout(Spec(2), [(10, 10), (0, 10)], 0));
+    }
+
+    [Fact]
+    public void A_generated_output_does_not_inherit_the_composition_of_the_image_it_came_from()
+    {
+        var source = new CanvasNode { Kind = NodeKind.Image };
+        source.SetOption(NodeKeys.Compose, InfiniteCanvas.Core.Json.Serialize(Spec(2)));
+        source.SetOption("watermark", "true");
+        var output = new CanvasNode { Kind = NodeKind.Image };
+        var options = NodeKeys.OutputOptions(source, output);
+        Assert.DoesNotContain(NodeKeys.Compose, options.Keys);
+        Assert.Equal("true", options["watermark"]);
+        Assert.Contains(NodeKeys.Compose, NodeKeys.PerImage);
+    }
+
     private static CanvasNode Picture(string title, double x = 0, double y = 0, int naturalWidth = 0, int naturalHeight = 0) =>
         new() { Kind = NodeKind.Image, Title = title, X = x, Y = y, Width = 340, Height = 240, Content = title + ".png", NaturalWidth = naturalWidth, NaturalHeight = naturalHeight };
 

@@ -1385,6 +1385,8 @@ public sealed partial class CanvasView : UserControl
         }
         menu.Items.Add(Item("重命名", "", () => RenameAsync(node)));
         menu.Items.Add(Item("复制节点", "", Duplicate, "Ctrl+D"));
+        if (ComposeInputs() is { Count: >= 2 } composable) menu.Items.Add(Item("拼版…", "", () => TrackLocalAsync(() => ImageTools.ComposeAsync(this, composable))));
+        if (node.Kind == NodeKind.Image && node.Option(NodeKeys.Compose).Length > 0) menu.Items.Add(Item("按上次设置重新拼", "", () => TrackLocalAsync(() => ImageTools.RecomposeAsync(this, node))));
         if (_selected.Count > 1) menu.Items.Add(Item("编组", "", Group, "Ctrl+G"));
         if (node.Kind == NodeKind.Group || node.GroupId is not null) menu.Items.Add(Item("取消编组", "", Ungroup, "Ctrl+Shift+G"));
         if (node.Kind is NodeKind.Image or NodeKind.Video)
@@ -1854,6 +1856,21 @@ public sealed partial class CanvasView : UserControl
         }
         return new(ids, failed);
     }
+
+    /// <summary>Selected bitmap pictures a composition can take, left to right: cards that are shown (a collapsed batch gives its lead), no SVG.</summary>
+    private List<CanvasNode> ComposeInputs()
+    {
+        var hidden = Stacks.Hidden(Doc);
+        return Doc.Nodes.Where(n => _selected.Contains(n.Id) && n.Kind == NodeKind.Image && n.HasContent && !Media.IsSvg(n.Content) && !hidden.Contains(n))
+            .OrderBy(n => n.X + n.Width / 2).ThenBy(n => n.Y + n.Height / 2).ToList();
+    }
+
+    /// <summary>For agent tools: the same composition without a dialog; a failure is a tool error.</summary>
+    internal Task<(string Id, int Width, int Height, double Scale)> ComposeForAgentAsync(ComposeSpec spec) => IsClosing ? throw new McpException("画布正在关闭，请稍后重试") : TrackLocalAsync(async () =>
+    {
+        try { return await ImageTools.ComposeSpecAsync(this, spec); }
+        catch (InvalidOperationException ex) { throw new McpException(ex.Message); }
+    });
 
     /// <summary>Give a media node a new numbered copy of the file, keeping everything but the picture; the old file stays in the canvas folder. One undo step.</summary>
     internal Task ReplaceMediaAsync(CanvasNode node, string path) => IsClosing ? throw new McpException("画布正在关闭，请稍后重试") : TrackLocalAsync(async () =>
