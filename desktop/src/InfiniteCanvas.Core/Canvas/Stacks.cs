@@ -1,5 +1,8 @@
 namespace InfiniteCanvas.Core.Canvas;
 
+/// <summary>How the outputs of a batch sit once generated: gathered on one spot as a stack, or spread out in a row or a grid.</summary>
+public enum StackLayout { Stack, Row, Grid }
+
 /// <summary>
 /// Outputs of one batch generation share a stack ID. Collapsed (the default) they sit on one spot and only the lead card,
 /// the first member in document order, is shown; opened they spread into a grid from the lead's position.
@@ -51,10 +54,57 @@ public static class Stacks
     }
 
     /// <summary>Grid positions for an opened stack: about square, row by row from the lead's top-left, rows as tall as the tallest member.</summary>
-    public static List<(double X, double Y)> Grid(IReadOnlyList<CanvasNode> members)
+    public static List<(double X, double Y)> Grid(IReadOnlyList<CanvasNode> members, double gap = Gap)
     {
         var columns = (int)Math.Ceiling(Math.Sqrt(members.Count));
         var (width, height) = (members.Max(n => n.Width), members.Max(n => n.Height));
-        return members.Select((_, i) => (members[0].X + i % columns * (width + Gap), members[0].Y + i / columns * (height + Gap))).ToList();
+        return members.Select((_, i) => (members[0].X + i % columns * (width + gap), members[0].Y + i / columns * (height + gap))).ToList();
+    }
+
+    /// <summary>Row positions: one line from the lead's top-left, each member right of the previous one.</summary>
+    public static List<(double X, double Y)> Row(IReadOnlyList<CanvasNode> members, double gap = Gap)
+    {
+        var x = members[0].X;
+        return members.Select(n =>
+        {
+            var at = (x, members[0].Y);
+            x += n.Width + gap;
+            return at;
+        }).ToList();
+    }
+
+    /// <summary>The layout named by a tool argument (stack, row, grid; any case); null when it is none of them.</summary>
+    public static StackLayout? ParseLayout(string? text) => text?.Trim().ToLowerInvariant() switch { "stack" => StackLayout.Stack, "row" => StackLayout.Row, "grid" => StackLayout.Grid, _ => null };
+
+    /// <summary>
+    /// Mark the members as an opened stack and return where each one goes (row or grid from the lead's top-left); the caller moves them, at once or gliding.
+    /// The one place both the stack button and the agent tools open a stack, so they cannot disagree.
+    /// </summary>
+    public static List<(double X, double Y)> Open(IReadOnlyList<CanvasNode> members, StackLayout layout = StackLayout.Grid, double gap = Gap)
+    {
+        foreach (var member in members) member.SetOption(NodeKeys.StackOpen, "true");
+        return layout == StackLayout.Row ? Row(members, gap) : Grid(members, gap);
+    }
+
+    /// <summary>Gather an opened stack back onto its lead's spot at once and mark it collapsed.</summary>
+    public static void Collapse(IReadOnlyList<CanvasNode> members)
+    {
+        foreach (var member in members)
+        {
+            (member.X, member.Y) = (members[0].X, members[0].Y);
+            member.SetOption(NodeKeys.StackOpen, null);
+        }
+    }
+
+    /// <summary>
+    /// Make the outputs of a new batch one stack, then spread them when the run asked for a row or a grid. Only for nodes just created:
+    /// a retry of one failed output never comes through here, so members the user has moved stay where they are.
+    /// </summary>
+    public static void FormBatch(IReadOnlyList<CanvasNode> members, StackLayout layout, double gap)
+    {
+        Form(members);
+        if (layout == StackLayout.Stack || members.Count < 2) return;
+        var positions = Open(members, layout, gap);
+        for (var i = 0; i < members.Count; i++) (members[i].X, members[i].Y) = positions[i];
     }
 }

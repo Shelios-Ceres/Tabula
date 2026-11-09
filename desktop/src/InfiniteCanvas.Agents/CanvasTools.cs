@@ -55,11 +55,11 @@ public sealed record ImportResult(IReadOnlyList<string> Ids, IReadOnlyList<Impor
 /// <summary>One canvas_apply_ops step; fields not used by the op type are ignored.</summary>
 public sealed class CanvasOp
 {
-    [Description("add_node、update_node、delete_nodes、connect、disconnect、select、set_viewport、run_generation、group、ungroup、group_add、group_remove")]
+    [Description("add_node、update_node、delete_nodes、connect、disconnect、select、set_viewport、run_generation、group、ungroup、group_add、group_remove、stack_open、stack_close")]
     public string Type { get; set; } = "";
     [Description("add_node：给新节点起的临时名，本批后续操作可用它代替节点 ID")]
     public string? Ref { get; set; }
-    [Description("update_node / run_generation 的节点 ID（或本批的 ref）；group_add 的目标分组 ID（或本批的 ref）")]
+    [Description("update_node / run_generation 的节点 ID（或本批的 ref）；group_add 的目标分组 ID（或本批的 ref）；stack_open / stack_close 里这一批（摞）的任意一个成员的 ID")]
     public string? Id { get; set; }
     [Description("delete_nodes / select / group / ungroup / group_add / group_remove 的节点 ID 列表（ungroup 也可以直接给分组 ID）")]
     public List<string>? Ids { get; set; }
@@ -96,6 +96,10 @@ public sealed class CanvasOp
     public double? Zoom { get; set; }
     [Description("group_add / group_remove：是否按成员重算分组边界，默认 true")]
     public bool? Fit { get; set; }
+    [Description("add_node（count 大于 1 时）：这一批生成结果的排布，stack（默认，叠在一起）、row（横排）、grid（网格）；stack_open：row 或 grid，默认 grid")]
+    public string? Layout { get; set; }
+    [Description("add_node / stack_open：row、grid 排布时成员之间的间距（世界坐标），默认 24")]
+    public double? Gap { get; set; }
 }
 
 /// <summary>MCP tools over the open canvas.</summary>
@@ -107,7 +111,7 @@ public static class CanvasTools
         - canvas_get_state 默认不带提示词、文本正文和生成参数；要读这些用 canvas_get_node（或 detail=full）。画布很大时先用 rect 或 groupId 缩小范围。
         - 生成图片、文本或语音用 canvas_generate（这个版本不支持生成视频，视频节点只用来放导入的视频）：它会新建节点、连上参考节点并立刻开始生成。生成是异步的，用 generation_get_status 查看结果，不要在没有结果时声称已经完成。
         - 增删改节点、连线、选择和视口用 canvas_apply_ops，一次调用就是一步撤销。
-        - 需要看图片内容时用 canvas_get_image；资料库（这个画布自己的常用素材）用 library_list / library_place / library_add；编组用 canvas_apply_ops 的 group / ungroup，把节点加入或移出已有分组（分组 ID 和连线不变）用 group_add / group_remove。
+        - 需要看图片内容时用 canvas_get_image；资料库（这个画布自己的常用素材）用 library_list / library_place / library_add；一次生成多张时用 layout=row 或 grid 直接排开，已有的一批用 stack_open / stack_close 展开或收起；编组用 canvas_apply_ops 的 group / ungroup，把节点加入或移出已有分组（分组 ID 和连线不变）用 group_add / group_remove。
         - 节点 ID 只用工具返回的值，不要编造；模型 ID 只用 canvas_get_state.models 里列出的。
         """;
 
@@ -133,7 +137,7 @@ public static class CanvasTools
         McpServerTool.Create(([Description("按顺序执行的操作")] List<CanvasOp> ops) => host.OnUiAsync(() => Apply(host, ops)), new()
         {
             Name = "canvas_apply_ops", Destructive = true,
-            Description = "批量修改画布，整批算一步撤销。type 支持 add_node、update_node、delete_nodes、connect、disconnect、select、set_viewport、run_generation、group、ungroup、group_add、group_remove；add_node 可用 ref 给新节点起名，供本批后续操作引用。",
+            Description = "批量修改画布，整批算一步撤销。type 支持 add_node、update_node、delete_nodes、connect、disconnect、select、set_viewport、run_generation、group、ungroup、group_add、group_remove、stack_open、stack_close（展开 / 收起一批生成结果，stack_open 可选 layout=row|grid 和 gap）；add_node 可用 ref 给新节点起名，供本批后续操作引用。",
         }),
         McpServerTool.Create((
             [Description("image、text、audio")] string mode,
@@ -145,10 +149,12 @@ public static class CanvasTools
             string? quality = null,
             [Description("张数")] int? count = null,
             [Description("新节点左上角世界坐标，省略时自动放置")] double? x = null,
-            double? y = null) => host.OnUiAsync(() => Generate(host, mode, prompt, referenceNodeIds, model, ratio, size, quality, count, x, y)), new()
+            double? y = null,
+            [Description("张数大于 1 时这一批结果的排布：stack（默认，叠成一摞）、row（横排）、grid（网格）")] string? layout = null,
+            [Description("row / grid 排布时成员之间的间距（世界坐标），默认 24")] double? gap = null) => host.OnUiAsync(() => Generate(host, mode, prompt, referenceNodeIds, model, ratio, size, quality, count, x, y, layout, gap)), new()
         {
             Name = "canvas_generate",
-            Description = "新建一个生成节点（图片 / 文本 / 语音），连上参考节点并立刻开始生成，返回节点 ID。多张图会在旁边追加节点。",
+            Description = "新建一个生成节点（图片 / 文本 / 语音），连上参考节点并立刻开始生成，返回节点 ID。多张图默认叠成一摞，用 layout=row 或 grid 可直接排成横排或网格。",
         }),
         McpServerTool.Create(([Description("要生成的节点 ID")] string nodeId) => host.OnUiAsync(() => Run(host, Find(host, nodeId))), new()
         {
@@ -412,6 +418,19 @@ public static class CanvasTools
         if (width <= 0 || height <= 0) throw new McpException("节点宽度和高度必须大于 0");
     }
 
+    private static void ValidateLayout(string? layout, double? gap)
+    {
+        if (layout is not null && Stacks.ParseLayout(layout) is null) throw new McpException($"layout 只能是 stack、row 或 grid，收到「{layout}」");
+        if (gap is { } g && (!double.IsFinite(g) || g < 0)) throw new McpException("gap 必须是不小于 0 的有限数值");
+    }
+
+    /// <summary>Remember how the next batch from this node is laid out; the generator applies it when it creates the outputs.</summary>
+    private static void SetLayout(CanvasNode node, string? layout, double? gap)
+    {
+        if (layout is not null) node.SetOption(NodeKeys.Layout, Stacks.ParseLayout(layout) is StackLayout.Stack ? null : layout.Trim().ToLowerInvariant());
+        if (gap is { } g) node.SetOption(NodeKeys.Gap, g.ToString("R", System.Globalization.CultureInfo.InvariantCulture));
+    }
+
     private static void ValidateNodeOp(CanvasOp op, NodeKind kind)
     {
         ValidateGeometry(op.X, op.Y, op.Width, op.Height);
@@ -476,6 +495,7 @@ public static class CanvasTools
                     case "add_node":
                         var kind = ParseKind(op.Kind);
                         ValidateNodeOp(op, kind);
+                        ValidateLayout(op.Layout, op.Gap);
                         var node = Place(host, kind, op.X, op.Y);
                         if (op.Width is { } w) node.Width = w;
                         if (op.Height is { } h) node.Height = h;
@@ -484,6 +504,7 @@ public static class CanvasTools
                         if (kind == NodeKind.Text && op.Text is not null) node.Content = op.Text;
                         SetParams(node, op.Prompt, op.Model, op.Ratio, op.Size, op.Quality, op.Count);
                         foreach (var (key, value) in op.Options ?? []) node.SetOption(key, value);
+                        SetLayout(node, op.Layout, op.Gap);
                         if (op.Ref is not null) refs[op.Ref] = node.Id;
                         touched.Add(node);
                         results.Add(new { Index = index, node.Id, op.Ref });
@@ -556,6 +577,22 @@ public static class CanvasTools
                     case "group_remove":
                         results.Add(new { Index = index, Removed = host.RemoveFromGroup(GroupMembersOf(host, op, Resolve), op.Fit ?? true) });
                         break;
+                    case "stack_open":
+                    case "stack_close":
+                        var stackNode = Find(host, Resolve(op.Id));
+                        if (Stacks.Of(stackNode) is not { } stackId || Stacks.Members(doc, stackId) is not { Count: > 1 } stackMembers) throw new McpException("这个节点不在一批（摞）里，或这一批只有一个成员");
+                        if (op.Type == "stack_close") Stacks.Collapse(stackMembers);
+                        else
+                        {
+                            ValidateLayout(op.Layout, op.Gap);
+                            var layout = Stacks.ParseLayout(op.Layout) ?? StackLayout.Grid;
+                            if (layout == StackLayout.Stack) throw new McpException("stack_open 的 layout 只能是 row 或 grid；要收起用 stack_close");
+                            var positions = Stacks.Open(stackMembers, layout, op.Gap ?? Stacks.Gap);
+                            for (var i = 0; i < stackMembers.Count; i++) (stackMembers[i].X, stackMembers[i].Y) = positions[i];
+                        }
+                        touched.AddRange(stackMembers);
+                        results.Add(new { Index = index, StackId = stackId, Open = op.Type == "stack_open", Members = stackMembers.Select(m => m.Id).ToList() });
+                        break;
                     case "ungroup":
                         host.Ungroup((op.Ids ?? []).Select(Resolve).Where(id => doc.Find(id) is not null).ToList());
                         results.Add(new { Index = index, Ungrouped = true });
@@ -573,10 +610,11 @@ public static class CanvasTools
         return Json(new { Results = results });
     }
 
-    private static string Generate(ICanvasHost host, string mode, string prompt, List<string>? references, string? model, string? ratio, string? size, string? quality, int? count, double? x, double? y)
+    private static string Generate(ICanvasHost host, string mode, string prompt, List<string>? references, string? model, string? ratio, string? size, string? quality, int? count, double? x, double? y, string? layout, double? gap)
     {
         var capability = ParseMode(mode);
         ValidateGeometry(x, y);
+        ValidateLayout(layout, gap);
         ValidateModel(model);
         var inputs = (references ?? []).Select(id => Find(host, id)).ToList();
         host.RecordHistory();
@@ -588,7 +626,7 @@ public static class CanvasTools
             node.Y = inputs.Min(i => i.Y);
             node.X = CanvasGraph.FreeX(node, host.Document.Nodes.Where(n => n != node));
         }
-        try { SetParams(node, prompt, model, ratio, size, quality, count); }
+        try { SetParams(node, prompt, model, ratio, size, quality, count); SetLayout(node, layout, gap); }
         catch
         {
             host.Document.Nodes.Remove(node);
@@ -598,7 +636,7 @@ public static class CanvasTools
         host.Reveal([node]);
         if (host.CannotGenerate(node) is { } reason) throw new McpException($"节点已创建（{node.Id}），但无法开始生成：{reason}");
         host.Generate(node, recordHistory: false);
-        return Json(new { NodeId = node.Id, Started = true, Note = "生成是异步的，用 generation_get_status 查看结果；多张图会在旁边追加节点并从同样的输入连线。" });
+        return Json(new { NodeId = node.Id, Started = true, Note = "生成是异步的，用 generation_get_status 查看结果；多张图会在旁边追加节点并从同样的输入连线，按 layout 叠成一摞或排成横排 / 网格。" });
     }
 
     private static bool Run(ICanvasHost host, CanvasNode node, bool recordHistory = true)

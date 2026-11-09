@@ -853,6 +853,100 @@ public class AgentTests
         finally { if (Directory.Exists(folder)) Directory.Delete(folder, true); }
     }
 
+    private static (CanvasNode Lead, CanvasNode Second, CanvasNode Third) OpenAgentStack(FakeHost host)
+    {
+        var members = Enumerable.Range(0, 3).Select(_ => CanvasNode.Create(NodeKind.Image, 400, 300)).ToList();
+        foreach (var node in members) host.Document.Nodes.Add(node);
+        Stacks.Form(members);
+        return (members[0], members[1], members[2]);
+    }
+
+    [Fact]
+    public async Task Generate_and_add_node_remember_the_layout_and_gap_and_reject_bad_values_before_creating_anything()
+    {
+        var host = new FakeHost();
+        await using var session = await Session.StartAsync(host);
+
+        var row = Parse((await session.CallAsync("canvas_generate", new() { ["mode"] = "image", ["prompt"] = "猫", ["count"] = 4, ["layout"] = "row", ["gap"] = 10d })).Text);
+        var node = host.Document.Find(row.GetProperty("nodeId").GetString()!)!;
+        Assert.Equal(("row", "10"), (node.Option(NodeKeys.Layout), node.Option(NodeKeys.Gap)));
+        Assert.Equal(1, host.Records);
+
+        await session.CallAsync("canvas_generate", new() { ["mode"] = "image", ["prompt"] = "狗", ["layout"] = "STACK" });
+        Assert.Equal("", host.Document.Nodes.Last().Option(NodeKeys.Layout));
+
+        var before = host.Document.Nodes.Count;
+        foreach (var args in new Dictionary<string, object?>[] { new() { ["layout"] = "circle" }, new() { ["layout"] = "grid", ["gap"] = -1d }, new() { ["gap"] = -5d } })
+        {
+            args["mode"] = "image";
+            args["prompt"] = "x";
+            Assert.True((await session.CallAsync("canvas_generate", args)).IsError);
+        }
+        Assert.Equal((before, 2), (host.Document.Nodes.Count, host.Records));
+
+        var result = Parse(CanvasTools.Apply(host,
+        [
+            new CanvasOp { Type = "add_node", Kind = "image", Count = 4, Layout = "grid", Gap = 40, Prompt = "x" },
+            new CanvasOp { Type = "add_node", Kind = "image", Layout = "diagonal" },
+            new CanvasOp { Type = "add_node", Kind = "image", Gap = double.PositiveInfinity },
+        ]));
+        var results = result.GetProperty("results").EnumerateArray().ToList();
+        var added = host.Document.Find(results[0].GetProperty("id").GetString()!)!;
+        Assert.Equal(("grid", "40"), (added.Option(NodeKeys.Layout), added.Option(NodeKeys.Gap)));
+        Assert.True(results[1].TryGetProperty("error", out _) && results[2].TryGetProperty("error", out _));
+        Assert.Equal(before + 1, host.Document.Nodes.Count);
+    }
+
+    [Fact]
+    public void Stack_open_and_close_lay_out_an_existing_batch_in_one_undo_step()
+    {
+        var host = new FakeHost();
+        var (lead, second, third) = OpenAgentStack(host);
+        var start = (lead.X, lead.Y);
+
+        var grid = Parse(CanvasTools.Apply(host, [new CanvasOp { Type = "stack_open", Id = second.Id }]));
+        Assert.Equal(1, host.Records);
+        Assert.True(grid.GetProperty("results")[0].GetProperty("open").GetBoolean());
+        Assert.Equal(Stacks.Grid([lead, second, third]), new[] { lead, second, third }.Select(n => (n.X, n.Y)));
+        Assert.All(new[] { lead, second, third }, n => Assert.True(Stacks.IsOpen(n)));
+
+        CanvasTools.Apply(host, [new CanvasOp { Type = "stack_open", Id = lead.Id, Layout = "row", Gap = 5 }]);
+        Assert.Equal(Stacks.Row([lead, second, third], 5), new[] { lead, second, third }.Select(n => (n.X, n.Y)));
+
+        CanvasTools.Apply(host, [new CanvasOp { Type = "stack_close", Id = third.Id }]);
+        Assert.All(new[] { lead, second, third }, n => Assert.Equal((start.X, start.Y, false), (n.X, n.Y, Stacks.IsOpen(n))));
+
+        Assert.Equal(3, host.Records);
+        Assert.True(host.History.Undo());
+        Assert.Equal(Stacks.Row([host.Document.Find(lead.Id)!, host.Document.Find(second.Id)!, host.Document.Find(third.Id)!], 5), new[] { lead.Id, second.Id, third.Id }.Select(id => host.Document.Find(id)!).Select(n => (n.X, n.Y)));
+        Assert.All(new[] { lead.Id, second.Id, third.Id }, id => Assert.True(Stacks.IsOpen(host.Document.Find(id)!)));
+    }
+
+    [Fact]
+    public void Stack_ops_reject_loose_nodes_one_member_stacks_and_bad_arguments_without_changing_the_document()
+    {
+        var host = new FakeHost();
+        var (lead, _, _) = OpenAgentStack(host);
+        var loose = CanvasNode.Create(NodeKind.Image, 0, 0);
+        var single = CanvasNode.Create(NodeKind.Image, 0, 0);
+        single.SetOption(NodeKeys.Stack, single.Id);
+        host.Document.Nodes.Add(loose);
+        host.Document.Nodes.Add(single);
+        var original = host.Document.Nodes.Select(n => InfiniteCanvas.Core.Json.Serialize(n)).ToList();
+
+        var result = Parse(CanvasTools.Apply(host,
+        [
+            new CanvasOp { Type = "stack_open", Id = loose.Id },
+            new CanvasOp { Type = "stack_close", Id = single.Id },
+            new CanvasOp { Type = "stack_open", Id = "missing" },
+            new CanvasOp { Type = "stack_open", Id = lead.Id, Layout = "stack" },
+            new CanvasOp { Type = "stack_open", Id = lead.Id, Layout = "spiral" },
+            new CanvasOp { Type = "stack_open", Id = lead.Id, Gap = -1 },
+        ]));
+        Assert.All(result.GetProperty("results").EnumerateArray(), r => Assert.True(r.TryGetProperty("error", out _)));
+        Assert.Equal(original, host.Document.Nodes.Select(n => InfiniteCanvas.Core.Json.Serialize(n)).ToList());
+    }
+
     [Fact]
     public async Task Async_tools_do_not_mix_canvases_between_ui_dispatches()
     {

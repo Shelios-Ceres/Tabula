@@ -15,6 +15,73 @@ internal static class TestEnvironment
 
 public class CoreTests
 {
+    private static List<CanvasNode> Batch(int count, double x = 100, double y = 50)
+    {
+        var members = Enumerable.Range(0, count).Select(i => CanvasNode.Create(NodeKind.Image, 0, 0)).ToList();
+        for (var i = 0; i < count; i++) (members[i].X, members[i].Y, members[i].Width, members[i].Height) = (x, y, 200 + i * 20, 100);
+        Stacks.Form(members);
+        return members;
+    }
+
+    [Theory]
+    [InlineData("stack", StackLayout.Stack)]
+    [InlineData(" ROW ", StackLayout.Row)]
+    [InlineData("Grid", StackLayout.Grid)]
+    [InlineData("1", null)]
+    [InlineData("row,grid", null)]
+    [InlineData("", null)]
+    [InlineData(null, null)]
+    public void Stack_layouts_parse_only_their_three_names(string? text, StackLayout? expected) => Assert.Equal(expected, Stacks.ParseLayout(text));
+
+    [Fact]
+    public void Row_and_grid_lay_members_out_from_the_lead_with_the_given_gap()
+    {
+        var members = Batch(4);
+        Assert.Equal([(100d, 50d), (324d, 50d), (568d, 50d), (832d, 50d)], Stacks.Row(members, 24));
+        Assert.Equal([(100d, 50d), (330d, 50d), (560d, 50d), (790d, 50d)], Stacks.Row(members.Take(1).Concat(Enumerable.Range(0, 3).Select(_ => { var n = CanvasNode.Create(NodeKind.Image, 0, 0); (n.Width, n.Height) = (200, 100); return n; })).ToList(), 30));
+        var grid = Stacks.Grid(members, 10);
+        Assert.Equal([(100d, 50d), (100 + 260d + 10, 50d), (100d, 50 + 100d + 10), (100 + 260d + 10, 50 + 100d + 10)], grid);
+        Assert.Equal(Stacks.Grid(members), Stacks.Grid(members, Stacks.Gap));
+    }
+
+    [Fact]
+    public void Open_marks_the_stack_open_and_returns_the_same_grid_the_stack_button_uses_and_Collapse_undoes_it()
+    {
+        var members = Batch(3);
+        var expected = Stacks.Grid(members);
+        Assert.Equal(expected, Stacks.Open(members));
+        Assert.All(members, n => Assert.True(Stacks.IsOpen(n)));
+        for (var i = 0; i < members.Count; i++) (members[i].X, members[i].Y) = expected[i];
+        Stacks.Collapse(members);
+        Assert.All(members, n => Assert.Equal((members[0].X, members[0].Y, false), (n.X, n.Y, Stacks.IsOpen(n))));
+        Assert.Equal((100d, 50d), (members[2].X, members[2].Y));
+    }
+
+    [Fact]
+    public void FormBatch_spreads_only_the_new_nodes_and_leaves_a_stack_the_user_arranged_alone()
+    {
+        var earlier = Batch(3, 2000, 2000);
+        Stacks.Open(earlier);
+        (earlier[1].X, earlier[1].Y) = (2500, 2600);
+        var moved = (earlier[1].X, earlier[1].Y);
+
+        var row = Batch(3);
+        foreach (var node in row) { node.SetOption(NodeKeys.Stack, null); (node.X, node.Y) = (100, 50); }
+        Stacks.FormBatch(row, StackLayout.Row, 12);
+        Assert.All(row, n => Assert.True(Stacks.IsOpen(n)));
+        Assert.Equal(Stacks.Row(row, 12), row.Select(n => (n.X, n.Y)));
+        Assert.Equal(row[0].Id, Stacks.Of(row[2]));
+
+        var collapsed = Batch(3, 700, 700);
+        foreach (var node in collapsed) { node.SetOption(NodeKeys.Stack, null); (node.X, node.Y) = (700, 700); }
+        Stacks.FormBatch(collapsed, StackLayout.Stack, 99);
+        Assert.All(collapsed, n => Assert.Equal((700d, 700d, false), (n.X, n.Y, Stacks.IsOpen(n))));
+
+        Assert.Equal(moved, (earlier[1].X, earlier[1].Y));
+        Assert.Contains(NodeKeys.Layout, NodeKeys.PerImage);
+        Assert.Contains(NodeKeys.Gap, NodeKeys.PerImage);
+    }
+
     private static (string Id, string Dir, string Source) LibrarySandbox()
     {
         var id = "lib-test-" + Guid.NewGuid().ToString("N")[..8];

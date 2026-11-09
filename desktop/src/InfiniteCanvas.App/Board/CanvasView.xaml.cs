@@ -432,8 +432,7 @@ public sealed partial class CanvasView : UserControl
         History.Record();
         if (!Stacks.IsOpen(node))
         {
-            foreach (var member in members) member.SetOption(NodeKeys.StackOpen, "true");
-            var grid = Stacks.Grid(members);
+            var grid = Stacks.Open(members);
             Move(members.Select((m, i) => (m, grid[i].X, grid[i].Y)).ToList(), null);
             EnsureVisible(new Rect(grid.Min(g => g.X), grid.Min(g => g.Y), grid.Max(g => g.X) + members.Max(m => m.Width), grid.Max(g => g.Y) + members.Max(m => m.Height)));
             return;

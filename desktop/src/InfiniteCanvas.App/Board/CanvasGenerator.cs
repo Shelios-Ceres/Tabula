@@ -287,8 +287,8 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
             // Outputs remember their source so a failed one can be retried later without a prompt of its own.
             if (target != source && !sibling) target.SetOption(NodeKeys.SourceId, source.Id);
         }
-        // A batch stays one card on the canvas until the user opens it.
-        Stacks.Form(targets);
+        // A batch stays one card on the canvas until the user opens it, unless the run asked for a row or a grid.
+        Stacks.FormBatch(targets, Stacks.ParseLayout(settings.Option(NodeKeys.Layout)) ?? StackLayout.Stack, double.TryParse(settings.Option(NodeKeys.Gap), System.Globalization.CultureInfo.InvariantCulture, out var gap) ? gap : Stacks.Gap);
         return targets;
     }
 

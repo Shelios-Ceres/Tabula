@@ -30,7 +30,10 @@ public static class NodeKeys
     public const string Stack = "stack";
     public const string StackOpen = "stackOpen";
 
-    public static readonly string[] PerImage = [Mask, Markup, Selections, ConversationId, ConversationModel, ModelText, InputNote, SourceId, Stack, StackOpen];
+    /// <summary>How the next batch from this node is laid out (stack, row, grid) and the gap between its members; a property of the run, so outputs never inherit it.</summary>
+    public const string Layout = "layout", Gap = "gap";
+
+    public static readonly string[] PerImage = [Mask, Markup, Selections, ConversationId, ConversationModel, ModelText, InputNote, SourceId, Stack, StackOpen, Layout, Gap];
 
     public static List<ImageSelection> SelectionsOf(CanvasNode node) =>
         node.Option(Selections) is { Length: > 0 } json ? Json.Deserialize<List<ImageSelection>>(json) ?? [] : [];
