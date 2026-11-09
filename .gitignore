@@ -13,3 +13,5 @@ data/
 .mcp.json
 # Claude Code local settings and worktrees (machine-specific)
 .claude/
+# Private multi-session workflow notes (queue, roles, review log)
+notes/
