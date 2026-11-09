@@ -1180,6 +1180,162 @@ public class AgentTests
     }
 
     [Fact]
+    public void Keep_one_keeps_the_chosen_card_moves_the_connections_and_group_over_and_is_one_undo_step()
+    {
+        var host = new FakeHost();
+        var group = new CanvasNode { Kind = NodeKind.Group, Title = "分镜" };
+        var (lead, second, third) = OpenAgentStack(host);
+        var (input, config) = (new CanvasNode { Kind = NodeKind.Text, Title = "说明", Content = "文字" }, new CanvasNode { Kind = NodeKind.Config, Title = "配置" });
+        host.Document.Nodes.Insert(0, group);
+        host.Document.Nodes.Add(input);
+        host.Document.Nodes.Add(config);
+        foreach (var node in new[] { lead, second, third }) node.GroupId = group.Id;
+        host.Document.Connections.Add(CanvasConnection.Create(input.Id, lead.Id));
+        host.Document.Connections.Add(CanvasConnection.Create(lead.Id, config.Id));
+
+        var result = Parse(CanvasTools.Apply(host, [new CanvasOp { Type = "keep_one", Id = third.Id }]));
+
+        Assert.Equal(1, host.Records);
+        Assert.Equal([lead.Id, second.Id], result.GetProperty("results")[0].GetProperty("removed").EnumerateArray().Select(e => e.GetString()!).ToArray());
+        Assert.Equal([third.Id], host.Document.Nodes.Where(n => n.Kind == NodeKind.Image).Select(n => n.Id).ToArray());
+        Assert.Null(Stacks.Of(third));
+        Assert.Equal(group.Id, third.GroupId);
+        Assert.NotNull(host.Document.Find(group.Id)); // the group stays, with the kept card in it
+        Assert.Equal([(input.Id, third.Id), (third.Id, config.Id)], host.Document.Connections.Select(c => (c.From, c.To)).Order());
+
+        Assert.True(host.History.Undo());
+        Assert.Equal(3, host.Document.Nodes.Count(n => n.Kind == NodeKind.Image));
+        Assert.All(host.Document.Nodes.Where(n => n.Kind == NodeKind.Image), n => Assert.Equal(lead.Id, Stacks.Of(n)));
+        Assert.Equal(2, host.Document.Connections.Count);
+        Assert.Contains(host.Document.Connections, c => c.From == input.Id && c.To == lead.Id);
+        Assert.False(host.History.CanUndo);
+    }
+
+    [Fact]
+    public void Keep_one_on_a_collapsed_stack_does_not_take_the_kept_card_along_and_bad_input_changes_nothing()
+    {
+        var host = new FakeHost();
+        var (lead, second, _) = OpenAgentStack(host);
+        var loose = CanvasNode.Create(NodeKind.Image, 0, 0);
+        host.Document.Nodes.Add(loose);
+        var original = host.Document.Nodes.Select(n => InfiniteCanvas.Core.Json.Serialize(n)).ToList();
+
+        var bad = Parse(CanvasTools.Apply(host, [new CanvasOp { Type = "keep_one", Id = loose.Id }, new CanvasOp { Type = "keep_one", Id = "missing" }]));
+        Assert.All(bad.GetProperty("results").EnumerateArray(), r => Assert.True(r.TryGetProperty("error", out _)));
+        Assert.Equal(original, host.Document.Nodes.Select(n => InfiniteCanvas.Core.Json.Serialize(n)).ToList());
+
+        // Keeping the lead of a collapsed stack: the others go, the lead survives although it was the one the stack hung on.
+        CanvasTools.Apply(host, [new CanvasOp { Type = "keep_one", Id = lead.Id }]);
+        Assert.Equal(new[] { lead.Id, loose.Id }, host.Document.Nodes.Select(n => n.Id).ToArray());
+        Assert.DoesNotContain(second, host.Document.Nodes);
+    }
+
+    [Fact]
+    public async Task Promote_takes_the_old_picture_s_place_and_connections_and_replaces_its_library_file_only_when_asked()
+    {
+        var host = new FakeHost();
+        var folder = Path.GetDirectoryName(ProjectStore.LibraryDir(host.Document.Id))!;
+        try
+        {
+            Directory.CreateDirectory(ProjectStore.AssetsDir(host.Document.Id));
+            Directory.CreateDirectory(ProjectStore.LibraryDir(host.Document.Id));
+            await File.WriteAllBytesAsync(ProjectStore.AssetPath(host.Document.Id, "图片-002.png"), [2]);
+            await File.WriteAllBytesAsync(Path.Combine(ProjectStore.LibraryDir(host.Document.Id), "定稿正面.png"), [1]);
+            var group = new CanvasNode { Kind = NodeKind.Group, Title = "定稿" };
+            var old = new CanvasNode { Kind = NodeKind.Image, Title = "定稿正面", X = 800, Y = 100, Width = 300, Height = 400, Content = "图片-001.png", GroupId = group.Id };
+            var fresh = new CanvasNode { Kind = NodeKind.Image, Title = "图片-002", X = 0, Y = 0, Width = 340, Height = 240, Content = "图片-002.png", NaturalWidth = 1000, NaturalHeight = 500 };
+            var input = new CanvasNode { Kind = NodeKind.Text, Title = "输入", Content = "x" };
+            foreach (var node in new[] { group, old, fresh, input }) host.Document.Nodes.Add(node);
+            host.Document.Connections.Add(CanvasConnection.Create(input.Id, old.Id));
+
+            // Without the library switch the library is left alone.
+            var plain = Parse(CanvasTools.Apply(host, [new CanvasOp { Type = "promote", Id = fresh.Id, Replaces = old.Id }]));
+            Assert.Equal(1, host.Records);
+            Assert.Null(host.Document.Find(old.Id));
+            Assert.Equal((800d, 100d, 300d, 150d, "定稿正面", group.Id), (fresh.X, fresh.Y, fresh.Width, fresh.Height, fresh.Title, fresh.GroupId));
+            Assert.Equal([(input.Id, fresh.Id)], host.Document.Connections.Select(c => (c.From, c.To)).ToList());
+            Assert.False(plain.GetProperty("results")[0].TryGetProperty("library", out _));
+            Assert.Equal([1], await File.ReadAllBytesAsync(Path.Combine(ProjectStore.LibraryDir(host.Document.Id), "定稿正面.png")));
+            Assert.True(File.Exists(ProjectStore.AssetPath(host.Document.Id, "图片-002.png")));
+            Assert.True(host.History.Undo());
+            Assert.NotNull(host.Document.Find(old.Id));
+            Assert.Equal((0d, 0d), (host.Document.Find(fresh.Id)!.X, host.Document.Find(fresh.Id)!.Y));
+
+            // With it, the library file named after the old picture takes the new content.
+            var done = Parse(CanvasTools.Apply(host, [new CanvasOp { Type = "promote", Id = fresh.Id, Replaces = old.Id, Library = true }]));
+            Assert.Equal("定稿正面.png", done.GetProperty("results")[0].GetProperty("library").GetProperty("file").GetString());
+            Assert.Equal([2], await File.ReadAllBytesAsync(Path.Combine(ProjectStore.LibraryDir(host.Document.Id), "定稿正面.png")));
+        }
+        finally { if (Directory.Exists(folder)) Directory.Delete(folder, true); }
+    }
+
+    [Fact]
+    public async Task Promote_with_a_library_that_cannot_be_replaced_fails_whole_and_a_missing_library_file_is_only_noted()
+    {
+        var host = new FakeHost();
+        var folder = Path.GetDirectoryName(ProjectStore.LibraryDir(host.Document.Id))!;
+        try
+        {
+            Directory.CreateDirectory(ProjectStore.AssetsDir(host.Document.Id));
+            Directory.CreateDirectory(ProjectStore.LibraryDir(host.Document.Id));
+            await File.WriteAllBytesAsync(ProjectStore.AssetPath(host.Document.Id, "图片-002.png"), [2]);
+            var locked = Path.Combine(ProjectStore.LibraryDir(host.Document.Id), "旧图.png");
+            await File.WriteAllBytesAsync(locked, [1]);
+            var old = new CanvasNode { Kind = NodeKind.Image, Title = "旧图", X = 800, Content = "图片-001.png", Width = 300, Height = 400 };
+            var fresh = new CanvasNode { Kind = NodeKind.Image, Title = "图片-002", Content = "图片-002.png", Width = 340, Height = 240 };
+            host.Document.Nodes.Add(old);
+            host.Document.Nodes.Add(fresh);
+            var original = host.Document.Nodes.Select(n => InfiniteCanvas.Core.Json.Serialize(n)).ToList();
+
+            await using (new FileStream(locked, FileMode.Open, FileAccess.Read, FileShare.None))
+            {
+                var failed = Parse(CanvasTools.Apply(host, [new CanvasOp { Type = "promote", Id = fresh.Id, Replaces = old.Id, Library = true }]));
+                Assert.Contains("占用", failed.GetProperty("results")[0].GetProperty("error").GetString());
+            }
+            Assert.Equal(original, host.Document.Nodes.Select(n => InfiniteCanvas.Core.Json.Serialize(n)).ToList());
+            Assert.Equal([1], await File.ReadAllBytesAsync(locked));
+
+            // Not in the library at all: the canvas part still happens and the result says so.
+            File.Delete(locked);
+            var noted = Parse(CanvasTools.Apply(host, [new CanvasOp { Type = "promote", Id = fresh.Id, Replaces = old.Id, Library = true }]));
+            Assert.False(noted.GetProperty("results")[0].GetProperty("library").GetProperty("replaced").GetBoolean());
+            Assert.Null(host.Document.Find(old.Id));
+        }
+        finally { if (Directory.Exists(folder)) Directory.Delete(folder, true); }
+    }
+
+    [Fact]
+    public void Promote_rejects_bad_input_without_changing_the_document_and_resolves_refs_in_one_batch()
+    {
+        var host = new FakeHost();
+        var (old, fresh) = (new CanvasNode { Kind = NodeKind.Image, Title = "旧", Content = "a.png", Width = 300, Height = 200 }, new CanvasNode { Kind = NodeKind.Image, Title = "新", Content = "b.png", Width = 340, Height = 240 });
+        var text = CanvasNode.Create(NodeKind.Text, 0, 0);
+        var (a, b) = (CanvasNode.Create(NodeKind.Image, 0, 0), CanvasNode.Create(NodeKind.Image, 0, 0));
+        foreach (var node in new[] { old, fresh, text, a, b }) host.Document.Nodes.Add(node);
+        Stacks.Form([a, b]);
+        var original = host.Document.Nodes.Select(n => InfiniteCanvas.Core.Json.Serialize(n)).ToList();
+
+        var result = Parse(CanvasTools.Apply(host,
+        [
+            new CanvasOp { Type = "promote", Id = fresh.Id, Replaces = fresh.Id },
+            new CanvasOp { Type = "promote", Id = text.Id, Replaces = old.Id },
+            new CanvasOp { Type = "promote", Id = fresh.Id, Replaces = text.Id },
+            new CanvasOp { Type = "promote", Id = fresh.Id, Replaces = a.Id },
+            new CanvasOp { Type = "promote", Id = "missing", Replaces = old.Id },
+            new CanvasOp { Type = "promote", Id = fresh.Id },
+        ]));
+        Assert.All(result.GetProperty("results").EnumerateArray(), r => Assert.True(r.TryGetProperty("error", out _)));
+        Assert.Equal(original, host.Document.Nodes.Select(n => InfiniteCanvas.Core.Json.Serialize(n)).ToList());
+
+        var refs = Parse(CanvasTools.Apply(host,
+        [
+            new CanvasOp { Type = "add_node", Kind = "image", Ref = "final", Width = 200, Height = 100 },
+            new CanvasOp { Type = "update_node", Id = "final", Title = "稿" },
+        ]));
+        Assert.Equal(2, refs.GetProperty("results").GetArrayLength());
+    }
+
+    [Fact]
     public async Task Async_tools_do_not_mix_canvases_between_ui_dispatches()
     {
         var host = new FakeHost();

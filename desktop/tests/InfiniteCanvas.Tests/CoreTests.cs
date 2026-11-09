@@ -26,6 +26,168 @@ internal static class TestEnvironment
 
 public class CoreTests
 {
+    private static CanvasNode Picture(string title, double x = 0, double y = 0, int naturalWidth = 0, int naturalHeight = 0) =>
+        new() { Kind = NodeKind.Image, Title = title, X = x, Y = y, Width = 340, Height = 240, Content = title + ".png", NaturalWidth = naturalWidth, NaturalHeight = naturalHeight };
+
+    private static void Link(CanvasDocument doc, CanvasNode from, CanvasNode to) => doc.Connections.Add(CanvasConnection.Create(from.Id, to.Id));
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Keep_one_moves_the_batch_connections_to_the_kept_card_and_returns_the_others_to_delete(bool open)
+    {
+        var doc = new CanvasDocument();
+        var (lead, second, third) = (Picture("正面", 100, 50), Picture("二", 100, 50), Picture("三", 100, 50));
+        lead.Content = "图片-001.png"; // its file's number is not its title, so the batch has been named
+        var (input, extra, config, group) = (new CanvasNode { Kind = NodeKind.Text, Title = "说明" }, new CanvasNode { Kind = NodeKind.Text, Title = "第二个输入" }, new CanvasNode { Kind = NodeKind.Config, Title = "配置" }, new CanvasNode { Kind = NodeKind.Group, Title = "组" });
+        foreach (var node in new[] { group, input, extra, config, lead, second, third }) doc.Nodes.Add(node);
+        Stacks.Form([lead, second, third]);
+        lead.GroupId = group.Id;
+        if (open) foreach (var node in new[] { lead, second, third }) node.SetOption(NodeKeys.StackOpen, "true");
+        Link(doc, input, lead); Link(doc, input, second); Link(doc, input, third); // every member shares the inputs
+        Link(doc, extra, lead);                                                    // only the lead has this one
+        Link(doc, lead, config);                                                   // and an output
+        Link(doc, third, config);
+        Link(doc, second, third);                                                  // between members: gone with them
+
+        var removed = Picks.KeepOne(doc, second.Id);
+
+        Assert.Equal([lead.Id, third.Id], removed);
+        Assert.Null(Stacks.Of(second));
+        Assert.False(Stacks.IsOpen(second));
+        Assert.Equal((100d, 50d, group.Id, "正面"), (second.X, second.Y, second.GroupId, second.Title));
+        var kept = doc.Connections.Where(c => c.From == second.Id || c.To == second.Id).Select(c => (c.From, c.To)).ToList();
+        Assert.Equal(1, kept.Count(c => c == (input.Id, second.Id)));
+        Assert.Contains((extra.Id, second.Id), kept);
+        Assert.Equal(1, kept.Count(c => c == (second.Id, config.Id)));
+        // The connection between two members was not copied to the kept card; the one it already has to the removed third stays until that is deleted.
+        Assert.Equal(4, kept.Count);
+        Assert.DoesNotContain(kept, c => c.From == lead.Id || c.To == lead.Id);
+        // Nothing was deleted here: the caller removes the returned nodes, files stay on disk.
+        Assert.Contains(lead, doc.Nodes);
+    }
+
+    [Fact]
+    public void Keep_one_on_the_lead_keeps_its_place_and_does_not_rename_a_batch_still_called_after_its_file()
+    {
+        var doc = new CanvasDocument();
+        var (lead, second) = (Picture("图片-001", 10, 20), Picture("图片-002", 10, 20));
+        (lead.Title, second.Title) = ("图片-001", "改过名");
+        doc.Nodes.Add(lead); doc.Nodes.Add(second);
+        Stacks.Form([lead, second]);
+        Assert.Equal([second.Id], Picks.KeepOne(doc, lead.Id));
+        Assert.Equal(("图片-001", 10d, 20d), (lead.Title, lead.X, lead.Y));
+        Assert.Null(Stacks.Of(lead));
+
+        // A lead that kept its file-number title does not pass it on.
+        var again = new CanvasDocument();
+        var (a, b) = (Picture("图片-001"), Picture("图片-002"));
+        (b.Title, a.Title) = ("我的名字", "图片-001");
+        again.Nodes.Add(a); again.Nodes.Add(b);
+        Stacks.Form([a, b]);
+        Picks.KeepOne(again, b.Id);
+        Assert.Equal("我的名字", b.Title);
+    }
+
+    [Fact]
+    public void Keep_one_refuses_a_loose_node_and_a_stack_of_one()
+    {
+        var doc = new CanvasDocument();
+        var (loose, single) = (Picture("a"), Picture("b"));
+        single.SetOption(NodeKeys.Stack, single.Id);
+        doc.Nodes.Add(loose); doc.Nodes.Add(single);
+        Assert.Throws<ArgumentException>(() => Picks.KeepOne(doc, loose.Id));
+        Assert.Throws<ArgumentException>(() => Picks.KeepOne(doc, single.Id));
+        Assert.Throws<ArgumentException>(() => Picks.KeepOne(doc, "missing"));
+    }
+
+    [Fact]
+    public void Promote_puts_the_picture_in_the_old_ones_place_with_its_title_group_and_connections()
+    {
+        var doc = new CanvasDocument();
+        var (old, fresh, input, other, group) = (Picture("正面·定稿", 500, 400), Picture("新图", 2000, 0, 1000, 1500), new CanvasNode { Kind = NodeKind.Text, Title = "输入" }, Picture("下游", 900, 400), new CanvasNode { Kind = NodeKind.Group, Title = "定稿" });
+        old.GroupId = group.Id;
+        foreach (var node in new[] { group, input, other, old, fresh }) doc.Nodes.Add(node);
+        Link(doc, input, old); Link(doc, input, fresh); Link(doc, old, other); Link(doc, old, fresh);
+
+        var removed = Picks.Promote(doc, fresh.Id, old.Id);
+
+        Assert.Equal([old.Id], removed);
+        Assert.Equal((500d, 400d, 340d, 510d), (fresh.X, fresh.Y, fresh.Width, fresh.Height)); // 340 x 1500 / 1000
+        Assert.Equal(("正面·定稿", group.Id), (fresh.Title, fresh.GroupId));
+        var links = doc.Connections.Where(c => c.From == fresh.Id || c.To == fresh.Id).Select(c => (c.From, c.To)).ToList();
+        Assert.Equal(1, links.Count(c => c == (input.Id, fresh.Id)));
+        Assert.Contains((fresh.Id, other.Id), links);
+        Assert.DoesNotContain(links, c => c.From == fresh.Id && c.To == fresh.Id);
+        Assert.Contains(old, doc.Nodes);
+
+        // A picture taken out of a batch leaves it, and the batch stays.
+        var (a, b, c2) = (Picture("A", 0, 0), Picture("B", 0, 0), Picture("C", 0, 0));
+        var target = Picture("旧定稿", 50, 50);
+        foreach (var node in new[] { a, b, c2, target }) doc.Nodes.Add(node);
+        Stacks.Form([a, b, c2]);
+        Picks.Promote(doc, b.Id, target.Id);
+        Assert.Null(Stacks.Of(b));
+        Assert.Equal(2, Stacks.Members(doc, a.Id).Count);
+    }
+
+    [Fact]
+    public void Promote_refuses_what_it_cannot_do_and_changes_nothing_when_it_does()
+    {
+        var doc = new CanvasDocument();
+        var (old, fresh, empty, text, a, b) = (Picture("旧"), Picture("新"), new CanvasNode { Kind = NodeKind.Image, Title = "空" }, new CanvasNode { Kind = NodeKind.Text, Title = "文" }, Picture("A"), Picture("B"));
+        foreach (var node in new[] { old, fresh, empty, text, a, b }) doc.Nodes.Add(node);
+        Stacks.Form([a, b]);
+        var before = doc.Nodes.Select(n => InfiniteCanvas.Core.Json.Serialize(n)).ToList();
+
+        Assert.Throws<ArgumentException>(() => Picks.Promote(doc, old.Id, old.Id));
+        Assert.Throws<ArgumentException>(() => Picks.Promote(doc, empty.Id, old.Id));   // nothing to promote
+        Assert.Throws<ArgumentException>(() => Picks.Promote(doc, text.Id, old.Id));
+        Assert.Throws<ArgumentException>(() => Picks.Promote(doc, fresh.Id, text.Id));
+        Assert.Throws<ArgumentException>(() => Picks.Promote(doc, fresh.Id, a.Id));     // would take a whole batch along
+        Assert.Throws<ArgumentException>(() => Picks.Promote(doc, "missing", old.Id));
+        Assert.True(Picks.CheckPromote(doc, fresh.Id, old.Id));
+        Assert.Equal(before, doc.Nodes.Select(n => InfiniteCanvas.Core.Json.Serialize(n)).ToList());
+    }
+
+    [Fact]
+    public async Task Finalising_replaces_the_library_file_named_after_the_old_picture_and_leaves_the_old_one_when_it_cannot()
+    {
+        var (id, dir, source) = LibrarySandbox();
+        try
+        {
+            string Make(string name, byte value) { var path = Path.Combine(source, name); File.WriteAllBytes(path, [value]); return path; }
+            await LibraryStore.PutAsync(id, Make("正面.png", 1), false);
+            await LibraryStore.PutAsync(id, Make("侧面.png", 2), false);
+            var changed = 0;
+            void OnChanged() => changed++;
+            LibraryStore.Changed += OnChanged;
+            try
+            {
+                Assert.Null(LibraryStore.ReplaceByTitle(id, "没有这个", Make("n.png", 9), DeleteInstead));
+                // Same extension: same file name, new content.
+                Assert.Equal("正面.png", LibraryStore.ReplaceByTitle(id, "正面", Make("新正面.png", 7), DeleteInstead));
+                Assert.Equal([7], await File.ReadAllBytesAsync(Path.Combine(dir, "正面.png")));
+                // Another extension: the new picture keeps the name and brings its own extension, the old file is gone.
+                Assert.Equal("正面.jpg", LibraryStore.ReplaceByTitle(id, "正面", Make("再正面.JPG", 8), DeleteInstead));
+                Assert.Equal(["侧面.png", "正面.jpg"], Directory.GetFiles(dir).Select(Path.GetFileName).Order(StringComparer.Ordinal));
+                Assert.True(changed >= 2);
+
+                // A failed recycle, a locked file and a name already taken all leave the library as it was.
+                await LibraryStore.PutAsync(id, Make("侧面.jpg", 4), false);
+                var before = Directory.GetFiles(dir).Select(f => (Path.GetFileName(f), File.ReadAllBytes(f)[0])).Order().ToList();
+                Assert.Throws<LibraryException>(() => LibraryStore.ReplaceByTitle(id, "侧面.png", Make("c.jpg", 5), DeleteInstead)); // 侧面.jpg is taken
+                Assert.Throws<LibraryException>(() => LibraryStore.ReplaceByTitle(id, "侧面.png", Make("x.png", 5), _ => false));
+                await using (new FileStream(Path.Combine(dir, "侧面.png"), FileMode.Open, FileAccess.Read, FileShare.None))
+                    Assert.Throws<LibraryException>(() => LibraryStore.ReplaceByTitle(id, "侧面.png", Make("y.png", 5), DeleteInstead));
+                Assert.Equal(before, Directory.GetFiles(dir).Select(f => (Path.GetFileName(f), File.ReadAllBytes(f)[0])).Order().ToList());
+                Assert.DoesNotContain(Directory.GetFiles(dir), f => f.EndsWith(".tmp"));
+            }
+            finally { LibraryStore.Changed -= OnChanged; }
+        }
+        finally { Cleanup(id, source); }
+    }
+
     [Fact]
     public async Task A_library_name_without_extension_that_fits_two_files_is_an_error_naming_both_and_never_picks_one()
     {

@@ -1379,7 +1379,10 @@ public sealed partial class CanvasView : UserControl
         if (CanvasGenerator.CanGenerate(node))
             menu.Items.Add(Generator.IsRunning(node.Id) ? Item("停止生成", "", () => Generator.Cancel(node.Id)) : Item(node.Status == NodeStatus.Error && !node.HasContent ? "重试" : "生成", "", () => Generator.GenerateAsync(node)));
         if (Stacks.Of(node) is { } stack && Stacks.Members(Doc, stack).Count > 1)
+        {
             menu.Items.Add(Item(Stacks.IsOpen(node) ? "收起这一批" : "展开这一批", Stacks.IsOpen(node) ? "\uE73F" : "\uE740", () => ToggleStack(node)));
+            menu.Items.Add(Item("留这张，删掉这一摞的其他", "", () => TrackLocalAsync(() => KeepOneAsync(node))));
+        }
         menu.Items.Add(Item("重命名", "", () => RenameAsync(node)));
         menu.Items.Add(Item("复制节点", "", Duplicate, "Ctrl+D"));
         if (_selected.Count > 1) menu.Items.Add(Item("编组", "", Group, "Ctrl+G"));
@@ -1415,12 +1418,97 @@ public sealed partial class CanvasView : UserControl
             }
             menu.Items.Add(Item("另存为…", "", () => SaveAsAsync(node, path)));
             menu.Items.Add(Item("加入资料库", "", () => AddToLibraryAsync(node)));
+            if (node.Kind == NodeKind.Image) menu.Items.Add(Item("设为定稿…", "", () => TrackLocalAsync(() => PromoteAsync(node))));
         }
         if (node.Kind == NodeKind.Text && node.HasContent)
             menu.Items.Add(Item("复制文本", "", () => { var data = new DataPackage(); data.SetText(node.Content); Clipboard.SetContent(data); }));
         menu.Items.Add(new MenuFlyoutSeparator());
         menu.Items.Add(Item("删除", "", DeleteSelection, "Delete"));
         menu.ShowAt(Root, new FlyoutShowOptions { Position = position });
+    }
+
+    /// <summary>Keep this card of a batch and remove the others from the canvas (their files stay), after the usual confirmation. One undo step.</summary>
+    private async Task KeepOneAsync(CanvasNode node)
+    {
+        if (Stacks.Of(node) is not { } stack || Stacks.Members(Doc, stack).Count < 2) return;
+        var others = Stacks.Members(Doc, stack).Count - 1;
+        if (!await Dialogs.ConfirmAsync("留这张，删掉其余？", $"将从画布移除这一批的另外 {others} 个节点，它们的文件不会被删除，仍能在资料库的「画布文件」里找到。可以撤销。", "删掉其余", destructive: true)) return;
+        // The canvas may have changed while the dialog was open.
+        if (Doc.Find(node.Id) != node || Stacks.Of(node) is null) return;
+        History.Record();
+        var removed = new List<string>();
+        Batch(() => removed = Picks.KeepOne(Doc, node.Id));
+        DeleteNodes(removed, wholeStacks: false);
+        Select([node.Id]);
+    }
+
+    /// <summary>
+    /// Let this picture take the place of another (finalise it): choose the picture to replace, optionally replace the library file of the same name,
+    /// and the canvas change is one undo step. The old node leaves the canvas; no asset file is deleted.
+    /// </summary>
+    private async Task PromoteAsync(CanvasNode node)
+    {
+        bool Single(CanvasNode n) => Stacks.Of(n) is not { } s || Stacks.Members(Doc, s).Count < 2;
+        var others = Doc.Nodes.Where(n => n != node && n.Kind == NodeKind.Image && n.HasContent && Single(n)).ToList();
+        if (others.Count == 0)
+        {
+            await Dialogs.MessageAsync("没有可以替换的图片", "画布上没有其他可以被取代的图片。一批里的图片请先用「留这张」整理。");
+            return;
+        }
+        bool Named(CanvasNode n) => n.GroupId is { } group && Doc.Find(group) is { } g && (g.Title.Contains("定稿") || g.Title.Contains("官方"));
+        // The picture selected beside this one first, then the ones in 定稿 / 官方 groups; with neither, every other picture.
+        var candidates = others.Where(n => _selected.Contains(n.Id)).Concat(others.Where(n => !_selected.Contains(n.Id) && Named(n))).ToList();
+        var listed = candidates.Count > 0;
+        if (!listed) candidates = others;
+        string Label(CanvasNode n) => Doc.Find(n.GroupId ?? "") is { } g ? $"{n.Title} · 分组「{g.Title}」" : n.Title;
+        var list = new ListView { SelectionMode = ListViewSelectionMode.Single, ItemsSource = candidates.Select(Label).ToList(), MaxHeight = 300, MinWidth = 380, SelectedIndex = 0 };
+        AutomationProperties.SetName(list, "被取代的图片");
+        var library = new CheckBox { IsChecked = true, Visibility = Visibility.Collapsed };
+        AutomationProperties.SetName(library, "替换资料库里同名的文件");
+        void ShowLibrary()
+        {
+            string? file = null;
+            try { file = list.SelectedIndex >= 0 && LibraryStore.Find(Doc.Id, candidates[list.SelectedIndex].Title) is { } item ? Path.GetFileName(item.Path) : null; }
+            catch (LibraryException) { /* An ambiguous name: no library replacement is offered. */ }
+            library.Visibility = file is null ? Visibility.Collapsed : Visibility.Visible;
+            library.Content = file is null ? "" : $"资料库里同名的「{file}」用新图替换，旧文件移到回收站（不能撤销）";
+        }
+        list.SelectionChanged += (_, _) => ShowLibrary();
+        ShowLibrary();
+        var form = new StackPanel { Spacing = 12 };
+        form.Children.Add(new TextBlock
+        {
+            Text = listed
+                ? $"选择要被「{node.Title}」取代的图片。它会从画布上删除，新图占它的位置、标题、分组和连线；文件不会被删除。"
+                : $"选择要被「{node.Title}」取代的图片（没有选中的，也没有「定稿 / 官方」分组里的图片，所以列出了全部）。它会从画布上删除，新图占它的位置、标题、分组和连线；文件不会被删除。",
+            TextWrapping = TextWrapping.Wrap,
+        });
+        form.Children.Add(list);
+        form.Children.Add(library);
+        if (!await Dialogs.FormAsync("设为定稿", form, "设为定稿") || list.SelectedIndex < 0) return;
+        var target = candidates[list.SelectedIndex];
+        if (Doc.Find(node.Id) != node || Doc.Find(target.Id) != target) return;
+        try { Picks.CheckPromote(Doc, node.Id, target.Id); }
+        catch (ArgumentException ex)
+        {
+            await Dialogs.MessageAsync("不能设为定稿", ex.Message);
+            return;
+        }
+        if (library.Visibility == Visibility.Visible && library.IsChecked == true)
+        {
+            try { LibraryStore.ReplaceByTitle(Doc.Id, target.Title, ProjectStore.AssetPath(Doc.Id, node.Content!)); }
+            catch (LibraryException ex)
+            {
+                await Dialogs.MessageAsync("资料库里的文件没能替换", ex.Message + "\n\n画布没有改动。");
+                return;
+            }
+        }
+        History.Record();
+        var removed = new List<string>();
+        Batch(() => removed = Picks.Promote(Doc, node.Id, target.Id));
+        DeleteNodes(removed, wholeStacks: false);
+        Select([node.Id]);
+        EnsureVisible(Rect.Of(node));
     }
 
     /// <summary>Pick a local Real-ESRGAN model and factor, then upscale into a new node beside this one.</summary>

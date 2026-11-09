@@ -56,11 +56,11 @@ public sealed record ImportResult(IReadOnlyList<string> Ids, IReadOnlyList<Impor
 /// <summary>One canvas_apply_ops step; fields not used by the op type are ignored.</summary>
 public sealed class CanvasOp
 {
-    [Description("add_node、update_node、delete_nodes、connect、disconnect、select、set_viewport、run_generation、group、ungroup、group_add、group_remove、stack_open、stack_close")]
+    [Description("add_node、update_node、delete_nodes、connect、disconnect、select、set_viewport、run_generation、group、ungroup、group_add、group_remove、stack_open、stack_close、keep_one、promote")]
     public string Type { get; set; } = "";
     [Description("add_node：给新节点起的临时名，本批后续操作可用它代替节点 ID")]
     public string? Ref { get; set; }
-    [Description("update_node / run_generation 的节点 ID（或本批的 ref）；group_add 的目标分组 ID（或本批的 ref）；stack_open / stack_close 里这一批（摞）的任意一个成员的 ID")]
+    [Description("update_node / run_generation 的节点 ID（或本批的 ref）；group_add 的目标分组 ID（或本批的 ref）；stack_open / stack_close 里这一批（摞）的任意一个成员的 ID；keep_one 要留下的那个成员；promote 定稿的新图片（或本批的 ref）")]
     public string? Id { get; set; }
     [Description("delete_nodes / select / group / ungroup / group_add / group_remove 的节点 ID 列表（ungroup 也可以直接给分组 ID）")]
     public List<string>? Ids { get; set; }
@@ -101,6 +101,10 @@ public sealed class CanvasOp
     public string? Layout { get; set; }
     [Description("add_node / stack_open：row、grid 排布时成员之间的间距（世界坐标），默认 24")]
     public double? Gap { get; set; }
+    [Description("promote：被定稿的新图片取代的图片节点 ID（或本批的 ref）；它在画布上被删除，文件不删")]
+    public string? Replaces { get; set; }
+    [Description("promote：资料库里有和被取代图片同名的文件时，是否用新图片替换它（旧文件移到回收站，不能撤销），默认 false")]
+    public bool? Library { get; set; }
 }
 
 /// <summary>MCP tools over the open canvas.</summary>
@@ -112,7 +116,7 @@ public static class CanvasTools
         - canvas_get_state 默认不带提示词、文本正文和生成参数；要读这些用 canvas_get_node（或 detail=full）。画布很大时先用 rect 或 groupId 缩小范围。
         - 生成图片、文本或语音用 canvas_generate（这个版本不支持生成视频，视频节点只用来放导入的视频）：它会新建节点、连上参考节点并立刻开始生成。生成是异步的，用 generation_get_status 查看结果，不要在没有结果时声称已经完成。
         - 增删改节点、连线、选择和视口用 canvas_apply_ops，一次调用就是一步撤销。
-        - 需要看图片内容时用 canvas_get_image；资料库（这个画布自己的常用素材）用 library_list / library_place / library_add；一次生成多张时用 layout=row 或 grid 直接排开，已有的一批用 stack_open / stack_close 展开或收起；编组用 canvas_apply_ops 的 group / ungroup，把节点加入或移出已有分组（分组 ID 和连线不变）用 group_add / group_remove。
+        - 需要看图片内容时用 canvas_get_image；资料库（这个画布自己的常用素材）用 library_list / library_place / library_add；一次生成多张时用 layout=row 或 grid 直接排开，已有的一批用 stack_open / stack_close 展开或收起，挑定稿用 keep_one（留下一批里的一张）和 promote（让一张图取代另一张，占它的位置和连线）；编组用 canvas_apply_ops 的 group / ungroup，把节点加入或移出已有分组（分组 ID 和连线不变）用 group_add / group_remove。
         - 节点 ID 只用工具返回的值，不要编造；模型 ID 只用 canvas_get_state.models 里列出的。
         """;
 
@@ -138,7 +142,7 @@ public static class CanvasTools
         McpServerTool.Create(([Description("按顺序执行的操作")] List<CanvasOp> ops) => host.OnUiAsync(() => Apply(host, ops)), new()
         {
             Name = "canvas_apply_ops", Destructive = true,
-            Description = "批量修改画布，整批算一步撤销。type 支持 add_node、update_node、delete_nodes、connect、disconnect、select、set_viewport、run_generation、group、ungroup、group_add、group_remove、stack_open、stack_close（展开 / 收起一批生成结果，stack_open 可选 layout=row|grid 和 gap）；add_node 可用 ref 给新节点起名，供本批后续操作引用。",
+            Description = "批量修改画布，整批算一步撤销。type 支持 add_node、update_node、delete_nodes、connect、disconnect、select、set_viewport、run_generation、group、ungroup、group_add、group_remove、stack_open、stack_close（展开 / 收起一批生成结果，stack_open 可选 layout=row|grid 和 gap）、keep_one（留下一批里的这一张，删掉同批其余，连线转给它）、promote（id 定稿，取代 replaces：占它的位置、标题、分组和连线，旧节点从画布删除，文件都不删；library=true 时资料库里同名的旧文件移到回收站）；add_node 可用 ref 给新节点起名，供本批后续操作引用。",
         }),
         McpServerTool.Create((
             [Description("image、text、audio")] string mode,
@@ -375,6 +379,13 @@ public static class CanvasTools
         var missing = ids.Where(id => host.Document.Find(id) is null).ToList();
         if (missing.Count > 0) throw new McpException($"找不到节点「{string.Join("、", missing)}」，请先用 canvas_get_state 获取节点 ID");
         return ids.Select(id => host.Document.Find(id)!).ToList();
+    }
+
+    /// <summary>Core's checks of a pick are written as argument errors; the agent reads them as tool errors.</summary>
+    private static T Pick<T>(Func<T> action)
+    {
+        try { return action(); }
+        catch (ArgumentException ex) { throw new McpException(ex.Message); }
     }
 
     private static string? Clip(string? text, int max) => text is null || text.Length <= max ? text : text[..max] + "…";
@@ -651,6 +662,29 @@ public static class CanvasTools
                         }
                         touched.AddRange(stackMembers);
                         results.Add(new { Index = index, StackId = stackId, Open = op.Type == "stack_open", Members = stackMembers.Select(m => m.Id).ToList() });
+                        break;
+                    case "keep_one":
+                        var keptId = Resolve(op.Id);
+                        var dropped = Pick(() => Picks.KeepOne(doc, keptId));
+                        host.Delete(dropped);
+                        touched.Add(doc.Find(keptId)!);
+                        results.Add(new { Index = index, KeptId = keptId, Removed = dropped });
+                        break;
+                    case "promote":
+                        var freshId = Resolve(op.Id);
+                        var oldId = Resolve(op.Replaces);
+                        object? library = null;
+                        // The one step that cannot be undone goes first, once the rest is known to work: if it fails nothing has changed.
+                        Pick(() => Picks.CheckPromote(doc, freshId, oldId));
+                        if (op.Library == true && doc.Find(freshId) is { } finalPicture && doc.Find(oldId) is { } oldPicture)
+                        {
+                            var name = Library(() => LibraryStore.ReplaceByTitle(doc.Id, oldPicture.Title, ProjectStore.AssetPath(doc.Id, finalPicture.Content!)));
+                            library = name is null ? new { Replaced = false, Note = "资料库里没有和被取代图片同名的文件" } : new { Replaced = true, File = name };
+                        }
+                        var replaced = Pick(() => Picks.Promote(doc, freshId, oldId));
+                        host.Delete(replaced);
+                        touched.Add(doc.Find(freshId)!);
+                        results.Add(new { Index = index, NodeId = freshId, Replaced = replaced, Library = library });
                         break;
                     case "ungroup":
                         host.Ungroup((op.Ids ?? []).Select(Resolve).Where(id => doc.Find(id) is not null).ToList());

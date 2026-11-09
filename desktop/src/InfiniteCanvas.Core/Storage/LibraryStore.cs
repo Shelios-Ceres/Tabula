@@ -102,27 +102,50 @@ public static class LibraryStore
             {
                 if (!File.Exists(target)) File.Copy(sourcePath, target);
                 else if (!replace) throw new LibraryException($"资料库里已经有「{name}」，要覆盖请用 replace=true（旧文件会移到回收站），或先给节点改名");
-                else
-                {
-                    if (InUse(target)) throw new LibraryException($"「{name}」正被其他程序占用，不能覆盖");
-                    var staged = System.IO.Path.Combine(dir, Guid.NewGuid().ToString("N") + ".tmp");
-                    File.Copy(sourcePath, staged);
-                    bool recycled;
-                    try { recycled = recycle(target); }
-                    catch { File.Delete(staged); throw; }
-                    if (!recycled)
-                    {
-                        File.Delete(staged);
-                        throw new LibraryException($"没能把旧的「{name}」移到回收站，已取消覆盖");
-                    }
-                    File.Move(staged, target);
-                }
+                else Swap(target, target, sourcePath, recycle);
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { throw new LibraryException($"「{name}」写入资料库失败：{ex.Message}"); }
             return name;
         });
         Changed?.Invoke();
         return name;
+    }
+
+    /// <summary>
+    /// Put a new file in the place of an old one: the new copy is made first, then the old file is recycled, then the copy takes <paramref name="newPath"/>.
+    /// A failure at any step leaves the old file where it is and no stray copy behind.
+    /// </summary>
+    private static void Swap(string oldPath, string newPath, string sourcePath, Func<string, bool> recycle)
+    {
+        var name = System.IO.Path.GetFileName(oldPath);
+        if (InUse(oldPath)) throw new LibraryException($"「{name}」正被其他程序占用，不能覆盖");
+        var staged = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(oldPath)!, Guid.NewGuid().ToString("N") + ".tmp");
+        File.Copy(sourcePath, staged);
+        bool recycled;
+        try { recycled = recycle(oldPath); }
+        catch { File.Delete(staged); throw; }
+        if (!recycled)
+        {
+            File.Delete(staged);
+            throw new LibraryException($"没能把旧的「{name}」移到回收站，已取消覆盖");
+        }
+        File.Move(staged, newPath);
+    }
+
+    /// <summary>
+    /// Finalising a picture: when the library holds a file named after the replaced node's title, the new picture takes its place under the same name
+    /// (its own extension) and the old file goes to the recycle bin. The new name; null when the library has no such file. Silent, like the other agent paths.
+    /// </summary>
+    public static string? ReplaceByTitle(string projectId, string title, string sourcePath, Func<string, bool>? recycle = null)
+    {
+        recycle ??= Recycle;
+        if (Find(projectId, title) is not { } old) return null;
+        var newPath = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(old.Path)!, old.Name + System.IO.Path.GetExtension(sourcePath).ToLowerInvariant());
+        if (!newPath.Equals(old.Path, StringComparison.OrdinalIgnoreCase) && File.Exists(newPath)) throw new LibraryException($"资料库里已经有「{System.IO.Path.GetFileName(newPath)}」，不能用它替换「{System.IO.Path.GetFileName(old.Path)}」");
+        try { Swap(old.Path, newPath, sourcePath, recycle); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { throw new LibraryException($"替换资料库里的「{System.IO.Path.GetFileName(old.Path)}」失败：{ex.Message}"); }
+        Changed?.Invoke();
+        return System.IO.Path.GetFileName(newPath);
     }
 
     /// <summary>Change a library file's name but not its extension; <paramref name="newName"/> may repeat the extension. Returns the new file name.</summary>
