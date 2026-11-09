@@ -117,6 +117,14 @@ public class AgentTests
             foreach (var cell in spec.Cells) Document.Connections.Add(CanvasConnection.Create(cell.NodeId, node.Id));
             return Task.FromResult((node.Id, 1000, 500, ComposeScale));
         }
+        public List<(string A, string B, double Threshold)> Compared { get; } = [];
+        public ImageDifference Difference { get; set; } = new(0.1, 0.9, 0.25, new UnitBox(0.1, 0.2, 0.3, 0.4), 0.05, 1000);
+        public bool SizeMismatch { get; set; }
+        public Task<(ImageDifference Difference, bool SizeMismatch)> CompareAsync(CanvasNode a, CanvasNode b, double threshold)
+        {
+            Compared.Add((a.Id, b.Id, threshold));
+            return Task.FromResult((Difference with { Threshold = threshold }, SizeMismatch));
+        }
         public Task ReplaceMediaAsync(CanvasNode node, string path)
         {
             if (Unreadable.Contains(Path.GetFileName(path))) return Task.FromException(new IOException("文件被占用"));
@@ -630,7 +638,7 @@ public class AgentTests
         await using var pipe = new NamedPipeClientStream(".", name, PipeDirection.InOut, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
         await pipe.ConnectAsync(5000);
         await using var client = await McpClient.CreateAsync(new StreamClientTransport(pipe, pipe, null));
-        Assert.Equal(16, (await client.ListToolsAsync()).Count);
+        Assert.Equal(17, (await client.ListToolsAsync()).Count);
     }
 
     [Fact]
@@ -643,7 +651,7 @@ public class AgentTests
         await using var client = await McpClient.CreateAsync(new StreamClientTransport(pipe, pipe, null));
 
         var tools = await client.ListToolsAsync();
-        Assert.Equal(["canvas_apply_ops", "canvas_compose", "canvas_generate", "canvas_get_image", "canvas_get_node", "canvas_get_state", "canvas_import_file", "canvas_replace_media", "canvas_run_generation", "generation_get_status", "library_add", "library_list", "library_place", "library_remove", "library_rename", "usage_summary"], tools.Select(t => t.Name).Order());
+        Assert.Equal(["canvas_apply_ops", "canvas_compose", "canvas_generate", "canvas_get_image", "canvas_get_node", "canvas_get_state", "canvas_import_file", "canvas_replace_media", "canvas_run_generation", "generation_get_status", "image_compare", "library_add", "library_list", "library_place", "library_remove", "library_rename", "usage_summary"], tools.Select(t => t.Name).Order());
 
         var generated = await client.CallToolAsync("canvas_generate", new Dictionary<string, object?> { ["mode"] = "image", ["prompt"] = "一只猫", ["ratio"] = "1:1" });
         var nodeId = Parse(((TextContentBlock)generated.Content[0]).Text).GetProperty("nodeId").GetString();
@@ -1421,6 +1429,69 @@ public class AgentTests
         };
         foreach (var args in bad) Assert.True((await session.CallAsync("canvas_compose", args)).IsError, string.Join(",", args.Select(p => p.Key)));
         Assert.Equal(before, (host.Composed.Count, host.Records, host.Document.Nodes.Count));
+    }
+
+    [Fact]
+    public async Task Image_compare_returns_the_statistics_and_notes_a_size_mismatch_and_changes_nothing()
+    {
+        var host = new FakeHost();
+        var (a, b) = (Bitmap(host, "前"), Bitmap(host, "后", "图片-002.png"));
+        var snapshot = host.Document.Nodes.Select(n => InfiniteCanvas.Core.Json.Serialize(n)).ToList();
+        await using var session = await Session.StartAsync(host);
+
+        var result = await session.CallAsync("image_compare", new() { ["a"] = a.Id, ["b"] = b.Id });
+        Assert.False(result.IsError);
+        var json = Parse(result.Text);
+        Assert.Equal((0.1, 0.9, 0.25, 0.05, 1000), (json.GetProperty("meanDifference").GetDouble(), json.GetProperty("maxDifference").GetDouble(), json.GetProperty("changedFraction").GetDouble(), json.GetProperty("threshold").GetDouble(), json.GetProperty("comparedPixels").GetInt32()));
+        var box = json.GetProperty("changedBox");
+        Assert.Equal((0.1, 0.2, 0.3, 0.4), (box.GetProperty("x").GetDouble(), box.GetProperty("y").GetDouble(), box.GetProperty("width").GetDouble(), box.GetProperty("height").GetDouble()));
+        Assert.False(json.GetProperty("sizeMismatch").GetBoolean());
+        Assert.False(json.TryGetProperty("note", out _));
+        Assert.Equal([(a.Id, b.Id, 0.05)], host.Compared);
+
+        host.SizeMismatch = true;
+        host.Difference = host.Difference with { ChangedBox = null, ChangedFraction = 0 };
+        var other = Parse((await session.CallAsync("image_compare", new() { ["a"] = b.Id, ["b"] = a.Id, ["threshold"] = 0.2 })).Text);
+        Assert.True(other.GetProperty("sizeMismatch").GetBoolean());
+        Assert.Contains("缩放", other.GetProperty("note").GetString());
+        Assert.False(other.TryGetProperty("changedBox", out _));
+        Assert.Equal(0.2, other.GetProperty("threshold").GetDouble());
+        Assert.Equal((b.Id, a.Id), (host.Compared[1].A, host.Compared[1].B));
+
+        // Read-only: no history, no change to any node.
+        Assert.Equal(0, host.Records);
+        Assert.Equal(snapshot, host.Document.Nodes.Select(n => InfiniteCanvas.Core.Json.Serialize(n)).ToList());
+        var tools = await session.Client.ListToolsAsync();
+        Assert.True(tools.Single(t => t.Name == "image_compare").ProtocolTool.Annotations?.ReadOnlyHint);
+    }
+
+    [Fact]
+    public async Task Image_compare_refuses_what_it_cannot_measure_before_the_host_is_called()
+    {
+        var host = new FakeHost();
+        var (a, b) = (Bitmap(host, "A"), Bitmap(host, "B", "图片-002.png"));
+        var svg = Bitmap(host, "矢量", "图.svg");
+        var text = new CanvasNode { Kind = NodeKind.Text, Title = "文", Content = "字" };
+        var empty = new CanvasNode { Kind = NodeKind.Image, Title = "空" };
+        host.Document.Nodes.Add(text);
+        host.Document.Nodes.Add(empty);
+        await using var session = await Session.StartAsync(host);
+
+        var bad = new Dictionary<string, object?>[]
+        {
+            new() { ["a"] = a.Id, ["b"] = a.Id },
+            new() { ["a"] = a.Id, ["b"] = "missing" },
+            new() { ["a"] = "missing", ["b"] = b.Id },
+            new() { ["a"] = a.Id, ["b"] = svg.Id },
+            new() { ["a"] = text.Id, ["b"] = b.Id },
+            new() { ["a"] = a.Id, ["b"] = empty.Id },
+            new() { ["a"] = a.Id, ["b"] = b.Id, ["threshold"] = -0.1 },
+            new() { ["a"] = a.Id, ["b"] = b.Id, ["threshold"] = 1 },
+            new() { ["a"] = a.Id, ["b"] = b.Id, ["threshold"] = 7 },
+        };
+        foreach (var args in bad) Assert.True((await session.CallAsync("image_compare", args)).IsError, string.Join(",", args.Select(p => $"{p.Key}={p.Value}")));
+        Assert.Empty(host.Compared);
+        Assert.False((await session.CallAsync("image_compare", new() { ["a"] = a.Id, ["b"] = b.Id, ["threshold"] = 0 })).IsError);
     }
 
     [Fact]

@@ -185,7 +185,7 @@ public static class ImageTools
     // ---------- Compose ----------
 
     /// <summary>Decode every input at full size, quietly: failures come back as an <see cref="InvalidOperationException"/> naming the picture, and the caller decides how to tell the user. Dispose the bitmaps when done.</summary>
-    private static async Task<List<CanvasBitmap>> LoadInputsAsync(CanvasView view, IReadOnlyList<CanvasNode> nodes)
+    internal static async Task<List<CanvasBitmap>> LoadInputsAsync(CanvasView view, IReadOnlyList<CanvasNode> nodes)
     {
         var bitmaps = new List<CanvasBitmap>();
         try

@@ -26,6 +26,64 @@ internal static class TestEnvironment
 
 public class CoreTests
 {
+    private static byte[] Pixels(int width, int height, byte blue = 10, byte green = 20, byte red = 30, byte alpha = 255) =>
+        Enumerable.Range(0, width * height).SelectMany(_ => new[] { blue, green, red, alpha }).ToArray();
+
+    [Fact]
+    public void Identical_pictures_differ_by_nothing_and_have_no_changed_box()
+    {
+        var result = ImageDifferenceMath.Measure(Pixels(4, 3), Pixels(4, 3), 4, 3);
+        Assert.Equal((0d, 0d, 0d, null, 12), (result.MeanDifference, result.MaxDifference, result.ChangedFraction, result.ChangedBox, result.Compared));
+        Assert.Equal(0.05, result.Threshold);
+    }
+
+    [Fact]
+    public void One_changed_pixel_gives_its_box_and_the_exact_statistics()
+    {
+        var (a, b) = (Pixels(10, 5), Pixels(10, 5));
+        var at = (3 + 2 * 10) * 4; // x = 3, y = 2
+        b[at + 1] = (byte)(a[at + 1] + 51); // green up by 51 of 255 = 0.2
+        var result = ImageDifferenceMath.Measure(a, b, 10, 5);
+        Assert.Equal(0.2, result.MaxDifference, 6);
+        Assert.Equal(0.2 / 3 / 50, result.MeanDifference, 9);
+        Assert.Equal(1d / 50, result.ChangedFraction, 9);
+        Assert.Equal(new UnitBox(0.3, 0.4, 0.1, 0.2), result.ChangedBox);
+
+        // The threshold decides what counts as changed; the mean and the maximum do not depend on it.
+        var strict = ImageDifferenceMath.Measure(a, b, 10, 5, 0.25);
+        Assert.Equal((0d, null, 0.2), (strict.ChangedFraction, strict.ChangedBox, strict.MaxDifference));
+        Assert.Equal(result.MeanDifference, strict.MeanDifference);
+        Assert.Equal(0.25, strict.Threshold);
+
+        // A region of changes: the box covers all of it.
+        foreach (var (x, y) in new[] { (1, 1), (8, 3) }) b[(x + y * 10) * 4 + 2] = 255;
+        var region = ImageDifferenceMath.Measure(a, b, 10, 5);
+        Assert.Equal(new UnitBox(0.1, 0.2, 0.8, 0.6), region.ChangedBox);
+        Assert.Equal(3d / 50, region.ChangedFraction, 9);
+        Assert.Equal((255 - 30) / 255d, region.MaxDifference, 6);
+    }
+
+    [Fact]
+    public void Pixels_the_second_picture_does_not_cover_are_left_out_and_bad_buffers_are_refused()
+    {
+        var a = Pixels(2, 2);
+        var b = Pixels(2, 2);
+        // The left column is not covered by B (transparent): only the right column is compared, and there B differs by 0.4 in blue.
+        foreach (var x in new[] { 0 }) for (var y = 0; y < 2; y++) b[(x + y * 2) * 4 + 3] = 0;
+        foreach (var y in new[] { 0, 1 }) b[(1 + y * 2) * 4] = (byte)(a[(1 + y * 2) * 4] + 102);
+        var result = ImageDifferenceMath.Measure(a, b, 2, 2);
+        Assert.Equal(2, result.Compared);
+        Assert.Equal(0.4, result.MaxDifference, 6);
+        Assert.Equal(1d, result.ChangedFraction);
+        Assert.Equal(new UnitBox(0.5, 0, 0.5, 1), result.ChangedBox);
+
+        var none = ImageDifferenceMath.Measure(a, Pixels(2, 2, alpha: 0), 2, 2);
+        Assert.Equal((0, 0d, 0d, null), (none.Compared, none.MeanDifference, none.ChangedFraction, none.ChangedBox));
+        Assert.Throws<ArgumentException>(() => ImageDifferenceMath.Measure(a, Pixels(2, 3), 2, 2));
+        Assert.Throws<ArgumentException>(() => ImageDifferenceMath.Measure(a, a, 0, 2));
+        Assert.Throws<ArgumentException>(() => ImageDifferenceMath.Measure(a, a, 3, 2));
+    }
+
     private static ComposeSpec Spec(int count, string layout = "row", int columns = 0, string fit = "height", int gap = 64, int margin = 64, string background = "#FFFFFF") =>
         new(Enumerable.Range(0, count).Select(i => new ComposeCell($"n{i}")).ToList(), layout, columns, gap, margin, background, fit);
 

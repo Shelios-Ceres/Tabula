@@ -118,7 +118,7 @@
                                 <TextBlock Grid.Row="10" Text="编组" FontWeight="SemiBold" /><TextBlock Grid.Row="10" Grid.Column="1" Text="Ctrl+G · 取消 Ctrl+Shift+G" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                                 <TextBlock Grid.Row="11" Text="统一尺寸" FontWeight="SemiBold" /><TextBlock Grid.Row="11" Grid.Column="1" Text="多选后用上方工具条：同宽 / 同高 / 同宽高，以第一个点选的节点为基准" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                                 <TextBlock Grid.Row="12" Text="微调位置" FontWeight="SemiBold" /><TextBlock Grid.Row="12" Grid.Column="1" Text="方向键移动 1 像素 · 按住 Shift 移动 10 像素" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                                <TextBlock Grid.Row="13" Text="查看大图" FontWeight="SemiBold" /><TextBlock Grid.Row="13" Grid.Column="1" Text="双击图片 · Ctrl+滚轮缩放 · Esc 关闭" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                <TextBlock Grid.Row="13" Text="查看大图" FontWeight="SemiBold" /><TextBlock Grid.Row="13" Grid.Column="1" Text="双击图片 · Ctrl+滚轮缩放 · 选中两张图片后按 C 对比 · Esc 关闭" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                                 <TextBlock Grid.Row="14" Text="一批结果" FontWeight="SemiBold" /><TextBlock Grid.Row="14" Grid.Column="1" Text="批量生成的结果叠成一摞，点击展开，点「收起」收回，被选中的那张做封面" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                                 <TextBlock Grid.Row="15" Text="更多" FontWeight="SemiBold" /><TextBlock Grid.Row="15" Grid.Column="1" Text="在节点或空白处点右键" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                             </Grid>

@@ -44,6 +44,8 @@ public interface ICanvasHost
     Task<ImportResult> ImportAsync(IReadOnlyList<string> paths, double x, double y);
     /// <summary>Compose image nodes into one new image node to their right, connected from each (one undo step): its ID, pixel size and the down-scale applied (1 when none). Never shows a dialog.</summary>
     Task<(string Id, int Width, int Height, double Scale)> ComposeAsync(ComposeSpec spec);
+    /// <summary>Compare two bitmap pictures (B scaled to A's width and centred on it) and measure how they differ; SizeMismatch when their pixel sizes differ. Never shows a dialog.</summary>
+    Task<(ImageDifference Difference, bool SizeMismatch)> CompareAsync(CanvasNode a, CanvasNode b, double threshold);
     /// <summary>Give a media node a new file of its kind, keeping its ID, position, width, group, stack and connections (one undo step). Throws when the copy fails; never shows a dialog.</summary>
     Task ReplaceMediaAsync(CanvasNode node, string path);
     /// <summary>Copy a node's media into this canvas's library, named after the node; its file name. A name already taken is an error unless <paramref name="replace"/>.</summary>
@@ -120,6 +122,7 @@ public static class CanvasTools
         - 增删改节点、连线、选择和视口用 canvas_apply_ops，一次调用就是一步撤销。
         - 需要看图片内容时用 canvas_get_image；资料库（这个画布自己的常用素材）用 library_list / library_place / library_add；一次生成多张时用 layout=row 或 grid 直接排开，已有的一批用 stack_open / stack_close 展开或收起，挑定稿用 keep_one（留下一批里的一张）和 promote（让一张图取代另一张，占它的位置和连线）；编组用 canvas_apply_ops 的 group / ungroup，把节点加入或移出已有分组（分组 ID 和连线不变）用 group_add / group_remove。
         - 要把单独生成的多个视角拼成转面图、对比图时用 canvas_compose，不要自己在本地拼；人物大小不一时用 marks 按头顶和脚底对齐。
+        - 要判断两张图变没变（脸有没有漂、改动落在哪）用 image_compare，它返回差异统计和变化区域，不必自己在本地比。
         - 节点 ID 只用工具返回的值，不要编造；模型 ID 只用 canvas_get_state.models 里列出的。
         """;
 
@@ -205,6 +208,14 @@ public static class CanvasTools
         {
             Name = "canvas_import_file",
             Description = "把本机文件导入画布，成为新的图片 / 视频 / 音频节点（文件会复制进画布自己的文件夹），返回 nodeIds，导入不了的文件列在 failed: [{path, reason}] 里。只导入用户在对话里明确点名的文件，不要自己翻找或导入其他本机文件。",
+        }),
+        McpServerTool.Create(async (
+            [Description("图片节点 A，作为基准")] string a,
+            [Description("图片节点 B，会等比缩放到 A 的宽度并居中")] string b,
+            [Description("算作「变了」的差异阈值，0 到 1（某个颜色通道的差值占满量程的比例），默认 0.05")] double? threshold = null) => await CompareToolAsync(host, a, b, threshold), new()
+        {
+            Name = "image_compare", ReadOnly = true,
+            Description = "只读：量化两张位图图片的差异，返回平均差、最大差、变了的像素占比和变化区域的包围盒（占 A 宽高的比例），以及比较了多少像素。用来判断「脸有没有漂」这类问题，不必自己在本地比。尺寸不同时 B 按 A 的宽度缩放，B 没覆盖到的部分不计入，并在 note 里说明；分析在长边 1024 像素的缩略图上做。",
         }),
         McpServerTool.Create(async (
             [Description("要拼的图片节点 ID，顺序就是排版顺序；只接受带内容的位图图片节点（不能是 SVG），至少两张")] List<string> ids,
@@ -327,6 +338,33 @@ public static class CanvasTools
             return host.ComposeAsync(spec);
         });
         return Json(new { NodeId = composed.Id, composed.Width, composed.Height, Scale = composed.Scale, Note = composed.Scale < 1 ? $"超过显卡的位图上限，已等比缩小到 {composed.Scale:P0}" : null });
+    }
+
+    private static async Task<string> CompareToolAsync(ICanvasHost host, string a, string b, double? threshold)
+    {
+        var limit = threshold ?? 0.05;
+        if (!(limit >= 0 && limit < 1)) throw new McpException("threshold 必须在 0（含）到 1（不含）之间");
+        var (canvas, first, second) = await host.OnUiAsync(() =>
+        {
+            var nodes = FindAll(host, [a, b]);
+            if (nodes[0] == nodes[1]) throw new McpException("A 和 B 是同一个节点");
+            foreach (var node in nodes)
+                if (node.Kind != NodeKind.Image || !node.HasContent || Media.IsSvg(node.Content)) throw new McpException($"节点「{node.Id}」不是带内容的位图图片，只能对比位图图片节点");
+            return (host.Document, nodes[0], nodes[1]);
+        });
+        var (difference, mismatch) = await await host.OnUiAsync(() =>
+        {
+            if (!ReferenceEquals(canvas, host.Document)) throw new McpException("画布已切换，请重新读取当前画布后再对比");
+            return host.CompareAsync(first, second, limit);
+        });
+        double Round(double value) => Math.Round(value, 5);
+        return Json(new
+        {
+            MeanDifference = Round(difference.MeanDifference), MaxDifference = Round(difference.MaxDifference), ChangedFraction = Round(difference.ChangedFraction),
+            ChangedBox = difference.ChangedBox is { } box ? new { X = Round(box.X), Y = Round(box.Y), Width = Round(box.Width), Height = Round(box.Height) } : null,
+            difference.Threshold, ComparedPixels = difference.Compared, SizeMismatch = mismatch,
+            Note = mismatch ? "两张图尺寸不同：B 已按 A 的宽度等比缩放并居中，B 没覆盖到的部分不计入；缩放本身会带来一点误差。" : null,
+        });
     }
 
     private static async Task<string> ReplaceMediaAsync(ICanvasHost host, string nodeId, string path)

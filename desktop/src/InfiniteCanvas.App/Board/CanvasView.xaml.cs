@@ -63,6 +63,8 @@ public sealed partial class CanvasView : UserControl
     private readonly Border _imageBar;
     private Button? _imageMarkButton;
     private Button[] _pixelTools = [];
+    /// <summary>The 对比 button of the selection bar and its divider, shown when exactly two bitmap pictures are selected.</summary>
+    private readonly StackPanel _compareGroup = new() { Orientation = Orientation.Horizontal, Spacing = 2, Visibility = Visibility.Collapsed };
     private readonly TextBlock _selectionCount = new() { Style = (Style)Application.Current.Resources["SecondaryCaption"], VerticalAlignment = VerticalAlignment.Center, Margin = new(10, 0, 6, 0) };
     private readonly List<string> _order = [];
     private Thickness _safe = new(0, 68, 0, 72);
@@ -530,6 +532,13 @@ public sealed partial class CanvasView : UserControl
         Add("同宽", "宽度统一为基准节点（图片、视频保持比例）", () => MatchSize(true, false));
         Add("同高", "高度统一为基准节点（图片、视频保持比例）", () => MatchSize(false, true));
         Add("同宽高", "宽和高都统一为基准节点", () => MatchSize(true, true));
+        _compareGroup.Children.Add(new Microsoft.UI.Xaml.Shapes.Rectangle { Style = (Style)Application.Current.Resources["ToolbarDivider"] });
+        var compare = new Button { Content = "对比", Style = (Style)Application.Current.Resources["ToolbarButton"] };
+        ToolTipService.SetToolTip(compare, "并排对比选中的两张图片 (C)");
+        AutomationProperties.SetName(compare, "对比");
+        compare.Click += async (_, _) => await TrackLocalAsync(ShowCompareAsync);
+        _compareGroup.Children.Add(compare);
+        row.Children.Add(_compareGroup);
         Divider();
         Add("编组", "把选中节点放进一个分组 (Ctrl+G)", Group);
         return FloatingBar(row, PositionSelectionBar);
@@ -628,6 +637,7 @@ public sealed partial class CanvasView : UserControl
         if (!show) return;
         var nodes = Doc.Nodes.Where(n => _selected.Contains(n.Id)).ToList();
         _selectionCount.Text = $"已选 {nodes.Count} 个";
+        _compareGroup.Visibility = ComposeInputs().Count == 2 ? Visibility.Visible : Visibility.Collapsed;
         var bounds = CanvasGraph.Bounds(nodes);
         var topLeft = ToScreen(bounds.Left, bounds.Top);
         var bottom = ToScreen(bounds.Right, bounds.Bottom);
@@ -1581,6 +1591,7 @@ public sealed partial class CanvasView : UserControl
             case VirtualKey.Enter when _selected.Count == 1: DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, FocusSelected); break;
             case VirtualKey.F2 when _selected.Count == 1 && Doc.Find(_selected.First()) is { } renamed: _ = RenameAsync(renamed); break;
             case VirtualKey.V when ctrl: e.Handled = true; await PasteAsync(ViewCenterWorld); return;
+            case VirtualKey.C when !ctrl && !shift && ComposeInputs().Count == 2: _ = TrackLocalAsync(ShowCompareAsync); break;
             default: return;
         }
         e.Handled = true;
@@ -1673,6 +1684,35 @@ public sealed partial class CanvasView : UserControl
         _preview = new Popup { XamlRoot = XamlRoot, Child = surface, HorizontalOffset = origin.X, VerticalOffset = origin.Y, IsOpen = true };
         Motion.Appear(surface, 0.98f);
     }
+
+    /// <summary>
+    /// Compare the two selected bitmap pictures (left one is A) in the same full-screen layer as the preview: slider, overlay, difference or flicker, with an
+    /// offset to line them up. Esc or the close button leaves it.
+    /// </summary>
+    private async Task ShowCompareAsync()
+    {
+        if (ComposeInputs() is not { Count: 2 } pair) return;
+        List<CanvasBitmap> bitmaps;
+        try { bitmaps = await ImageTools.LoadInputsAsync(this, pair); }
+        catch (InvalidOperationException ex)
+        {
+            await Dialogs.MessageAsync("无法对比", ex.Message);
+            return;
+        }
+        ClosePreview();
+        var surface = new CompareSurface(pair[0], pair[1], bitmaps[0], bitmaps[1], Root.ActualWidth, Root.ActualHeight, ClosePreview);
+        var origin = Root.TransformToVisual(null).TransformPoint(new Point(0, 0));
+        _preview = new Popup { XamlRoot = XamlRoot, Child = surface, HorizontalOffset = origin.X, VerticalOffset = origin.Y, IsOpen = true };
+        _preview.Closed += (_, _) => surface.Dispose();
+        Motion.Appear(surface, 0.98f);
+    }
+
+    /// <summary>For the image_compare tool: the same measurement without a dialog; a failure is a tool error.</summary>
+    internal Task<(ImageDifference Difference, bool SizeMismatch)> CompareForAgentAsync(CanvasNode a, CanvasNode b, double threshold) => IsClosing ? throw new McpException("画布正在关闭，请稍后重试") : TrackLocalAsync(async () =>
+    {
+        try { return await ImageMeasure.MeasureAsync(this, a, b, threshold); }
+        catch (InvalidOperationException ex) { throw new McpException(ex.Message); }
+    });
 
     private void ClosePreview()
     {

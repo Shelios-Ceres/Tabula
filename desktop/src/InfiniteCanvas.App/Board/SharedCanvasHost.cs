@@ -61,5 +61,6 @@ public sealed class SharedCanvasHost(DispatcherQueue ui) : ICanvasHost
     public Task<ImportResult> ImportAsync(IReadOnlyList<string> paths, double x, double y) => Canvas.ImportAsync(paths, x, y);
     public Task ReplaceMediaAsync(CanvasNode node, string path) => Canvas.ReplaceMediaAsync(node, path);
     public Task<(string Id, int Width, int Height, double Scale)> ComposeAsync(ComposeSpec spec) => Canvas.ComposeAsync(spec);
+    public Task<(ImageDifference Difference, bool SizeMismatch)> CompareAsync(CanvasNode a, CanvasNode b, double threshold) => Canvas.CompareAsync(a, b, threshold);
     public Task<string> AddToLibraryAsync(CanvasNode node, bool replace) => Canvas.AddToLibraryAsync(node, replace);
 }
