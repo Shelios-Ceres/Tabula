@@ -87,7 +87,10 @@ public static class Stacks
     public static List<(double X, double Y)> Open(IReadOnlyList<CanvasNode> members, StackLayout layout = StackLayout.Grid, double gap = Gap)
     {
         foreach (var member in members) member.SetOption(NodeKeys.StackOpen, "true");
-        return layout == StackLayout.Row ? Row(members, gap) : Grid(members, gap);
+        List<(double X, double Y)> At(double between) => layout == StackLayout.Row ? Row(members, between) : Grid(members, between);
+        var positions = At(gap);
+        // A gap large enough to overflow gives positions that cannot be saved: the default gap is used instead.
+        return positions.All(p => double.IsFinite(p.X) && double.IsFinite(p.Y)) ? positions : At(Gap);
     }
 
     /// <summary>Gather an opened stack back onto its lead's spot at once and mark it collapsed.</summary>

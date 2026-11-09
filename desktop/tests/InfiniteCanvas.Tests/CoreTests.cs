@@ -149,6 +149,22 @@ public class CoreTests
         Assert.Equal(expected, Stacks.GapOf(node));
     }
 
+    [Theory]
+    [InlineData(StackLayout.Row)]
+    [InlineData(StackLayout.Grid)]
+    public void A_gap_large_enough_to_overflow_falls_back_to_the_default_so_every_position_can_be_saved(StackLayout layout)
+    {
+        var members = Batch(9);
+        var expected = layout == StackLayout.Row ? Stacks.Row(members) : Stacks.Grid(members);
+        Assert.Equal(expected, Stacks.Open(members, layout, double.MaxValue));
+
+        var batch = Batch(9);
+        foreach (var node in batch) node.SetOption(NodeKeys.Stack, null);
+        Stacks.FormBatch(batch, layout, double.MaxValue);
+        Assert.All(batch, n => Assert.True(double.IsFinite(n.X) && double.IsFinite(n.Y)));
+        Assert.Equal(expected, batch.Select(n => (n.X, n.Y)));
+    }
+
     [Fact]
     public void A_retried_output_takes_its_source_settings_but_stays_in_its_stack_and_keeps_its_source()
     {
