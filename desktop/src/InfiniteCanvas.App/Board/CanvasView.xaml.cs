@@ -2,6 +2,7 @@ using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Numerics;
+using InfiniteCanvas.Agents;
 using InfiniteCanvas.Core.Canvas;
 using InfiniteCanvas.Core.Models;
 using InfiniteCanvas.Core.Settings;
@@ -20,6 +21,7 @@ using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
+using ModelContextProtocol;
 using Windows.ApplicationModel.DataTransfer;
 using Windows.Foundation;
 using Windows.Graphics.Imaging;
@@ -1715,14 +1717,23 @@ public sealed partial class CanvasView : UserControl
         });
     }
 
-    /// <summary>Import media files as new nodes from a world point; returns the new node IDs.</summary>
+    /// <summary>Import media files as new nodes from a world point; returns the new node IDs. Files that fail are listed in a dialog.</summary>
     public Task<List<string>> ImportFilesAsync(IReadOnlyList<string> paths, Point world) => IsClosing
-        ? Task.FromResult(new List<string>()) : TrackLocalAsync(() => ImportFilesCoreAsync(paths, world));
+        ? Task.FromResult(new List<string>()) : TrackLocalAsync(async () =>
+        {
+            var result = await ImportFilesCoreAsync(paths, world);
+            if (result.Failed.Count > 0) await Dialogs.MessageAsync("以下文件导入失败", "文件不存在、被占用或没有读取权限：\n" + string.Join("\n", result.Failed.Select(f => Path.GetFileName(f.Path))));
+            return result.Ids.ToList();
+        });
 
-    private async Task<List<string>> ImportFilesCoreAsync(IReadOnlyList<string> paths, Point world)
+    /// <summary>The same import for agents: no dialog, failures come back in the result so a tool call never waits for someone to dismiss one.</summary>
+    internal Task<ImportResult> ImportFilesQuietAsync(IReadOnlyList<string> paths, Point world) => IsClosing
+        ? Task.FromResult(new ImportResult([], [])) : TrackLocalAsync(() => ImportFilesCoreAsync(paths, world));
+
+    private async Task<ImportResult> ImportFilesCoreAsync(IReadOnlyList<string> paths, Point world)
     {
         var id = Doc.Id;
-        var failed = new List<string>();
+        var failed = new List<ImportFailure>();
         // Copy off the UI thread before touching the document, so a large or unreadable file never freezes the window or leaves an empty node.
         var imported = await Task.Run(() =>
         {
@@ -1734,7 +1745,7 @@ public sealed partial class CanvasView : UserControl
                 catch (Exception ex)
                 {
                     App.Log(ex);
-                    failed.Add(Path.GetFileName(path));
+                    failed.Add(new(path, ex.Message));
                 }
             }
             return done;
@@ -1754,9 +1765,20 @@ public sealed partial class CanvasView : UserControl
             }
             Select(ids);
         }
-        if (failed.Count > 0) await Dialogs.MessageAsync("以下文件导入失败", "文件不存在、被占用或没有读取权限：\n" + string.Join("\n", failed));
-        return ids;
+        return new(ids, failed);
     }
+
+    /// <summary>Give a media node a new numbered copy of the file, keeping everything but the picture; the old file stays in the canvas folder. One undo step.</summary>
+    internal Task ReplaceMediaAsync(CanvasNode node, string path) => IsClosing ? throw new McpException("画布正在关闭，请稍后重试") : TrackLocalAsync(async () =>
+    {
+        var id = Doc.Id;
+        var asset = await Task.Run(() => ProjectStore.ImportAsset(id, path));
+        if (Doc.Find(node.Id) != node) throw new McpException("节点已被删除");
+        History.Record();
+        // Marks and conversations describe the old picture only.
+        foreach (var key in new[] { NodeKeys.Mask, NodeKeys.Markup, NodeKeys.Selections, NodeKeys.ConversationId, NodeKeys.ConversationModel }) node.SetOption(key, null);
+        await FillMediaAsync(node, asset, Media.MimeOf(path), null);
+    });
 
     /// <summary>Attach an asset to a node and match the node to the media's aspect ratio.</summary>
     private async Task FillMediaAsync(CanvasNode node, string asset, string mimeType, byte[]? bytes)

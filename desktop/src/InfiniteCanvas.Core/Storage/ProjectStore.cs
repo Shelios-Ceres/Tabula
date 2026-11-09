@@ -204,6 +204,28 @@ public static class Media
         _ => null,
     };
 
+    /// <summary>Windows device names (CON, NUL, COM1…): a file cannot be named after one, with or without an extension.</summary>
+    public static bool IsReservedName(string stem)
+    {
+        var name = stem.Split('.')[0].TrimEnd(' ').ToUpperInvariant();
+        return name is "CON" or "PRN" or "AUX" or "NUL" or "CONIN$" or "CONOUT$" || name.Length == 4 && (name.StartsWith("COM") || name.StartsWith("LPT")) && name[3] is >= '1' and <= '9';
+    }
+
+    /// <summary>
+    /// Why a path an agent gave cannot be imported, or null: an absolute local path (no UNC or device path, no alternate data stream)
+    /// to an existing file with a supported media extension. There is no size limit, as with dragging a file in.
+    /// </summary>
+    public static string? ImportProblem(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return "路径为空";
+        if (path.StartsWith(@"\\") || path.StartsWith("//")) return "不接受网络（UNC）路径和设备路径";
+        if (!Path.IsPathFullyQualified(path)) return "必须是带盘符的绝对路径";
+        if (path.IndexOf(':', 2) >= 0 || path.IndexOfAny(Path.GetInvalidPathChars()) >= 0) return "路径含有非法字符";
+        if (KindOf(path) is null) return "不支持的文件类型，可用 png、jpg、jpeg、webp、gif、svg、bmp、mp4、mov、webm、mp3、wav、aac、flac、opus、m4a";
+        if (IsReservedName(Path.GetFileNameWithoutExtension(path))) return "不能使用设备名作为文件名";
+        return File.Exists(path) ? null : "文件不存在";
+    }
+
     /// <summary>Vector pictures show and export as they are, but pixel tools and raster-only vendors need them drawn first.</summary>
     public static bool IsSvg(string? path) => path is not null && Path.GetExtension(path).Equals(".svg", StringComparison.OrdinalIgnoreCase);
 

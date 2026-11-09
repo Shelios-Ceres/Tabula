@@ -39,11 +39,18 @@ public interface ICanvasHost
     IReadOnlyList<string> AddToGroup(string groupId, IReadOnlyCollection<string> ids, bool fit);
     /// <summary>Take nodes (collapsed stacks whole) out of their groups; groups left empty are deleted. The released node IDs. No history record.</summary>
     IReadOnlyList<string> RemoveFromGroup(IReadOnlyCollection<string> ids, bool fit);
-    /// <summary>Import media files as new nodes from a world point (one undo step); the new node IDs.</summary>
-    Task<IReadOnlyList<string>> ImportAsync(IReadOnlyList<string> paths, double x, double y);
+    /// <summary>Import media files as new nodes from a world point (one undo step). Never shows a dialog: files that cannot be imported come back in Failed.</summary>
+    Task<ImportResult> ImportAsync(IReadOnlyList<string> paths, double x, double y);
+    /// <summary>Give a media node a new file of its kind, keeping its ID, position, width, group, stack and connections (one undo step). Throws when the copy fails; never shows a dialog.</summary>
+    Task ReplaceMediaAsync(CanvasNode node, string path);
     /// <summary>Copy a node's media into this canvas's library, named after the node.</summary>
     Task AddToLibraryAsync(CanvasNode node);
 }
+
+public sealed record ImportFailure(string Path, string Reason);
+
+/// <summary>New node IDs and the files that could not be imported.</summary>
+public sealed record ImportResult(IReadOnlyList<string> Ids, IReadOnlyList<ImportFailure> Failed);
 
 /// <summary>One canvas_apply_ops step; fields not used by the op type are ignored.</summary>
 public sealed class CanvasOp
@@ -169,7 +176,22 @@ public static class CanvasTools
             double? y = null) => await PlaceAsync(host, names, x, y), new()
         {
             Name = "library_place",
-            Description = "把当前画布资料库里的文件放到画布上，成为新的图片 / 视频 / 音频节点，返回节点 ID（可作为生成的参考节点）。",
+            Description = "把当前画布资料库里的文件放到画布上，成为新的图片 / 视频 / 音频节点，返回节点 ID（可作为生成的参考节点）；放不上去的文件列在 failed 里，全部失败时报错。",
+        }),
+        McpServerTool.Create(async (
+            [Description("本机文件的绝对路径（带盘符，不接受网络路径）；支持 png、jpg、jpeg、webp、gif、svg、bmp、mp4、mov、webm、mp3、wav、aac、flac、opus、m4a")] List<string> paths,
+            [Description("放置位置左上角的世界坐标，省略时放在可视区域中央")] double? x = null,
+            double? y = null) => await ImportFilesAsync(host, paths, x, y), new()
+        {
+            Name = "canvas_import_file",
+            Description = "把本机文件导入画布，成为新的图片 / 视频 / 音频节点（文件会复制进画布自己的文件夹），返回 nodeIds，导入不了的文件列在 failed: [{path, reason}] 里。只导入用户在对话里明确点名的文件，不要自己翻找或导入其他本机文件。",
+        }),
+        McpServerTool.Create(async (
+            [Description("要替换内容的图片、视频或音频节点 ID")] string nodeId,
+            [Description("新文件的绝对路径，类型必须和节点一致（图片换图片）")] string path) => await ReplaceMediaAsync(host, nodeId, path), new()
+        {
+            Name = "canvas_replace_media", Destructive = true,
+            Description = "给已有的图片 / 视频 / 音频节点换上本机的一个新文件，节点 ID、位置、宽度、分组和连线都不变，整次算一步撤销，旧文件仍留在画布文件夹里。节点正在生成时不能替换；节点上的提示词和模型参数不会清除，之后重新生成会盖掉替换进去的文件。只用用户在对话里明确点名的文件。",
         }),
         McpServerTool.Create(async ([Description("图片、视频或音频节点 ID")] string nodeId) => await AddToLibraryAsync(host, nodeId), new()
         {
@@ -195,12 +217,48 @@ public static class CanvasTools
         var items = LibraryStore.List(canvas.Id);
         var paths = names.Select(name => items.FirstOrDefault(i => Path.GetFileName(i.Path).Equals(name, StringComparison.OrdinalIgnoreCase) || i.Name.Equals(name, StringComparison.OrdinalIgnoreCase))?.Path
             ?? throw new McpException($"资料库里没有「{name}」，请先用 library_list 查看文件名")).ToList();
-        var ids = await await host.OnUiAsync(() =>
+        var result = await ImportAsync(host, canvas, paths, x, y);
+        if (result.Ids.Count == 0 && result.Failed.Count > 0) throw new McpException($"文件放不上画布：{string.Join("；", result.Failed.Select(f => $"{Path.GetFileName(f.Path)}（{f.Reason}）"))}");
+        return Json(new { NodeIds = result.Ids, Failed = result.Failed.Count > 0 ? result.Failed : null });
+    }
+
+    private static async Task<ImportResult> ImportAsync(ICanvasHost host, CanvasDocument canvas, List<string> paths, double? x, double? y) => await await host.OnUiAsync(() =>
+    {
+        if (!ReferenceEquals(canvas, host.Document)) throw new McpException("画布已切换，请重新读取当前画布后再操作");
+        return host.ImportAsync(paths, x ?? host.ViewCenter.X, y ?? host.ViewCenter.Y);
+    });
+
+    /// <summary>Paths the agent gave are checked here, so a bad one is reported in failed instead of reaching the host.</summary>
+    private static async Task<string> ImportFilesAsync(ICanvasHost host, List<string> paths, double? x, double? y)
+    {
+        ValidateGeometry(x, y);
+        if (paths.Count == 0) throw new McpException("paths 不能为空");
+        var canvas = await host.OnUiAsync(() => host.Document);
+        var failed = paths.Select(path => (Path: path, Reason: Media.ImportProblem(path))).Where(p => p.Reason is not null).Select(p => new ImportFailure(p.Path, p.Reason!)).ToList();
+        var valid = paths.Where(path => failed.All(f => f.Path != path)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var result = valid.Count > 0 ? await ImportAsync(host, canvas, valid, x, y) : new ImportResult([], []);
+        failed.AddRange(result.Failed);
+        if (result.Ids.Count == 0 && failed.Count > 0) throw new McpException($"没有文件被导入：{string.Join("；", failed.Select(f => $"{f.Path}（{f.Reason}）"))}");
+        return Json(new { NodeIds = result.Ids, Failed = failed.Count > 0 ? failed : null });
+    }
+
+    private static async Task<string> ReplaceMediaAsync(ICanvasHost host, string nodeId, string path)
+    {
+        if (Media.ImportProblem(path) is { } problem) throw new McpException($"{path}：{problem}");
+        var (canvas, node) = await host.OnUiAsync(() =>
         {
-            if (!ReferenceEquals(canvas, host.Document)) throw new McpException("画布已切换，请重新读取当前画布后再放置素材");
-            return host.ImportAsync(paths, x ?? host.ViewCenter.X, y ?? host.ViewCenter.Y);
+            var node = Find(host, nodeId);
+            if (node.Kind is not (NodeKind.Image or NodeKind.Video or NodeKind.Audio)) throw new McpException("只有图片、视频、音频节点可以替换内容");
+            if (Media.KindOf(path) != node.Kind) throw new McpException($"文件类型和节点不一致：节点是{node.Kind.ToString().ToLowerInvariant()}，文件是{Media.KindOf(path)!.Value.ToString().ToLowerInvariant()}");
+            if (node.Status == NodeStatus.Loading || host.IsRunning(node.Id)) throw new McpException("节点正在生成，请等它结束或先停止后再替换");
+            return (host.Document, node);
         });
-        return Json(new { NodeIds = ids });
+        await await host.OnUiAsync(() =>
+        {
+            if (!ReferenceEquals(canvas, host.Document) || host.Document.Find(node.Id) != node) throw new McpException("画布已切换或节点已被删除，请重新读取当前画布");
+            return host.ReplaceMediaAsync(node, path);
+        });
+        return Json(new { NodeId = node.Id, File = node.Content, Note = "节点上的提示词和模型参数没有清除，重新生成会盖掉替换进去的文件；旧文件仍在画布文件夹里，可以撤销。" });
     }
 
     private static async Task<string> AddToLibraryAsync(ICanvasHost host, string nodeId)

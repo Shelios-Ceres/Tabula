@@ -86,10 +86,22 @@ public class AgentTests
             foreach (var connection in Document.Connections.Where(c => ids.Contains(c.From) || ids.Contains(c.To)).ToList()) Document.Connections.Remove(connection);
         }
         public List<string> Imported { get; } = [];
-        public Task<IReadOnlyList<string>> ImportAsync(IReadOnlyList<string> paths, double x, double y)
+        /// <summary>File names this host cannot copy; they come back in Failed, as the real host reports them without a dialog.</summary>
+        public HashSet<string> Unreadable { get; } = [];
+        public List<(string NodeId, string Path)> Replaced { get; } = [];
+        public Task<ImportResult> ImportAsync(IReadOnlyList<string> paths, double x, double y)
         {
-            Imported.AddRange(paths);
-            return Task.FromResult<IReadOnlyList<string>>(paths.Select(_ => Ids.New("node")).ToList());
+            var failed = paths.Where(p => Unreadable.Contains(Path.GetFileName(p))).ToList();
+            var imported = paths.Except(failed).ToList();
+            Imported.AddRange(imported);
+            return Task.FromResult(new ImportResult(imported.Select(_ => Ids.New("node")).ToList(), failed.Select(p => new ImportFailure(p, "文件被占用")).ToList()));
+        }
+        public Task ReplaceMediaAsync(CanvasNode node, string path)
+        {
+            RecordHistory();
+            Replaced.Add((node.Id, path));
+            node.Content = Path.GetFileName(path);
+            return Task.CompletedTask;
         }
         public Task AddToLibraryAsync(CanvasNode node) { LibraryProjects.Add(Document.Id); return Task.CompletedTask; }
     }
@@ -585,7 +597,7 @@ public class AgentTests
         await using var pipe = new NamedPipeClientStream(".", name, PipeDirection.InOut, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
         await pipe.ConnectAsync(5000);
         await using var client = await McpClient.CreateAsync(new StreamClientTransport(pipe, pipe, null));
-        Assert.Equal(10, (await client.ListToolsAsync()).Count);
+        Assert.Equal(12, (await client.ListToolsAsync()).Count);
     }
 
     [Fact]
@@ -598,7 +610,7 @@ public class AgentTests
         await using var client = await McpClient.CreateAsync(new StreamClientTransport(pipe, pipe, null));
 
         var tools = await client.ListToolsAsync();
-        Assert.Equal(["canvas_apply_ops", "canvas_generate", "canvas_get_image", "canvas_get_node", "canvas_get_state", "canvas_run_generation", "generation_get_status", "library_add", "library_list", "library_place"], tools.Select(t => t.Name).Order());
+        Assert.Equal(["canvas_apply_ops", "canvas_generate", "canvas_get_image", "canvas_get_node", "canvas_get_state", "canvas_import_file", "canvas_replace_media", "canvas_run_generation", "generation_get_status", "library_add", "library_list", "library_place"], tools.Select(t => t.Name).Order());
 
         var generated = await client.CallToolAsync("canvas_generate", new Dictionary<string, object?> { ["mode"] = "image", ["prompt"] = "一只猫", ["ratio"] = "1:1" });
         var nodeId = Parse(((TextContentBlock)generated.Content[0]).Text).GetProperty("nodeId").GetString();
@@ -643,6 +655,139 @@ public class AgentTests
             Assert.Equal(1, Parse(((TextContentBlock)placed.Content[0]).Text).GetProperty("nodeIds").GetArrayLength());
             Assert.Equal([file], host.Imported);
             Assert.True((await client.CallToolAsync("library_place", new Dictionary<string, object?> { ["names"] = new[] { "nope.png" } })).IsError);
+        }
+        finally { Directory.Delete(Path.GetDirectoryName(library)!, true); }
+    }
+
+    private sealed class Session(FakeHost host) : IAsyncDisposable
+    {
+        private readonly CanvasMcpServer _server = new(host);
+        private NamedPipeClientStream? _pipe;
+        public McpClient Client { get; private set; } = null!;
+
+        public static async Task<Session> StartAsync(FakeHost host)
+        {
+            var session = new Session(host);
+            session._pipe = new NamedPipeClientStream(".", session._server.PipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
+            await session._pipe.ConnectAsync(5000);
+            session.Client = await McpClient.CreateAsync(new StreamClientTransport(session._pipe, session._pipe, null));
+            return session;
+        }
+
+        public async Task<(bool IsError, string Text)> CallAsync(string tool, Dictionary<string, object?> args)
+        {
+            var result = await Client.CallToolAsync(tool, args);
+            return (result.IsError == true, ((TextContentBlock)result.Content[0]).Text);
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            await Client.DisposeAsync();
+            await _pipe!.DisposeAsync();
+            await _server.DisposeAsync();
+        }
+    }
+
+    private static string TempMedia(string directory, string name)
+    {
+        var path = Path.Combine(directory, name);
+        File.WriteAllBytes(path, [1, 2, 3]);
+        return path;
+    }
+
+    [Fact]
+    public async Task Import_file_places_valid_paths_and_reports_every_rejected_path_without_a_dialog()
+    {
+        var host = new FakeHost();
+        var dir = Directory.CreateTempSubdirectory("ic-import").FullName;
+        try
+        {
+            var good = TempMedia(dir, "参考.png");
+            var locked = TempMedia(dir, "占用.jpg");
+            host.Unreadable.Add("占用.jpg");
+            var text = TempMedia(dir, "notes.txt");
+            var missing = Path.Combine(dir, "missing.png");
+            var unc = @"\\server\share\a.png";
+            var rejected = new[] { text, missing, "relative.png", unc, @"\\?\" + good, @"\\.\" + good, "//server/share/a.png", good + ":stream", Path.Combine(dir, "NUL.png"), "" };
+            await using var session = await Session.StartAsync(host);
+
+            var (isError, body) = await session.CallAsync("canvas_import_file", new() { ["paths"] = rejected.Append(good).Append(locked).ToArray(), ["x"] = 10d, ["y"] = 20d });
+
+            Assert.False(isError);
+            var json = Parse(body);
+            Assert.Equal(1, json.GetProperty("nodeIds").GetArrayLength());
+            Assert.Equal([good], host.Imported);
+            var failed = json.GetProperty("failed").EnumerateArray().ToDictionary(f => f.GetProperty("path").GetString()!, f => f.GetProperty("reason").GetString()!);
+            Assert.Equal(rejected.Length + 1, failed.Count);
+            Assert.All(rejected, path => Assert.True(failed.ContainsKey(path), path));
+            Assert.Equal("文件被占用", failed[locked]);
+            Assert.Contains("不支持的文件类型", failed[text]);
+            Assert.Contains("不存在", failed[missing]);
+            Assert.Contains("绝对路径", failed["relative.png"]);
+            Assert.Contains("UNC", failed[unc]);
+            Assert.Contains("UNC", failed[@"\\?\" + good]);
+            Assert.Contains("UNC", failed["//server/share/a.png"]);
+
+            // Nothing usable at all is an error naming each path, not an empty success.
+            var (allBad, message) = await session.CallAsync("canvas_import_file", new() { ["paths"] = new[] { text, "relative.png" } });
+            Assert.True(allBad);
+            Assert.Contains("relative.png", message);
+            Assert.True((await session.CallAsync("canvas_import_file", new() { ["paths"] = Array.Empty<string>() })).IsError);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Fact]
+    public async Task Replace_media_keeps_the_node_and_rejects_wrong_kinds_busy_nodes_and_bad_paths()
+    {
+        var host = new FakeHost();
+        var dir = Directory.CreateTempSubdirectory("ic-replace").FullName;
+        try
+        {
+            var image = CanvasNode.Create(NodeKind.Image, 0, 0);
+            image.Content = "图片-001.png";
+            image.Status = NodeStatus.Success;
+            var text = CanvasNode.Create(NodeKind.Text, 0, 0);
+            var busy = CanvasNode.Create(NodeKind.Image, 0, 0);
+            busy.Status = NodeStatus.Loading;
+            foreach (var node in new[] { image, text, busy }) host.Document.Nodes.Add(node);
+            var picture = TempMedia(dir, "新图.webp");
+            var clip = TempMedia(dir, "clip.mp4");
+            await using var session = await Session.StartAsync(host);
+
+            var ok = await session.CallAsync("canvas_replace_media", new() { ["nodeId"] = image.Id, ["path"] = picture });
+            Assert.False(ok.IsError);
+            Assert.Equal(("新图.webp", image.Id, 1), (image.Content, Parse(ok.Text).GetProperty("nodeId").GetString(), host.Records));
+            Assert.Equal([(image.Id, picture)], host.Replaced);
+
+            foreach (var (id, path) in new[] { (image.Id, clip), (text.Id, picture), (busy.Id, picture), ("missing", picture), (image.Id, Path.Combine(dir, "gone.png")), (image.Id, @"\\server\a.png"), (image.Id, "a.png") })
+                Assert.True((await session.CallAsync("canvas_replace_media", new() { ["nodeId"] = id, ["path"] = path })).IsError, $"{id} {path}");
+            Assert.Single(host.Replaced);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Fact]
+    public async Task Library_place_returns_an_error_for_a_file_the_host_cannot_import_instead_of_a_dialog()
+    {
+        var host = new FakeHost();
+        var library = InfiniteCanvas.Core.Storage.ProjectStore.LibraryDir(host.Document.Id);
+        Directory.CreateDirectory(library);
+        try
+        {
+            TempMedia(library, "坏文件.png");
+            TempMedia(library, "好文件.png");
+            host.Unreadable.Add("坏文件.png");
+            await using var session = await Session.StartAsync(host);
+
+            var bad = await session.CallAsync("library_place", new() { ["names"] = new[] { "坏文件.png" } });
+            Assert.True(bad.IsError);
+            Assert.Contains("坏文件.png", bad.Text);
+
+            var mixed = await session.CallAsync("library_place", new() { ["names"] = new[] { "坏文件.png", "好文件.png" } });
+            Assert.False(mixed.IsError);
+            Assert.Equal(1, Parse(mixed.Text).GetProperty("nodeIds").GetArrayLength());
+            Assert.Equal(1, Parse(mixed.Text).GetProperty("failed").GetArrayLength());
         }
         finally { Directory.Delete(Path.GetDirectoryName(library)!, true); }
     }
