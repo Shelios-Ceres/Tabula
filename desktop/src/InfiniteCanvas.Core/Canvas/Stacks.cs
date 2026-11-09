@@ -77,7 +77,7 @@ public static class Stacks
     public static (double Width, double Height) Footprint(IReadOnlyList<CanvasNode> members, StackLayout layout, double gap)
     {
         if (layout == StackLayout.Stack || members.Count < 2) return (members.Max(n => n.Width), members.Max(n => n.Height));
-        var at = layout == StackLayout.Row ? Row(members, gap) : Grid(members, gap);
+        var at = Spread(members, layout, gap);
         return (at.Select((p, i) => p.X + members[i].Width).Max() - at.Min(p => p.X), at.Select((p, i) => p.Y + members[i].Height).Max() - at.Min(p => p.Y));
     }
 
@@ -95,9 +95,14 @@ public static class Stacks
     public static List<(double X, double Y)> Open(IReadOnlyList<CanvasNode> members, StackLayout layout = StackLayout.Grid, double gap = Gap)
     {
         foreach (var member in members) member.SetOption(NodeKeys.StackOpen, "true");
+        return Spread(members, layout, gap);
+    }
+
+    /// <summary>Row or grid positions; a gap large enough to overflow gives positions that cannot be saved, and the default gap is used instead.</summary>
+    private static List<(double X, double Y)> Spread(IReadOnlyList<CanvasNode> members, StackLayout layout, double gap)
+    {
         List<(double X, double Y)> At(double between) => layout == StackLayout.Row ? Row(members, between) : Grid(members, between);
         var positions = At(gap);
-        // A gap large enough to overflow gives positions that cannot be saved: the default gap is used instead.
         return positions.All(p => double.IsFinite(p.X) && double.IsFinite(p.Y)) ? positions : At(Gap);
     }
 

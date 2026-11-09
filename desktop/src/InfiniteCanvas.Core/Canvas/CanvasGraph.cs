@@ -43,7 +43,9 @@ public static class CanvasGraph
     {
         var lead = members[0];
         var (width, height) = Stacks.Footprint(members, layout, gap);
-        return FreeX(new CanvasNode { Kind = NodeKind.Image, X = lead.X, Y = lead.Y, Width = width, Height = height }, others);
+        var x = FreeX(new CanvasNode { Kind = NodeKind.Image, X = lead.X, Y = lead.Y, Width = width, Height = height }, others);
+        // Sizes this large can overflow the search; the batch then stays where it is rather than get a coordinate that cannot be saved.
+        return double.IsFinite(x) ? x : lead.X;
     }
 
     /// <summary>Height of a generated picture card of this width and ratio, as the generator sizes its outputs.</summary>

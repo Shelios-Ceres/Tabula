@@ -54,6 +54,23 @@ public class CoreTests
         finally { Cleanup(id, source); }
     }
 
+    [Theory]
+    [InlineData(double.MaxValue)]
+    [InlineData(1e308)]
+    public void A_gap_large_enough_to_overflow_never_gives_a_batch_a_coordinate_that_cannot_be_saved(double gap)
+    {
+        var batch = Enumerable.Range(0, 4).Select(_ => new CanvasNode { Kind = NodeKind.Image, X = 100, Y = 50, Width = 340, Height = 240 }).ToList();
+        foreach (var layout in new[] { StackLayout.Row, StackLayout.Grid })
+        {
+            var (width, height) = Stacks.Footprint(batch, layout, gap);
+            Assert.True(double.IsFinite(width) && double.IsFinite(height));
+            var x = CanvasGraph.FreeBatchX(batch, layout, gap, [new CanvasNode { Kind = NodeKind.Image, X = 150, Y = 50, Width = 340, Height = 240 }]);
+            Assert.True(double.IsFinite(x));
+        }
+        // The default gap stands in, so the footprint is the one a default spread has.
+        Assert.Equal(Stacks.Footprint(batch, StackLayout.Row, Stacks.Gap), Stacks.Footprint(batch, StackLayout.Row, double.MaxValue));
+    }
+
     [Fact]
     public void A_spread_batch_looks_for_a_spot_where_the_whole_row_or_grid_is_free_beside_the_nodes_there()
     {
