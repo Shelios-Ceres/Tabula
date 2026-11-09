@@ -26,6 +26,22 @@ internal static class TestEnvironment
 
 public class CoreTests
 {
+    [Fact]
+    public void The_cost_estimate_for_1_to_3_on_gpt_image_2_6_behaves_like_the_other_ratios()
+    {
+        // GPT Image 2.6 has no published per-size table, so there is nothing to look up for any ratio: no estimate until a run with the same settings has been seen.
+        var channel = new ModelChannel { Vendor = Vendor.OpenAI };
+        var node = new CanvasNode { Kind = NodeKind.Image, Prompt = "全身立绘", Size = "2K", Ratio = "1:3", Quality = "medium", Count = 1 };
+        Assert.Null(Prices.EstimateImage(channel, "gpt-image-2.6-flare", node, 0));
+        UsageStore.RememberImage(Prices.ImageKey("gpt-image-2.6-flare", node), new TokenUsage(40, 1000));
+        var estimate = Prices.EstimateImage(channel, "gpt-image-2.6-flare", node, 0);
+        Assert.NotNull(estimate);
+        Assert.Equal("USD", estimate.Currency);
+        Assert.Contains("上次", estimate.Basis);
+        // The key names the ratio, so a run at another ratio is not mistaken for this one.
+        Assert.Null(Prices.EstimateImage(channel, "gpt-image-2.6-flare", new CanvasNode { Kind = NodeKind.Image, Prompt = "x", Size = "2K", Ratio = "9:21", Quality = "medium", Count = 1 }, 0));
+    }
+
     private static byte[] Pixels(int width, int height, byte blue = 10, byte green = 20, byte red = 30, byte alpha = 255) =>
         Enumerable.Range(0, width * height).SelectMany(_ => new[] { blue, green, red, alpha }).ToArray();
 
