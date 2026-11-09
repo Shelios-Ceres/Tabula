@@ -78,10 +78,12 @@ public static class LibraryStore
 
     /// <summary>
     /// Copy one file in under its own file name. A name already in the library is an error, or with <paramref name="replace"/> the old file goes
-    /// to the recycle bin and the new one takes its name. The copy is made first, so a failure leaves the old file in place. Returns the file name.
+    /// to the recycle bin and the new one takes its name. The copy is made first, so a failure (the copy, or the recycling) leaves the old file in place.
+    /// Never shows a dialog; <paramref name="recycle"/> is how a file is recycled (silently by default), replaceable by tests. Returns the file name.
     /// </summary>
-    public static async Task<string> PutAsync(string projectId, string sourcePath, bool replace)
+    public static async Task<string> PutAsync(string projectId, string sourcePath, bool replace, Func<string, bool>? recycle = null)
     {
+        recycle ??= ProjectStore.RecycleSilently;
         var dir = ProjectStore.LibraryDir(projectId);
         var name = await Task.Run(() =>
         {
@@ -97,7 +99,10 @@ public static class LibraryStore
                     if (InUse(target)) throw new LibraryException($"「{name}」正被其他程序占用，不能覆盖");
                     var staged = System.IO.Path.Combine(dir, Guid.NewGuid().ToString("N") + ".tmp");
                     File.Copy(sourcePath, staged);
-                    if (!ProjectStore.Recycle(target))
+                    bool recycled;
+                    try { recycled = recycle(target); }
+                    catch { File.Delete(staged); throw; }
+                    if (!recycled)
                     {
                         File.Delete(staged);
                         throw new LibraryException($"没能把旧的「{name}」移到回收站，已取消覆盖");
@@ -131,16 +136,17 @@ public static class LibraryStore
         return stem + extension;
     }
 
-    /// <summary>Move library files to the recycle bin by name. Each name that cannot be removed is reported with its reason; the rest are still removed.</summary>
-    public static (List<string> Removed, List<(string Name, string Reason)> Failed) RemoveNames(string projectId, IEnumerable<string> names)
+    /// <summary>Move library files to the recycle bin by name, silently. Each name that cannot be removed is reported with its reason and its file stays; the rest are still removed.</summary>
+    public static (List<string> Removed, List<(string Name, string Reason)> Failed) RemoveNames(string projectId, IEnumerable<string> names, Func<string, bool>? recycle = null)
     {
+        recycle ??= ProjectStore.RecycleSilently;
         var removed = new List<string>();
         var failed = new List<(string, string)>();
         foreach (var name in names)
         {
             if (Find(projectId, name) is not { } item) failed.Add((name, "资料库里没有这个文件"));
             else if (InUse(item.Path)) failed.Add((name, "文件正被其他程序占用"));
-            else if (ProjectStore.Recycle(item.Path)) removed.Add(System.IO.Path.GetFileName(item.Path));
+            else if (recycle(item.Path)) removed.Add(System.IO.Path.GetFileName(item.Path));
             else failed.Add((name, "没能移到回收站"));
         }
         if (removed.Count > 0) Changed?.Invoke();

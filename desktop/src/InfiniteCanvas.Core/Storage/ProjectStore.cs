@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Xml;
@@ -144,6 +145,43 @@ public static class ProjectStore
         }
         catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException) { return true; }
         catch (OperationCanceledException) { return false; }
+    }
+
+    // SHFileOperation as in shellapi.h (the app is x64 / ARM64, where the default packing is the native one).
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct ShFileOp
+    {
+        public nint Hwnd;
+        public uint Func;
+        public string From;
+        public string? To;
+        public ushort Flags;
+        public int AnyOperationsAborted;
+        public nint NameMappings;
+        public string? ProgressTitle;
+    }
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, EntryPoint = "SHFileOperationW")]
+    private static extern int ShFileOperation(ref ShFileOp op);
+
+    /// <summary>
+    /// Move one file to the Recycle Bin without any dialog, for code that must never wait on one (agent tools): progress, confirmation and error UI are all off.
+    /// Returns false and leaves the file where it is when the shell cannot do it. Only files on fixed local drives qualify: removable and network drives have no
+    /// Recycle Bin, and asking the shell to delete there would destroy the file for good. FOF_WANTNUKEWARNING also keeps a file the bin cannot take (too large,
+    /// or the bin switched off for the drive) from being deleted silently; the shell then asks, which is the rare case where this is not dialog-free.
+    /// </summary>
+    public static bool RecycleSilently(string path)
+    {
+        try
+        {
+            var full = Path.GetFullPath(path);
+            if (!File.Exists(full)) return true;
+            if (new DriveInfo(full[..1]).DriveType != DriveType.Fixed) return false;
+            // ALLOWUNDO | NOCONFIRMATION | SILENT | NOERRORUI | WANTNUKEWARNING
+            var op = new ShFileOp { Func = 3, From = full + "\0", Flags = 0x0040 | 0x0010 | 0x0004 | 0x0400 | 0x4000 };
+            return ShFileOperation(ref op) == 0 && op.AnyOperationsAborted == 0 && !File.Exists(full);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { return false; }
     }
 
     private static string? Cover(CanvasDocument doc)

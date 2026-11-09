@@ -123,6 +123,69 @@ public class CoreTests
         Assert.Contains(NodeKeys.Gap, NodeKeys.PerImage);
     }
 
+    /// <summary>Stands in for the shell in tests: the file is simply deleted, so nothing lands in the real Recycle Bin.</summary>
+    private static bool DeleteInstead(string path)
+    {
+        File.Delete(path);
+        return true;
+    }
+
+    [Fact]
+    public async Task A_failed_recycle_during_replace_or_remove_leaves_the_library_file_and_reports_it()
+    {
+        var (id, dir, source) = LibrarySandbox();
+        try
+        {
+            var first = Path.Combine(source, "猫.png");
+            var second = Path.Combine(Directory.CreateDirectory(Path.Combine(source, "b")).FullName, "猫.png");
+            await File.WriteAllBytesAsync(first, [1]);
+            await File.WriteAllBytesAsync(second, [2, 2]);
+            await LibraryStore.PutAsync(id, first, false);
+            var asked = new List<string>();
+            bool Refuse(string path) { asked.Add(Path.GetFileName(path)); return false; }
+
+            var replace = await Assert.ThrowsAsync<LibraryException>(() => LibraryStore.PutAsync(id, second, true, Refuse));
+            Assert.Contains("回收站", replace.Message);
+            Assert.Equal([1], await File.ReadAllBytesAsync(Path.Combine(dir, "猫.png")));
+            Assert.Equal(["猫.png"], Directory.GetFiles(dir).Select(Path.GetFileName));
+
+            var (removed, failed) = LibraryStore.RemoveNames(id, ["猫"], Refuse);
+            Assert.Empty(removed);
+            Assert.Equal([("猫", "没能移到回收站")], failed);
+            Assert.True(File.Exists(Path.Combine(dir, "猫.png")));
+            Assert.Equal(["猫.png", "猫.png"], asked);
+
+            // A recycler that throws is a failed copy of the same kind, not a crash.
+            await Assert.ThrowsAsync<LibraryException>(() => LibraryStore.PutAsync(id, second, true, _ => throw new UnauthorizedAccessException("拒绝访问")));
+            Assert.Equal([1], await File.ReadAllBytesAsync(Path.Combine(dir, "猫.png")));
+            Assert.Equal(["猫.png"], Directory.GetFiles(dir).Select(Path.GetFileName));
+        }
+        finally { Cleanup(id, source); }
+    }
+
+    [Fact]
+    public void Silent_recycle_moves_a_local_file_away_and_returns_false_without_a_dialog_when_it_cannot()
+    {
+        var dir = Directory.CreateTempSubdirectory("ic-recycle").FullName;
+        try
+        {
+            var plain = Path.Combine(dir, "plain.png");
+            File.WriteAllBytes(plain, [1]);
+            Assert.True(ProjectStore.RecycleSilently(plain));
+            Assert.False(File.Exists(plain));
+            Assert.True(ProjectStore.RecycleSilently(plain)); // already gone
+
+            // A file held open would make the ordinary shell call raise an error dialog and wait; here it just fails and stays.
+            var held = Path.Combine(dir, "held.png");
+            File.WriteAllBytes(held, [1]);
+            using (new FileStream(held, FileMode.Open, FileAccess.Read, FileShare.None))
+                Assert.False(ProjectStore.RecycleSilently(held));
+            Assert.True(File.Exists(held));
+
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
     private static (string Id, string Dir, string Source) LibrarySandbox()
     {
         var id = "lib-test-" + Guid.NewGuid().ToString("N")[..8];
@@ -156,7 +219,7 @@ public class CoreTests
                 Assert.Contains("replace", clash.Message);
                 Assert.Equal([1], await File.ReadAllBytesAsync(Path.Combine(dir, "猫.png")));
 
-                Assert.Equal("猫.png", await LibraryStore.PutAsync(id, second, true));
+                Assert.Equal("猫.png", await LibraryStore.PutAsync(id, second, true, DeleteInstead));
                 Assert.Equal([2, 2], await File.ReadAllBytesAsync(Path.Combine(dir, "猫.png")));
                 Assert.Equal(["猫.png"], Directory.GetFiles(dir).Select(Path.GetFileName));
                 Assert.True(changed >= 2); // the event is static, so tests running in parallel may add to the count
@@ -168,7 +231,7 @@ public class CoreTests
 
                 // A file another program holds open is not replaced.
                 await using (new FileStream(Path.Combine(dir, "猫.png"), FileMode.Open, FileAccess.Read, FileShare.None))
-                    await Assert.ThrowsAsync<LibraryException>(() => LibraryStore.PutAsync(id, first, true));
+                    await Assert.ThrowsAsync<LibraryException>(() => LibraryStore.PutAsync(id, first, true, DeleteInstead));
                 Assert.Equal([2, 2], await File.ReadAllBytesAsync(Path.Combine(dir, "猫.png")));
             }
             finally { LibraryStore.Changed -= OnChanged; }
@@ -216,7 +279,7 @@ public class CoreTests
 
             (List<string> Removed, List<(string Name, string Reason)> Failed) result;
             await using (new FileStream(Path.Combine(dir, "b.png"), FileMode.Open, FileAccess.Read, FileShare.None))
-                result = LibraryStore.RemoveNames(id, ["b", "missing", @"..\outside.png", outside]);
+                result = LibraryStore.RemoveNames(id, ["b", "missing", @"..\outside.png", outside], DeleteInstead);
 
             Assert.Empty(result.Removed);
             Assert.Equal(["b", "missing", @"..\outside.png", outside], result.Failed.Select(f => f.Name));
@@ -224,7 +287,7 @@ public class CoreTests
             Assert.True(File.Exists(outside));
             Assert.Equal(2, Directory.GetFiles(dir).Length);
 
-            result = LibraryStore.RemoveNames(id, ["a"]);
+            result = LibraryStore.RemoveNames(id, ["a"], DeleteInstead);
             Assert.Equal(["a.png"], result.Removed);
             Assert.Equal(["b.png"], Directory.GetFiles(dir).Select(Path.GetFileName));
         }
