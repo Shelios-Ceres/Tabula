@@ -15,6 +15,47 @@ internal static class TestEnvironment
 
 public class CoreTests
 {
+    [Fact]
+    public void Usage_report_groups_channels_by_currency_and_never_adds_yuan_to_dollars()
+    {
+        var day = DateOnly.FromDateTime(DateTime.Now);
+        var settings = new AppSettings();
+        ModelChannel Add(Vendor vendor, params string[] models)
+        {
+            var channel = new ModelChannel { Id = Ids.New("report"), Vendor = vendor, Models = models.Select(m => new ChannelModel { Name = m }).ToList() };
+            settings.Channels.Add(channel);
+            return channel;
+        }
+        var google = Add(Vendor.Google, "gemini-2.5-flash-image", "mystery-model");
+        var openAI = Add(Vendor.OpenAI, "gpt-image-1");
+        var ark = Add(Vendor.Ark, "seedream");
+        var qwen = Add(Vendor.Qwen, "qwen-image-2.1-pro");
+        Add(Vendor.XAI, "grok-imagine-image");
+        UsageStore.Record(google.Id, "gemini-2.5-flash-image", Capability.Image, 100, new TokenUsage(0, 0, 129000));
+        UsageStore.Record(google.Id, "mystery-model", Capability.Text, 2, new TokenUsage(500, 500));
+        UsageStore.Record(openAI.Id, "gpt-image-1", Capability.Image, 1, new TokenUsage(1_000_000, 0));
+        UsageStore.Record(ark.Id, "seedream", Capability.Image, 4);
+        UsageStore.Record(qwen.Id, "qwen-image-2.1-pro", Capability.Image, 3);
+
+        var report = UsageReport.Summarize(settings, day);
+
+        Assert.Equal(["CNY", "USD"], report.Select(c => c.Currency));
+        var (cny, usd) = (report[0], report[1]);
+        Assert.Equal(7, cny.Results["image"]);
+        Assert.Null(cny.EstimatedAmount);
+        Assert.Equal(2, cny.Channels.Count);
+        Assert.Equal((101, 2), (usd.Results["image"], usd.Results["text"]));
+        Assert.Equal(2, usd.Channels.Count);
+        var gemini = usd.Channels.Single(c => c.UnpricedModels.Count > 0);
+        Assert.Equal(["mystery-model"], gemini.UnpricedModels);
+        Assert.Equal(129000 * 30m / 1_000_000m, gemini.EstimatedAmount);
+        Assert.Equal(gemini.EstimatedAmount + 5m, usd.EstimatedAmount);
+        Assert.Empty(UsageReport.Summarize(settings, day.AddDays(1)));
+        Assert.Equal("CNY", UsageReport.CurrencyOf(Vendor.Ark));
+        Assert.Equal("CNY", UsageReport.CurrencyOf(Vendor.Qwen));
+        Assert.All(new[] { Vendor.OpenAI, Vendor.Google, Vendor.XAI }, v => Assert.Equal("USD", UsageReport.CurrencyOf(v)));
+    }
+
     private static List<CanvasNode> Batch(int count, double x = 100, double y = 50)
     {
         var members = Enumerable.Range(0, count).Select(i => CanvasNode.Create(NodeKind.Image, 0, 0)).ToList();

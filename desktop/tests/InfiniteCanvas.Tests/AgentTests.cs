@@ -2,6 +2,9 @@ using System.IO.Pipes;
 using System.Text.Json;
 using InfiniteCanvas.Agents;
 using InfiniteCanvas.Core.Canvas;
+using InfiniteCanvas.Core.Models;
+using InfiniteCanvas.Core.Settings;
+using InfiniteCanvas.Core.Storage;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 using Nerdbank.Streams;
@@ -608,7 +611,7 @@ public class AgentTests
         await using var pipe = new NamedPipeClientStream(".", name, PipeDirection.InOut, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
         await pipe.ConnectAsync(5000);
         await using var client = await McpClient.CreateAsync(new StreamClientTransport(pipe, pipe, null));
-        Assert.Equal(14, (await client.ListToolsAsync()).Count);
+        Assert.Equal(15, (await client.ListToolsAsync()).Count);
     }
 
     [Fact]
@@ -621,7 +624,7 @@ public class AgentTests
         await using var client = await McpClient.CreateAsync(new StreamClientTransport(pipe, pipe, null));
 
         var tools = await client.ListToolsAsync();
-        Assert.Equal(["canvas_apply_ops", "canvas_generate", "canvas_get_image", "canvas_get_node", "canvas_get_state", "canvas_import_file", "canvas_replace_media", "canvas_run_generation", "generation_get_status", "library_add", "library_list", "library_place", "library_remove", "library_rename"], tools.Select(t => t.Name).Order());
+        Assert.Equal(["canvas_apply_ops", "canvas_generate", "canvas_get_image", "canvas_get_node", "canvas_get_state", "canvas_import_file", "canvas_replace_media", "canvas_run_generation", "generation_get_status", "library_add", "library_list", "library_place", "library_remove", "library_rename", "usage_summary"], tools.Select(t => t.Name).Order());
 
         var generated = await client.CallToolAsync("canvas_generate", new Dictionary<string, object?> { ["mode"] = "image", ["prompt"] = "一只猫", ["ratio"] = "1:1" });
         var nodeId = Parse(((TextContentBlock)generated.Content[0]).Text).GetProperty("nodeId").GetString();
@@ -945,6 +948,125 @@ public class AgentTests
         ]));
         Assert.All(result.GetProperty("results").EnumerateArray(), r => Assert.True(r.TryGetProperty("error", out _)));
         Assert.Equal(original, host.Document.Nodes.Select(n => InfiniteCanvas.Core.Json.Serialize(n)).ToList());
+    }
+
+    /// <summary>A channel added to the in-memory settings (never saved) with one model, so estimates have a price to find; the model reference to put on a node.</summary>
+    private static (ModelChannel Channel, string Ref) AddChannel(Vendor vendor, string model, Capability capability = Capability.Image)
+    {
+        var channel = new ModelChannel { Id = Ids.New("test"), Vendor = vendor };
+        channel.Models.Add(new ChannelModel { Name = model, Capability = capability });
+        lock (SettingsStore.Current.Channels) SettingsStore.Current.Channels.Add(channel);
+        return (channel, ModelRef.Encode(channel.Id, model));
+    }
+
+    [Fact]
+    public async Task Generate_and_run_report_the_estimated_cost_with_its_basis_or_null_with_a_reason()
+    {
+        var host = new FakeHost();
+        var (_, xai) = AddChannel(Vendor.XAI, "grok-imagine-image");
+        var (_, qwen) = AddChannel(Vendor.Qwen, "qwen-image-2.1-pro");
+        await using var session = await Session.StartAsync(host);
+
+        var usd = Parse((await session.CallAsync("canvas_generate", new() { ["mode"] = "image", ["prompt"] = "猫", ["model"] = xai, ["count"] = 3 })).Text).GetProperty("estimatedCost");
+        Assert.Equal((0.06m, "USD"), (usd.GetProperty("amount").GetDecimal(), usd.GetProperty("currency").GetString()));
+        Assert.Contains("3 张", usd.GetProperty("basis").GetString());
+        var cny = Parse((await session.CallAsync("canvas_generate", new() { ["mode"] = "image", ["prompt"] = "猫", ["model"] = qwen, ["count"] = 3 })).Text).GetProperty("estimatedCost");
+        Assert.Equal((0.75m, "CNY"), (cny.GetProperty("amount").GetDecimal(), cny.GetProperty("currency").GetString()));
+
+        // No published price and no earlier run with these settings: an explicit null and the reason, not a missing key.
+        var unknown = Parse((await session.CallAsync("canvas_generate", new() { ["mode"] = "image", ["prompt"] = "猫", ["ratio"] = "21:9", ["quality"] = "high" })).Text);
+        Assert.Equal(JsonValueKind.Null, unknown.GetProperty("estimatedCost").ValueKind);
+        Assert.Contains("单价", unknown.GetProperty("estimatedCostNote").GetString());
+        var text = Parse((await session.CallAsync("canvas_generate", new() { ["mode"] = "text", ["prompt"] = "写一句话" })).Text);
+        Assert.Equal(JsonValueKind.Null, text.GetProperty("estimatedCost").ValueKind);
+        Assert.Contains("图片", text.GetProperty("estimatedCostNote").GetString());
+
+        var node = host.Document.Nodes.First(n => n.Model == xai);
+        host.Generated.Clear();
+        var run = Parse((await session.CallAsync("canvas_run_generation", new() { ["nodeId"] = node.Id })).Text);
+        Assert.True(run.GetProperty("started").GetBoolean());
+        Assert.Equal(0.06m, run.GetProperty("estimatedCost").GetProperty("amount").GetDecimal());
+        var again = Parse((await session.CallAsync("canvas_run_generation", new() { ["nodeId"] = node.Id })).Text);
+        Assert.False(again.GetProperty("started").GetBoolean());
+        Assert.False(again.TryGetProperty("estimatedCost", out _));
+        Assert.True((await session.CallAsync("canvas_run_generation", new() { ["nodeId"] = "missing" })).IsError);
+    }
+
+    [Fact]
+    public async Task Dry_run_estimates_with_the_connected_references_and_creates_no_node_history_or_request()
+    {
+        var host = new FakeHost();
+        var (channel, qwen) = AddChannel(Vendor.Qwen, "qwen-image-3.0");
+        var reference = CanvasNode.Create(NodeKind.Image, 0, 0);
+        (reference.Content, reference.Status) = ("图片-001.png", NodeStatus.Success);
+        host.Document.Nodes.Add(reference);
+        var group = new CanvasNode { Kind = NodeKind.Group, Title = "组" };
+        var member = CanvasNode.Create(NodeKind.Image, 0, 0);
+        (member.Content, member.GroupId) = ("图片-002.png", group.Id);
+        host.Document.Nodes.Add(group);
+        host.Document.Nodes.Add(member);
+        var snapshot = host.Document.Nodes.Select(n => InfiniteCanvas.Core.Json.Serialize(n)).ToList();
+        await using var session = await Session.StartAsync(host);
+
+        decimal Expected(int references) => Prices.EstimateImage(channel, "qwen-image-3.0", new CanvasNode { Kind = NodeKind.Image, Count = 2, Prompt = "猫" }, references)!.Amount;
+        async Task<JsonElement> Dry(params string[] refs) => Parse((await session.CallAsync("canvas_generate", new() { ["mode"] = "image", ["prompt"] = "猫", ["model"] = qwen, ["count"] = 2, ["dryRun"] = true, ["referenceNodeIds"] = refs })).Text);
+
+        var none = await Dry();
+        Assert.True(none.GetProperty("dryRun").GetBoolean() && none.GetProperty("valid").GetBoolean());
+        Assert.Equal(Expected(0), none.GetProperty("estimatedCost").GetProperty("amount").GetDecimal());
+        Assert.Equal(Expected(1), (await Dry(reference.Id)).GetProperty("estimatedCost").GetProperty("amount").GetDecimal());
+        // A group stands for its members, as it does in a real run.
+        Assert.Equal(Expected(1), (await Dry(group.Id)).GetProperty("estimatedCost").GetProperty("amount").GetDecimal());
+        Assert.Equal(Expected(2), (await Dry(reference.Id, group.Id)).GetProperty("estimatedCost").GetProperty("amount").GetDecimal());
+        Assert.True(Expected(2) > Expected(0));
+
+        Assert.Equal((0, 0), (host.Records, host.Generated.Count));
+        Assert.Equal(snapshot, host.Document.Nodes.Select(n => InfiniteCanvas.Core.Json.Serialize(n)).ToList());
+        Assert.Empty(host.Document.Connections);
+
+        // The same validation as a real call, so a dry run that passes will start.
+        foreach (var bad in new Dictionary<string, object?>[] { new() { ["model"] = "nowhere::model" }, new() { ["layout"] = "spiral" }, new() { ["referenceNodeIds"] = new[] { "missing" } }, new() { ["mode"] = "video" } })
+        {
+            var args = new Dictionary<string, object?> { ["mode"] = "image", ["prompt"] = "x", ["dryRun"] = true };
+            foreach (var (key, value) in bad) args[key] = value;
+            Assert.True((await session.CallAsync("canvas_generate", args)).IsError);
+        }
+        Assert.Equal(snapshot, host.Document.Nodes.Select(n => InfiniteCanvas.Core.Json.Serialize(n)).ToList());
+        Assert.Equal(0, host.Records);
+
+        var blank = Parse((await session.CallAsync("canvas_generate", new() { ["mode"] = "image", ["prompt"] = "", ["dryRun"] = true })).Text);
+        Assert.Contains("提示词", blank.GetProperty("cannotStart").GetString());
+    }
+
+    [Fact]
+    public async Task Usage_summary_lists_each_currency_apart_is_read_only_and_never_limits_generation()
+    {
+        var host = new FakeHost();
+        var (google, _) = AddChannel(Vendor.Google, "gemini-2.5-flash-image");
+        var (qwen, _) = AddChannel(Vendor.Qwen, "qwen-image-2.1-pro");
+        UsageStore.Record(google.Id, "gemini-2.5-flash-image", Capability.Image, 100, new TokenUsage(0, 0, 129000));
+        UsageStore.Record(qwen.Id, "qwen-image-2.1-pro", Capability.Image, 7);
+        await using var session = await Session.StartAsync(host);
+
+        var tools = await session.Client.ListToolsAsync();
+        Assert.True(tools.Single(t => t.Name == "usage_summary").ProtocolTool.Annotations?.ReadOnlyHint);
+
+        var summary = Parse((await session.CallAsync("usage_summary", new())).Text);
+        var currencies = summary.GetProperty("currencies").EnumerateArray().ToDictionary(c => c.GetProperty("currency").GetString()!);
+        Assert.Equal(["CNY", "USD"], currencies.Keys.Order());
+        Assert.Equal(7, currencies["CNY"].GetProperty("results").GetProperty("image").GetInt32());
+        Assert.False(currencies["CNY"].TryGetProperty("estimatedAmount", out _));
+        Assert.True(currencies["USD"].GetProperty("estimatedAmount").GetDecimal() >= 3.87m);
+        Assert.Equal(DateTime.Now.ToString("yyyy-MM-dd"), summary.GetProperty("since").GetString());
+
+        Assert.Empty(Parse((await session.CallAsync("usage_summary", new() { ["since"] = DateTime.Now.AddDays(1).ToString("yyyy-MM-dd") })).Text).GetProperty("currencies").EnumerateArray());
+        Assert.False((await session.CallAsync("usage_summary", new() { ["since"] = "month" })).IsError);
+        Assert.False((await session.CallAsync("usage_summary", new() { ["since"] = "2020-01-02" })).IsError);
+        Assert.True((await session.CallAsync("usage_summary", new() { ["since"] = "yesterday" })).IsError);
+
+        // Spending is reported, not capped: a generation still starts however much has been recorded.
+        Assert.False((await session.CallAsync("canvas_generate", new() { ["mode"] = "image", ["prompt"] = "猫" })).IsError);
+        Assert.Single(host.Generated);
     }
 
     [Fact]

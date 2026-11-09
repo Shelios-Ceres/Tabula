@@ -78,14 +78,7 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
         }
     }
 
-    public static Capability CapabilityOf(CanvasNode node) => node.Kind switch
-    {
-        NodeKind.Config => node.Mode,
-        NodeKind.Image => Capability.Image,
-        NodeKind.Video => Capability.Video,
-        NodeKind.Audio => Capability.Audio,
-        _ => Capability.Text,
-    };
+    public static Capability CapabilityOf(CanvasNode node) => NodeSpec.CapabilityOf(node);
 
     /// <summary>Video generation is not part of this version (it lives on the video-models branch): video nodes only hold imported clips.</summary>
     public static bool CanGenerate(CanvasNode node) => node.Kind != NodeKind.Group && CapabilityOf(node) != Capability.Video;
@@ -104,19 +97,7 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
     }
 
     /// <summary>A node that already holds an image or text joins its own request as the first input; the panel shows the same list so 图片N numbers match.</summary>
-    public static List<GenerationResource> InputsOf(CanvasDocument doc, CanvasNode node)
-    {
-        var resources = CanvasGraph.UpstreamResources(doc, node.Id);
-        if (node.HasContent && node.Kind is NodeKind.Image)
-        {
-            resources.Insert(0, new(node, NodeKind.Image, null));
-            // Layer decomposition and transparent background take exactly one image: on an existing image only the node itself is sent.
-            if ((node.Option("layers") == "true" || node.Option("transparent") == "true") && SettingsStore.Current.Resolve(node.Model) is { } resolved && ModelFamilies.FindImage(resolved.Channel.Vendor, resolved.Model.Name)?.Interactive == true)
-                resources.RemoveAll(r => r.Type == NodeKind.Image && r.Node != node);
-        }
-        if (node.HasContent && node.Kind is NodeKind.Text) resources.Insert(0, new(node, NodeKind.Text, node.Content));
-        return resources;
-    }
+    public static List<GenerationResource> InputsOf(CanvasDocument doc, CanvasNode node) => CanvasGraph.GenerationInputs(doc, node);
 
     /// <summary>
     /// An empty output node without a prompt of its own (a failed or stopped result) retries through the node that produced it:

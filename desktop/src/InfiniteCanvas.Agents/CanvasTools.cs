@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using InfiniteCanvas.Core.Canvas;
+using InfiniteCanvas.Core.Models;
 using InfiniteCanvas.Core.Settings;
 using InfiniteCanvas.Core.Storage;
 using ModelContextProtocol;
@@ -151,15 +152,21 @@ public static class CanvasTools
             [Description("新节点左上角世界坐标，省略时自动放置")] double? x = null,
             double? y = null,
             [Description("张数大于 1 时这一批结果的排布：stack（默认，叠成一摞）、row（横排）、grid（网格）")] string? layout = null,
-            [Description("row / grid 排布时成员之间的间距（世界坐标），默认 24")] double? gap = null) => host.OnUiAsync(() => Generate(host, mode, prompt, referenceNodeIds, model, ratio, size, quality, count, x, y, layout, gap)), new()
+            [Description("row / grid 排布时成员之间的间距（世界坐标），默认 24")] double? gap = null,
+            [Description("true 时只校验参数并估价，不建节点、不发请求")] bool? dryRun = null) => host.OnUiAsync(() => Generate(host, mode, prompt, referenceNodeIds, model, ratio, size, quality, count, x, y, layout, gap, dryRun ?? false)), new()
         {
             Name = "canvas_generate",
-            Description = "新建一个生成节点（图片 / 文本 / 语音），连上参考节点并立刻开始生成，返回节点 ID。多张图默认叠成一摞，用 layout=row 或 grid 可直接排成横排或网格。",
+            Description = "新建一个生成节点（图片 / 文本 / 语音），连上参考节点并立刻开始生成，返回节点 ID。多张图默认叠成一摞，用 layout=row 或 grid 可直接排成横排或网格。图片生成会返回 estimatedCost {amount, currency, basis}，没有官方单价时为 null 并附 estimatedCostNote；dryRun=true 只校验和估价、不花钱。估价是本机估算，不含思考 token，也不是账单。",
         }),
-        McpServerTool.Create(([Description("要生成的节点 ID")] string nodeId) => host.OnUiAsync(() => Run(host, Find(host, nodeId))), new()
+        McpServerTool.Create(([Description("要生成的节点 ID")] string nodeId) => host.OnUiAsync(() => RunTool(host, Find(host, nodeId))), new()
         {
             Name = "canvas_run_generation",
-            Description = "按节点当前的提示词、模型和连线输入重新触发生成。",
+            Description = "按节点当前的提示词、模型和连线输入重新触发生成。图片生成会返回 estimatedCost {amount, currency, basis}，没有官方单价时为 null 并附 estimatedCostNote。",
+        }),
+        McpServerTool.Create(([Description("起始日期 yyyy-MM-dd（含当天），或 today、month（本月 1 号起）；省略时是今天")] string? since = null) => host.OnUiAsync(() => Usage(since)), new()
+        {
+            Name = "usage_summary", ReadOnly = true,
+            Description = "本机账本里从某天起各渠道生成的数量和估算金额，按币种分开列（火山方舟、千问是人民币，其他是美元，不会相加）。金额只含有 token 单价的模型，其余在 unpricedModels 里；这是本机估算，不是服务商的账单，也不会限制生成。",
         }),
         McpServerTool.Create(([Description("要查询的节点 ID；省略时返回所有生成中或失败的节点")] List<string>? nodeIds = null) => host.OnUiAsync(() => Status(host, nodeIds)), new()
         {
@@ -312,6 +319,46 @@ public static class CanvasTools
     }
 
     private static string Json(object value) => JsonSerializer.Serialize(value, Options);
+
+    /// <summary>Expected cost of an image run from this node, worked out as the generation panel does it (same inputs, same prices); or why there is none.</summary>
+    private static (object? Cost, string? Note) Estimate(CanvasDocument doc, CanvasNode node)
+    {
+        // A retry of an empty output runs the node that produced it, for one picture.
+        if (!node.HasContent && string.IsNullOrWhiteSpace(node.Prompt) && node.Option(NodeKeys.SourceId) is { Length: > 0 } sourceId && doc.Find(sourceId) is { } origin && origin != node)
+        {
+            node = origin.Clone();
+            node.Count = 1;
+        }
+        if (NodeSpec.CapabilityOf(node) != Capability.Image) return (null, "只估算图片生成的费用，文本和语音暂不估价");
+        var settings = SettingsStore.Current;
+        var model = settings.ModelFor(Capability.Image, node.Model);
+        if (settings.Resolve(model) is not { } resolved) return (null, "还没有可用的图片模型，无法估价");
+        var references = CanvasGraph.GenerationInputs(doc, node).Count(r => r.Type == NodeKind.Image);
+        return Prices.EstimateImage(resolved.Channel, resolved.Model.Name, node, references) is { } estimate
+            ? (new { estimate.Amount, estimate.Currency, estimate.Basis }, null)
+            : (null, "这个模型和设置还没有官方单价，生成一次后才能按实际用量估算");
+    }
+
+    /// <summary>The key stays in the result as null when there is no estimate, so the agent can tell "unknown" from "not reported".</summary>
+    private static Dictionary<string, object?> WithCost(Dictionary<string, object?> result, (object? Cost, string? Note) cost)
+    {
+        result["estimatedCost"] = cost.Cost;
+        if (cost.Cost is null) result["estimatedCostNote"] = cost.Note;
+        return result;
+    }
+
+    private static string Usage(string? since)
+    {
+        var today = DateOnly.FromDateTime(DateTime.Now);
+        var from = since?.Trim().ToLowerInvariant() switch
+        {
+            null or "" or "today" => today,
+            "month" => new DateOnly(today.Year, today.Month, 1),
+            var text when DateOnly.TryParseExact(text, "yyyy-MM-dd", out var day) => day,
+            var text => throw new McpException($"since 只能是 yyyy-MM-dd、today 或 month，收到「{text}」"),
+        };
+        return Json(new { Since = from.ToString("yyyy-MM-dd"), Note = "本机账本的估算，不是服务商的账单；其他程序用同一个 Key 的花费看不到。", Currencies = UsageReport.Summarize(SettingsStore.Current, from) });
+    }
 
     private static CanvasNode Find(ICanvasHost host, string? id) =>
         id is not null && host.Document.Find(id) is { } node ? node : throw new McpException($"找不到节点「{id}」，请先用 canvas_get_state 获取节点 ID");
@@ -610,13 +657,25 @@ public static class CanvasTools
         return Json(new { Results = results });
     }
 
-    private static string Generate(ICanvasHost host, string mode, string prompt, List<string>? references, string? model, string? ratio, string? size, string? quality, int? count, double? x, double? y, string? layout, double? gap)
+    private static string Generate(ICanvasHost host, string mode, string prompt, List<string>? references, string? model, string? ratio, string? size, string? quality, int? count, double? x, double? y, string? layout, double? gap, bool dryRun)
     {
         var capability = ParseMode(mode);
         ValidateGeometry(x, y);
         ValidateLayout(layout, gap);
         ValidateModel(model);
         var inputs = (references ?? []).Select(id => Find(host, id)).ToList();
+        if (dryRun)
+        {
+            // The same checks and the same estimate on a node that never joins the canvas: no history, no node, no request.
+            var probe = CanvasNode.Create(NodeSpec.KindOf(capability), 0, 0);
+            SetParams(probe, prompt, model, ratio, size, quality, count);
+            SetLayout(probe, layout, gap);
+            var scratch = new CanvasDocument { Nodes = new(host.Document.Nodes.Append(probe)), Connections = new(host.Document.Connections) };
+            foreach (var input in inputs) Connect(scratch, input, probe);
+            var check = probe.Clone();
+            if (string.IsNullOrWhiteSpace(prompt) && inputs.Count > 0) check.Prompt = "（参考节点）";
+            return Json(WithCost(new Dictionary<string, object?> { ["dryRun"] = true, ["valid"] = true, ["cannotStart"] = host.CannotGenerate(check) }, Estimate(scratch, probe)));
+        }
         host.RecordHistory();
         var node = Place(host, NodeSpec.KindOf(capability), x, y);
         if (x is null && inputs.Count > 0)
@@ -635,8 +694,17 @@ public static class CanvasTools
         foreach (var input in inputs) Connect(host.Document, input, node);
         host.Reveal([node]);
         if (host.CannotGenerate(node) is { } reason) throw new McpException($"节点已创建（{node.Id}），但无法开始生成：{reason}");
+        var cost = Estimate(host.Document, node);
         host.Generate(node, recordHistory: false);
-        return Json(new { NodeId = node.Id, Started = true, Note = "生成是异步的，用 generation_get_status 查看结果；多张图会在旁边追加节点并从同样的输入连线，按 layout 叠成一摞或排成横排 / 网格。" });
+        return Json(WithCost(new Dictionary<string, object?> { ["nodeId"] = node.Id, ["started"] = true, ["note"] = "生成是异步的，用 generation_get_status 查看结果；多张图会在旁边追加节点并从同样的输入连线，按 layout 叠成一摞或排成横排 / 网格。" }, cost));
+    }
+
+    private static string RunTool(ICanvasHost host, CanvasNode node)
+    {
+        // Worked out before the run starts: the run changes the node and its outputs.
+        var cost = Estimate(host.Document, node);
+        var started = Run(host, node);
+        return Json(started ? WithCost(new Dictionary<string, object?> { ["started"] = true }, cost) : new Dictionary<string, object?> { ["started"] = false, ["note"] = "这个节点已经在生成中" });
     }
 
     private static bool Run(ICanvasHost host, CanvasNode node, bool recordHistory = true)

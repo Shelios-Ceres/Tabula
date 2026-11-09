@@ -1,3 +1,6 @@
+using InfiniteCanvas.Core.Models;
+using InfiniteCanvas.Core.Settings;
+
 namespace InfiniteCanvas.Core.Canvas;
 
 public sealed record Rect(double Left, double Top, double Right, double Bottom)
@@ -55,6 +58,21 @@ public static class CanvasGraph
                 if (seen.Add(node.Id) && Resource(node) is { } resource) result.Add(resource);
         }
         return result;
+    }
+
+    /// <summary>A node that already holds an image or text joins its own request as the first input; the generation panel and the agent tools count the same list.</summary>
+    public static List<GenerationResource> GenerationInputs(CanvasDocument doc, CanvasNode node)
+    {
+        var resources = UpstreamResources(doc, node.Id);
+        if (node.HasContent && node.Kind is NodeKind.Image)
+        {
+            resources.Insert(0, new(node, NodeKind.Image, null));
+            // Layer decomposition and transparent background take exactly one image: on an existing image only the node itself is sent.
+            if ((node.Option("layers") == "true" || node.Option("transparent") == "true") && SettingsStore.Current.Resolve(node.Model) is { } resolved && ModelFamilies.FindImage(resolved.Channel.Vendor, resolved.Model.Name)?.Interactive == true)
+                resources.RemoveAll(r => r.Type == NodeKind.Image && r.Node != node);
+        }
+        if (node.HasContent && node.Kind is NodeKind.Text) resources.Insert(0, new(node, NodeKind.Text, node.Content));
+        return resources;
     }
 
     private static GenerationResource? Resource(CanvasNode node) => node.Kind switch

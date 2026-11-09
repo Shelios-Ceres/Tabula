@@ -104,6 +104,16 @@ public sealed record NodeSpec(string Title, double Width, double Height)
         _ => new("分组", 760, 480),
     };
 
+    /// <summary>What a node generates: a config node follows its mode, a media node its own kind.</summary>
+    public static Capability CapabilityOf(CanvasNode node) => node.Kind switch
+    {
+        NodeKind.Config => node.Mode,
+        NodeKind.Image => Capability.Image,
+        NodeKind.Video => Capability.Video,
+        NodeKind.Audio => Capability.Audio,
+        _ => Capability.Text,
+    };
+
     public static NodeKind KindOf(Capability capability) => capability switch
     {
         Capability.Image => NodeKind.Image,
