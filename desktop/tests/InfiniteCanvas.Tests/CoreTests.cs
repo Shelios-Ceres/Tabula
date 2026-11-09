@@ -27,6 +27,63 @@ internal static class TestEnvironment
 public class CoreTests
 {
     [Fact]
+    public async Task A_library_name_without_extension_that_fits_two_files_is_an_error_naming_both_and_never_picks_one()
+    {
+        var (id, dir, source) = LibrarySandbox();
+        try
+        {
+            foreach (var name in new[] { "猫.png", "猫.jpg", "狗.png" }) await File.WriteAllBytesAsync(Path.Combine(source, name), [1]);
+            foreach (var name in new[] { "猫.png", "猫.jpg", "狗.png" }) await LibraryStore.PutAsync(id, Path.Combine(source, name), false);
+
+            var ambiguous = Assert.Throws<LibraryException>(() => LibraryStore.Find(id, "猫"));
+            Assert.Contains("猫.png", ambiguous.Message);
+            Assert.Contains("猫.jpg", ambiguous.Message);
+            Assert.Throws<LibraryException>(() => LibraryStore.Rename(id, "猫", "小猫"));
+            var (removed, failed) = LibraryStore.RemoveNames(id, ["猫", "狗"], DeleteInstead);
+            Assert.Equal(["狗.png"], removed);
+            Assert.Single(failed);
+            Assert.Contains("猫.jpg", failed[0].Reason);
+            Assert.Equal(["猫.jpg", "猫.png"], Directory.GetFiles(dir).Select(Path.GetFileName).Order(StringComparer.Ordinal));
+
+            // The full name, the unique stem and a different case still resolve.
+            Assert.Equal("猫.jpg", Path.GetFileName(LibraryStore.Find(id, "猫.JPG")!.Path));
+            Assert.Equal("小猫.png", LibraryStore.Rename(id, "猫.png", "小猫"));
+            Assert.Equal("猫.jpg", Path.GetFileName(LibraryStore.Find(id, "猫")!.Path));
+            Assert.Null(LibraryStore.Find(id, "没有"));
+        }
+        finally { Cleanup(id, source); }
+    }
+
+    [Fact]
+    public void A_spread_batch_looks_for_a_spot_where_the_whole_row_or_grid_is_free_beside_the_nodes_there()
+    {
+        CanvasNode Card(double x, double y, double w = 340, double h = 240) => new() { Kind = NodeKind.Image, X = x, Y = y, Width = w, Height = h };
+        var batch = Enumerable.Range(0, 4).Select(i => Card(0, 0)).ToList();
+        var neighbour = Card(500, 0);
+        var rowSize = Stacks.Footprint(batch, StackLayout.Row, 24);
+        Assert.Equal((4 * 340 + 3 * 24d, 240d), rowSize);
+        Assert.Equal((2 * 340 + 24d, 2 * 240 + 24d), Stacks.Footprint(batch, StackLayout.Grid, 24));
+        Assert.Equal((340d, 240d), Stacks.Footprint(batch, StackLayout.Stack, 24));
+
+        // One card fits at x = 0 beside a neighbour at 500 only if it ends before it; four cards in a row do not, so the batch moves past the neighbour.
+        Assert.Equal(0, CanvasGraph.FreeBatchX(batch, StackLayout.Stack, 24, [neighbour]));
+        var x = CanvasGraph.FreeBatchX(batch, StackLayout.Row, 24, [neighbour]);
+        Assert.True(x >= neighbour.Right);
+        var spot = Card(x, 0, rowSize.Width, rowSize.Height);
+        Assert.False(Rect.Of(spot).Intersects(Rect.Of(neighbour)));
+
+        // A neighbour above or below that the spread never reaches does not push it.
+        Assert.Equal(0, CanvasGraph.FreeBatchX(batch, StackLayout.Row, 24, [Card(0, 2000)]));
+        // Grid: two columns need less width than a row of four.
+        var gridX = CanvasGraph.FreeBatchX(batch, StackLayout.Grid, 24, [Card(1000, 0)]);
+        Assert.True(gridX < x + 1);
+        Assert.False(Rect.Of(Card(gridX, 0, 2 * 340 + 24, 2 * 240 + 24)).Intersects(Rect.Of(Card(1000, 0))));
+        Assert.Equal(340 * 16 / 9d, CanvasGraph.OutputHeight(340, "9:16"), 6);
+        Assert.Equal((340d, 340d), (CanvasGraph.OutputHeight(340, "1:1"), CanvasGraph.OutputHeight(340, null)));
+        Assert.Equal(640, CanvasGraph.OutputHeight(340, "1:9"));
+    }
+
+    [Fact]
     public void Usage_report_groups_channels_by_currency_and_never_adds_yuan_to_dollars()
     {
         var day = DateOnly.FromDateTime(DateTime.Now);

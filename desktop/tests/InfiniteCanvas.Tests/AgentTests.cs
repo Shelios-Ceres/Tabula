@@ -1098,6 +1098,88 @@ public class AgentTests
     }
 
     [Fact]
+    public void Stack_close_drops_the_hidden_cards_from_the_selection_like_the_stack_button()
+    {
+        var host = new FakeHost();
+        var (lead, second, third) = OpenAgentStack(host);
+        var other = CanvasNode.Create(NodeKind.Image, 0, 0);
+        host.Document.Nodes.Add(other);
+        CanvasTools.Apply(host, [new CanvasOp { Type = "stack_open", Id = lead.Id }]);
+        host.Select([second.Id, third.Id, other.Id]);
+
+        CanvasTools.Apply(host, [new CanvasOp { Type = "stack_close", Id = lead.Id }]);
+        Assert.Equal([other.Id], host.Selected);
+
+        // The lead itself stays selected, and a selection that does not touch the stack is left as it was.
+        CanvasTools.Apply(host, [new CanvasOp { Type = "stack_open", Id = lead.Id }]);
+        host.Select([lead.Id, second.Id, other.Id]);
+        CanvasTools.Apply(host, [new CanvasOp { Type = "stack_close", Id = second.Id }]);
+        Assert.Equal([lead.Id, other.Id], host.Selected);
+        host.Select([other.Id]);
+        CanvasTools.Apply(host, [new CanvasOp { Type = "stack_open", Id = lead.Id }, new CanvasOp { Type = "stack_close", Id = lead.Id }]);
+        Assert.Equal([other.Id], host.Selected);
+    }
+
+    [Fact]
+    public async Task A_row_or_grid_from_canvas_generate_starts_where_the_whole_spread_clears_the_nodes_beside_it()
+    {
+        var host = new FakeHost();
+        // Free for one card at the view centre, but only 160 to its right: a row of four cannot start there.
+        var neighbour = new CanvasNode { Kind = NodeKind.Image, X = 500 + 170 + 160, Y = 400 - 120, Width = 340, Height = 240 };
+        host.Document.Nodes.Add(neighbour);
+        await using var session = await Session.StartAsync(host);
+
+        async Task<CanvasNode> Generate(string layout, double? x = null)
+        {
+            var args = new Dictionary<string, object?> { ["mode"] = "image", ["prompt"] = "猫", ["count"] = 4, ["layout"] = layout, ["gap"] = 24d };
+            if (x is not null) args["x"] = x;
+            var result = Parse((await session.CallAsync("canvas_generate", args)).Text);
+            return host.Document.Find(result.GetProperty("nodeId").GetString()!)!;
+        }
+        bool Clears(CanvasNode lead, StackLayout layout, int count)
+        {
+            var batch = Enumerable.Range(0, count).Select(i => new CanvasNode { Kind = NodeKind.Image, X = lead.X, Y = lead.Y, Width = lead.Width, Height = CanvasGraph.OutputHeight(lead.Width, null) }).ToList();
+            batch[0] = lead;
+            var (w, h) = Stacks.Footprint(batch, layout, 24);
+            return !Rect.Of(new CanvasNode { X = lead.X, Y = lead.Y, Width = w, Height = h }).Intersects(Rect.Of(neighbour));
+        }
+
+        var stack = await Generate("stack");
+        Assert.False(Clears(stack, StackLayout.Row, 4)); // one card fits there, a row of four would not
+        var row = await Generate("row");
+        Assert.True(Clears(row, StackLayout.Row, 4));
+        Assert.True(row.X >= neighbour.Right);
+        var grid = await Generate("grid");
+        Assert.True(Clears(grid, StackLayout.Grid, 4));
+
+        // A position the agent chose is kept as given.
+        Assert.Equal(520, (await Generate("row", 520)).X);
+    }
+
+    [Fact]
+    public async Task Dry_run_refuses_a_blank_prompt_with_only_empty_inputs_as_the_real_call_would()
+    {
+        var host = new FakeHost();
+        var empty = CanvasNode.Create(NodeKind.Image, 0, 0);
+        var emptyText = CanvasNode.Create(NodeKind.Text, 0, 0);
+        var picture = CanvasNode.Create(NodeKind.Image, 0, 0);
+        (picture.Content, picture.Status) = ("图片-001.png", NodeStatus.Success);
+        foreach (var node in new[] { empty, emptyText, picture }) host.Document.Nodes.Add(node);
+        await using var session = await Session.StartAsync(host);
+
+        async Task<JsonElement> Dry(params string[] refs) => Parse((await session.CallAsync("canvas_generate", new() { ["mode"] = "image", ["prompt"] = "", ["dryRun"] = true, ["referenceNodeIds"] = refs })).Text);
+
+        Assert.NotEqual(JsonValueKind.Null, (await Dry()).GetProperty("cannotStart").ValueKind);
+        Assert.NotEqual(JsonValueKind.Null, (await Dry(empty.Id, emptyText.Id)).GetProperty("cannotStart").ValueKind);
+        Assert.Equal(JsonValueKind.Null, (await Dry(picture.Id)).GetProperty("cannotStart").ValueKind);
+        Assert.Equal(JsonValueKind.Null, (await Dry(empty.Id, picture.Id)).GetProperty("cannotStart").ValueKind);
+
+        // The real call refuses the same inputs.
+        var real = await session.CallAsync("canvas_generate", new() { ["mode"] = "image", ["prompt"] = "", ["referenceNodeIds"] = new[] { empty.Id } });
+        Assert.True(real.IsError);
+    }
+
+    [Fact]
     public async Task Async_tools_do_not_mix_canvases_between_ui_dispatches()
     {
         var host = new FakeHost();

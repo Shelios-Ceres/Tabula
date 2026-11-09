@@ -73,6 +73,14 @@ public static class Stacks
         }).ToList();
     }
 
+    /// <summary>The width and height a batch takes up once spread out in a row or a grid; one card's size when it stays a stack.</summary>
+    public static (double Width, double Height) Footprint(IReadOnlyList<CanvasNode> members, StackLayout layout, double gap)
+    {
+        if (layout == StackLayout.Stack || members.Count < 2) return (members.Max(n => n.Width), members.Max(n => n.Height));
+        var at = layout == StackLayout.Row ? Row(members, gap) : Grid(members, gap);
+        return (at.Select((p, i) => p.X + members[i].Width).Max() - at.Min(p => p.X), at.Select((p, i) => p.Y + members[i].Height).Max() - at.Min(p => p.Y));
+    }
+
     /// <summary>The layout named by a tool argument (stack, row, grid; any case); null when it is none of them.</summary>
     public static StackLayout? ParseLayout(string? text) => text?.Trim().ToLowerInvariant() switch { "stack" => StackLayout.Stack, "row" => StackLayout.Row, "grid" => StackLayout.Grid, _ => null };
 

@@ -35,6 +35,20 @@ public static class CanvasGraph
         return x;
     }
 
+    /// <summary>
+    /// Like <see cref="FreeX"/> for the first card of a batch, but the whole spread (row or grid) has to fit, so the batch does not land on the nodes beside it.
+    /// <paramref name="others"/> must not include the batch itself.
+    /// </summary>
+    public static double FreeBatchX(IReadOnlyList<CanvasNode> members, StackLayout layout, double gap, IEnumerable<CanvasNode> others)
+    {
+        var lead = members[0];
+        var (width, height) = Stacks.Footprint(members, layout, gap);
+        return FreeX(new CanvasNode { Kind = NodeKind.Image, X = lead.X, Y = lead.Y, Width = width, Height = height }, others);
+    }
+
+    /// <summary>Height of a generated picture card of this width and ratio, as the generator sizes its outputs.</summary>
+    public static double OutputHeight(double width, string? ratio) => Math.Clamp(width / ModelFamilies.AspectOf(ratio is null or "auto" ? "1:1" : ratio), 120, 640);
+
     /// <summary>Config nodes sit between resources and outputs; a group can only be a source and never feeds its own members.</summary>
     public static (string From, string To)? NormalizeConnection(CanvasNode first, CanvasNode second, bool firstIsSource)
     {

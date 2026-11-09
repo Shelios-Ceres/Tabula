@@ -60,12 +60,17 @@ public static class LibraryStore
     /// <summary>How a file is recycled when the caller passes no function: silently through the shell. Tests point it elsewhere so nothing lands in the machine's Recycle Bin.</summary>
     public static Func<string, bool> Recycle { get; set; } = ProjectStore.RecycleSilently;
 
-    /// <summary>A file name (with or without extension, any case) among this canvas's library files; null when there is none.</summary>
+    /// <summary>
+    /// A file name (with or without extension, any case) among this canvas's library files; null when there is none. A name without extension that
+    /// fits several files (猫.png and 猫.jpg) is an error listing the full names: nothing is ever picked for the caller.
+    /// </summary>
     public static LibraryItem? Find(string projectId, string name)
     {
         var items = List(projectId);
-        return items.FirstOrDefault(i => System.IO.Path.GetFileName(i.Path).Equals(name, StringComparison.OrdinalIgnoreCase))
-            ?? items.FirstOrDefault(i => i.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+        if (items.FirstOrDefault(i => System.IO.Path.GetFileName(i.Path).Equals(name, StringComparison.OrdinalIgnoreCase)) is { } exact) return exact;
+        var sameStem = items.Where(i => i.Name.Equals(name, StringComparison.OrdinalIgnoreCase)).ToList();
+        if (sameStem.Count > 1) throw new LibraryException($"「{name}」对应不止一个文件：{string.Join("、", sameStem.Select(i => System.IO.Path.GetFileName(i.Path)))}，请用带扩展名的完整文件名");
+        return sameStem.FirstOrDefault();
     }
 
     /// <summary>Whether another program holds the file open: recycling it then would raise a shell error dialog.</summary>
@@ -147,7 +152,14 @@ public static class LibraryStore
         var failed = new List<(string, string)>();
         foreach (var name in names)
         {
-            if (Find(projectId, name) is not { } item) failed.Add((name, "资料库里没有这个文件"));
+            LibraryItem? item;
+            try { item = Find(projectId, name); }
+            catch (LibraryException ex)
+            {
+                failed.Add((name, ex.Message));
+                continue;
+            }
+            if (item is null) failed.Add((name, "资料库里没有这个文件"));
             else if (InUse(item.Path)) failed.Add((name, "文件正被其他程序占用"));
             else if (recycle(item.Path)) removed.Add(System.IO.Path.GetFileName(item.Path));
             else failed.Add((name, "没能移到回收站"));

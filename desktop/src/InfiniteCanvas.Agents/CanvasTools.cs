@@ -258,7 +258,7 @@ public static class CanvasTools
     {
         ValidateGeometry(x, y);
         var canvas = await host.OnUiAsync(() => host.Document);
-        var paths = names.Select(name => LibraryStore.Find(canvas.Id, name)?.Path
+        var paths = names.Select(name => Library(() => LibraryStore.Find(canvas.Id, name))?.Path
             ?? throw new McpException($"资料库里没有「{name}」，请先用 library_list 查看文件名")).ToList();
         var result = await ImportAsync(host, canvas, paths, x, y);
         if (result.Ids.Count == 0 && result.Failed.Count > 0) throw new McpException($"文件放不上画布：{string.Join("；", result.Failed.Select(f => $"{Path.GetFileName(f.Path)}（{f.Reason}）"))}");
@@ -634,7 +634,13 @@ public static class CanvasTools
                     case "stack_close":
                         var stackNode = Find(host, Resolve(op.Id));
                         if (Stacks.Of(stackNode) is not { } stackId || Stacks.Members(doc, stackId) is not { Count: > 1 } stackMembers) throw new McpException("这个节点不在一批（摞）里，或这一批只有一个成员");
-                        if (op.Type == "stack_close") Stacks.Collapse(stackMembers);
+                        if (op.Type == "stack_close")
+                        {
+                            Stacks.Collapse(stackMembers);
+                            // The cards under the lead are hidden now, so they leave the selection, as when the stack button closes it.
+                            var kept = host.Selection.Where(s => stackMembers.All(m => m.Id != s) || s == stackMembers[0].Id).ToList();
+                            if (kept.Count != host.Selection.Count) host.Select(kept);
+                        }
                         else
                         {
                             ValidateLayout(op.Layout, op.Gap);
@@ -679,7 +685,8 @@ public static class CanvasTools
             var scratch = new CanvasDocument { Nodes = new(host.Document.Nodes.Append(probe)), Connections = new(host.Document.Connections) };
             foreach (var input in inputs) Connect(scratch, input, probe);
             var check = probe.Clone();
-            if (string.IsNullOrWhiteSpace(prompt) && inputs.Count > 0) check.Prompt = "（参考节点）";
+            // Only inputs that carry something count (an empty image or text node feeds nothing), as in the real call; the host checks the real canvas, which does not hold this scratch node.
+            if (string.IsNullOrWhiteSpace(prompt) && CanvasGraph.GenerationInputs(scratch, probe).Count > 0) check.Prompt = "（参考节点）";
             return Json(WithCost(new Dictionary<string, object?> { ["dryRun"] = true, ["valid"] = true, ["cannotStart"] = host.CannotGenerate(check) }, Estimate(scratch, probe)));
         }
         host.RecordHistory();
@@ -696,6 +703,19 @@ public static class CanvasTools
         {
             host.Document.Nodes.Remove(node);
             throw;
+        }
+        if (x is null && Stacks.ParseLayout(layout) is { } spread and not StackLayout.Stack && node.Count > 1)
+        {
+            // A row or grid spreads right from this card: find a spot where all of it, not just one card, is free.
+            var batch = new List<CanvasNode> { node };
+            for (var i = 1; i < node.Count; i++)
+            {
+                var card = CanvasNode.Create(node.Kind, 0, 0);
+                card.Width = node.Width;
+                if (node.Kind == NodeKind.Image) card.Height = CanvasGraph.OutputHeight(node.Width, node.Ratio);
+                batch.Add(card);
+            }
+            node.X = CanvasGraph.FreeBatchX(batch, spread, Stacks.GapOf(node), host.Document.Nodes.Where(n => n != node));
         }
         foreach (var input in inputs) Connect(host.Document, input, node);
         host.Reveal([node]);

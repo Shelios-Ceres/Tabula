@@ -248,8 +248,7 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
             if (sibling) node.Prompt = settings.Prompt;
             if (kind == NodeKind.Image)
             {
-                var aspect = ModelFamilies.AspectOf(settings.Ratio is null or "auto" ? "1:1" : settings.Ratio);
-                node.Height = Math.Clamp(node.Width / aspect, 120, 640);
+                node.Height = CanvasGraph.OutputHeight(node.Width, settings.Ratio);
             }
             node.Y = y;
             node.X = source.Right + 80;
@@ -269,7 +268,15 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
             if (target != source && !sibling) target.SetOption(NodeKeys.SourceId, source.Id);
         }
         // A batch stays one card on the canvas until the user opens it, unless the run asked for a row or a grid.
-        Stacks.FormBatch(targets, Stacks.ParseLayout(settings.Option(NodeKeys.Layout)) ?? StackLayout.Stack, Stacks.GapOf(settings));
+        var layout = Stacks.ParseLayout(settings.Option(NodeKeys.Layout)) ?? StackLayout.Stack;
+        var gap = Stacks.GapOf(settings);
+        // New cards placed beside the source clear the nodes there with the whole spread in mind, not just one card; a source that receives a result stays where it is.
+        if (!sibling && layout != StackLayout.Stack && targets.Count > 1)
+        {
+            var shift = CanvasGraph.FreeBatchX(targets, layout, gap, doc.Nodes.Except(targets)) - targets[0].X;
+            foreach (var target in targets) target.X += shift;
+        }
+        Stacks.FormBatch(targets, layout, gap);
         return targets;
     }
 
