@@ -41,7 +41,7 @@ public sealed class CanvasAgentHost(CanvasView view) : ICanvasHost
     public IReadOnlyList<string> RemoveFromGroup(IReadOnlyCollection<string> ids, bool fit) => view.RemoveFromGroupNodes(ids, fit);
     public Task<ImportResult> ImportAsync(IReadOnlyList<string> paths, double x, double y) => view.ImportFilesQuietAsync(paths, new Windows.Foundation.Point(x, y));
     public Task ReplaceMediaAsync(CanvasNode node, string path) => view.ReplaceMediaAsync(node, path);
-    public Task AddToLibraryAsync(CanvasNode node) => view.AddToLibraryAsync(node);
+    public Task<string> AddToLibraryAsync(CanvasNode node, bool replace) => view.PutInLibraryAsync(node, replace);
 
     /// <summary>JPEG keeps the image small in the agent's context; transparency is not needed to understand the picture.</summary>
     public async Task<(byte[] Bytes, string MimeType)?> LoadImageAsync(CanvasNode node, int maxEdge)

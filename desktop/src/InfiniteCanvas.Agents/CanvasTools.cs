@@ -43,8 +43,8 @@ public interface ICanvasHost
     Task<ImportResult> ImportAsync(IReadOnlyList<string> paths, double x, double y);
     /// <summary>Give a media node a new file of its kind, keeping its ID, position, width, group, stack and connections (one undo step). Throws when the copy fails; never shows a dialog.</summary>
     Task ReplaceMediaAsync(CanvasNode node, string path);
-    /// <summary>Copy a node's media into this canvas's library, named after the node.</summary>
-    Task AddToLibraryAsync(CanvasNode node);
+    /// <summary>Copy a node's media into this canvas's library, named after the node; its file name. A name already taken is an error unless <paramref name="replace"/>.</summary>
+    Task<string> AddToLibraryAsync(CanvasNode node, bool replace);
 }
 
 public sealed record ImportFailure(string Path, string Reason);
@@ -193,12 +193,44 @@ public static class CanvasTools
             Name = "canvas_replace_media", Destructive = true,
             Description = "给已有的图片 / 视频 / 音频节点换上本机的一个新文件，节点 ID、位置、宽度、分组和连线都不变，整次算一步撤销，旧文件仍留在画布文件夹里。节点正在生成时不能替换；节点上的提示词和模型参数不会清除，之后重新生成会盖掉替换进去的文件。只用用户在对话里明确点名的文件。",
         }),
-        McpServerTool.Create(async ([Description("图片、视频或音频节点 ID")] string nodeId) => await AddToLibraryAsync(host, nodeId), new()
+        McpServerTool.Create(async (
+            [Description("图片、视频或音频节点 ID")] string nodeId,
+            [Description("资料库里已有同名文件时是否覆盖，默认 false（报错）；true 时旧文件移到回收站")] bool? replace = null) => await AddToLibraryAsync(host, nodeId, replace ?? false), new()
         {
-            Name = "library_add",
-            Description = "把节点里的图片、视频或音频加入当前画布的资料库，文件名用节点标题。",
+            Name = "library_add", Destructive = true,
+            Description = "把节点里的图片、视频或音频加入当前画布的资料库，文件名用节点标题。同名文件已存在时报错并提示用 replace；replace=true 会覆盖它（旧文件进回收站）。资料库操作不在画布撤销记录里，不能撤销。",
+        }),
+        McpServerTool.Create((
+            [Description("资料库文件名，取自 library_list 的 name")] string name,
+            [Description("新的文件名，不含扩展名（扩展名保持不变）")] string newName) => LibraryAsync(host, projectId => Json(new { Renamed = Library(() => LibraryStore.Rename(projectId, name, newName)) })), new()
+        {
+            Name = "library_rename", Destructive = true,
+            Description = "给当前画布资料库里的文件改名，只改主文件名、扩展名不变；新名字已存在、含非法字符或是 Windows 设备名时报错。画布上已经放出去的节点用的是复制品，不受影响。不能撤销。",
+        }),
+        McpServerTool.Create((
+            [Description("资料库文件名，取自 library_list 的 name")] List<string> names) => LibraryAsync(host, projectId =>
+            {
+                var (removed, failed) = LibraryStore.RemoveNames(projectId, names);
+                return Json(new { Removed = removed, Failed = failed.Select(f => new { f.Name, f.Reason }).ToList() });
+            }), new()
+        {
+            Name = "library_remove", Destructive = true,
+            Description = "把当前画布资料库里的文件移到回收站，返回 removed 和 failed: [{name, reason}]。只在用户明确要求删除时使用；不能在画布里撤销，只能从回收站找回。画布上已经放出去的节点不受影响。",
         }),
     ];
+
+    /// <summary>Library errors are the agent's to read; the id is taken once so a canvas switched meanwhile does not change which library is touched.</summary>
+    private static async Task<string> LibraryAsync(ICanvasHost host, Func<string, string> action)
+    {
+        var projectId = await host.OnUiAsync(() => host.Document.Id);
+        return Library(() => action(projectId));
+    }
+
+    private static T Library<T>(Func<T> action)
+    {
+        try { return action(); }
+        catch (LibraryException ex) { throw new McpException(ex.Message); }
+    }
 
     private static string Library(string projectId, string? kind, string? keyword)
     {
@@ -214,8 +246,7 @@ public static class CanvasTools
     {
         ValidateGeometry(x, y);
         var canvas = await host.OnUiAsync(() => host.Document);
-        var items = LibraryStore.List(canvas.Id);
-        var paths = names.Select(name => items.FirstOrDefault(i => Path.GetFileName(i.Path).Equals(name, StringComparison.OrdinalIgnoreCase) || i.Name.Equals(name, StringComparison.OrdinalIgnoreCase))?.Path
+        var paths = names.Select(name => LibraryStore.Find(canvas.Id, name)?.Path
             ?? throw new McpException($"资料库里没有「{name}」，请先用 library_list 查看文件名")).ToList();
         var result = await ImportAsync(host, canvas, paths, x, y);
         if (result.Ids.Count == 0 && result.Failed.Count > 0) throw new McpException($"文件放不上画布：{string.Join("；", result.Failed.Select(f => $"{Path.GetFileName(f.Path)}（{f.Reason}）"))}");
@@ -235,7 +266,8 @@ public static class CanvasTools
         if (paths.Count == 0) throw new McpException("paths 不能为空");
         var canvas = await host.OnUiAsync(() => host.Document);
         var failed = paths.Select(path => (Path: path, Reason: Media.ImportProblem(path))).Where(p => p.Reason is not null).Select(p => new ImportFailure(p.Path, p.Reason!)).ToList();
-        var valid = paths.Where(path => failed.All(f => f.Path != path)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        // What was checked is what is imported: the normalised path, never the text as the agent wrote it.
+        var valid = paths.Where(path => failed.All(f => f.Path != path)).Select(Path.GetFullPath).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         var result = valid.Count > 0 ? await ImportAsync(host, canvas, valid, x, y) : new ImportResult([], []);
         failed.AddRange(result.Failed);
         if (result.Ids.Count == 0 && failed.Count > 0) throw new McpException($"没有文件被导入：{string.Join("；", failed.Select(f => $"{f.Path}（{f.Reason}）"))}");
@@ -256,21 +288,21 @@ public static class CanvasTools
         await await host.OnUiAsync(() =>
         {
             if (!ReferenceEquals(canvas, host.Document) || host.Document.Find(node.Id) != node) throw new McpException("画布已切换或节点已被删除，请重新读取当前画布");
-            return host.ReplaceMediaAsync(node, path);
+            return host.ReplaceMediaAsync(node, Path.GetFullPath(path));
         });
         return Json(new { NodeId = node.Id, File = node.Content, Note = "节点上的提示词和模型参数没有清除，重新生成会盖掉替换进去的文件；旧文件仍在画布文件夹里，可以撤销。" });
     }
 
-    private static async Task<string> AddToLibraryAsync(ICanvasHost host, string nodeId)
+    private static async Task<string> AddToLibraryAsync(ICanvasHost host, string nodeId, bool replace)
     {
-        var operation = await host.OnUiAsync(() =>
+        var work = await host.OnUiAsync(() =>
         {
             var node = Find(host, nodeId);
             if (node.Kind is not (NodeKind.Image or NodeKind.Video or NodeKind.Audio) || !node.HasContent) throw new McpException("只有带图片、视频或音频的节点可以加入资料库");
-            return (Work: host.AddToLibraryAsync(node), Title: node.Title);
+            return host.AddToLibraryAsync(node, replace);
         });
-        await operation.Work;
-        return Json(new { Added = operation.Title });
+        try { return Json(new { Added = await work }); }
+        catch (LibraryException ex) { throw new McpException(ex.Message); }
     }
 
     private static string Json(object value) => JsonSerializer.Serialize(value, Options);

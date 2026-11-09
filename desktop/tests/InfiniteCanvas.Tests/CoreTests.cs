@@ -15,6 +15,126 @@ internal static class TestEnvironment
 
 public class CoreTests
 {
+    private static (string Id, string Dir, string Source) LibrarySandbox()
+    {
+        var id = "lib-test-" + Guid.NewGuid().ToString("N")[..8];
+        var source = Directory.CreateTempSubdirectory("ic-lib-src").FullName;
+        return (id, ProjectStore.LibraryDir(id), source);
+    }
+
+    private static void Cleanup(string id, string source)
+    {
+        Directory.Delete(source, true);
+        if (Directory.Exists(Path.GetDirectoryName(ProjectStore.LibraryDir(id))!)) Directory.Delete(Path.GetDirectoryName(ProjectStore.LibraryDir(id))!, true);
+    }
+
+    [Fact]
+    public async Task Library_put_refuses_a_clash_unless_replacing_and_keeps_the_old_file_when_the_copy_fails()
+    {
+        var (id, dir, source) = LibrarySandbox();
+        try
+        {
+            var first = Path.Combine(source, "猫.PNG");
+            var second = Path.Combine(Path.Combine(Directory.CreateDirectory(Path.Combine(source, "b")).FullName), "猫.png");
+            await File.WriteAllBytesAsync(first, [1]);
+            await File.WriteAllBytesAsync(second, [2, 2]);
+            var changed = 0;
+            void OnChanged() => changed++;
+            LibraryStore.Changed += OnChanged;
+            try
+            {
+                Assert.Equal("猫.png", await LibraryStore.PutAsync(id, first, false));
+                var clash = await Assert.ThrowsAsync<LibraryException>(() => LibraryStore.PutAsync(id, second, false));
+                Assert.Contains("replace", clash.Message);
+                Assert.Equal([1], await File.ReadAllBytesAsync(Path.Combine(dir, "猫.png")));
+
+                Assert.Equal("猫.png", await LibraryStore.PutAsync(id, second, true));
+                Assert.Equal([2, 2], await File.ReadAllBytesAsync(Path.Combine(dir, "猫.png")));
+                Assert.Equal(["猫.png"], Directory.GetFiles(dir).Select(Path.GetFileName));
+                Assert.True(changed >= 2); // the event is static, so tests running in parallel may add to the count
+
+                // A missing source fails before the old file is touched.
+                await Assert.ThrowsAsync<LibraryException>(() => LibraryStore.PutAsync(id, Path.Combine(source, "gone", "猫.png"), true));
+                Assert.Equal([2, 2], await File.ReadAllBytesAsync(Path.Combine(dir, "猫.png")));
+                Assert.Equal(["猫.png"], Directory.GetFiles(dir).Select(Path.GetFileName));
+
+                // A file another program holds open is not replaced.
+                await using (new FileStream(Path.Combine(dir, "猫.png"), FileMode.Open, FileAccess.Read, FileShare.None))
+                    await Assert.ThrowsAsync<LibraryException>(() => LibraryStore.PutAsync(id, first, true));
+                Assert.Equal([2, 2], await File.ReadAllBytesAsync(Path.Combine(dir, "猫.png")));
+            }
+            finally { LibraryStore.Changed -= OnChanged; }
+        }
+        finally { Cleanup(id, source); }
+    }
+
+    [Fact]
+    public async Task Library_rename_changes_only_the_stem_and_rejects_clashes_reserved_names_and_path_escapes()
+    {
+        var (id, dir, source) = LibrarySandbox();
+        try
+        {
+            foreach (var name in new[] { "a.png", "b.png", "c.mp3" }) await File.WriteAllBytesAsync(Path.Combine(source, name), [1]);
+            foreach (var name in new[] { "a.png", "b.png", "c.mp3" }) await LibraryStore.PutAsync(id, Path.Combine(source, name), false);
+            var outside = Path.Combine(Path.GetDirectoryName(dir)!, "outside.png");
+            await File.WriteAllBytesAsync(outside, [1]);
+
+            Assert.Equal("新名.png", LibraryStore.Rename(id, "a", "新名"));
+            Assert.Equal("新名二.png", LibraryStore.Rename(id, "新名.png", "新名二.png"));
+            Assert.Equal("新名二.png", LibraryStore.Rename(id, "新名二", "新名二.PNG").ToLowerInvariant());
+            Assert.Equal("C.mp3", LibraryStore.Rename(id, "c.mp3", "C"));
+            Assert.Equal(["C.mp3", "b.png", "新名二.png"], Directory.GetFiles(dir).Select(Path.GetFileName).Order(StringComparer.Ordinal));
+
+            foreach (var newName in new[] { "b", "B.PNG", "CON", "nul.txt", "Com3", "LPT1.png", "", " ", "x ", "x.", "..", "a/b", @"a\b", @"..\outside", "../outside", @"C:\x", "x:y", "a?b", "x.jpg" })
+                Assert.Throws<LibraryException>(() => LibraryStore.Rename(id, "新名二", newName));
+            foreach (var name in new[] { "missing", @"..\outside.png", "../outside.png", outside, "..", "" })
+                Assert.Throws<LibraryException>(() => LibraryStore.Rename(id, name, "y"));
+            Assert.Equal(["C.mp3", "b.png", "新名二.png"], Directory.GetFiles(dir).Select(Path.GetFileName).Order(StringComparer.Ordinal));
+            Assert.True(File.Exists(outside));
+        }
+        finally { Cleanup(id, source); }
+    }
+
+    [Fact]
+    public async Task Library_remove_by_name_reports_each_failure_and_skips_files_in_use()
+    {
+        var (id, dir, source) = LibrarySandbox();
+        try
+        {
+            foreach (var name in new[] { "a.png", "b.png" }) await File.WriteAllBytesAsync(Path.Combine(source, name), [1]);
+            foreach (var name in new[] { "a.png", "b.png" }) await LibraryStore.PutAsync(id, Path.Combine(source, name), false);
+            var outside = Path.Combine(Path.GetDirectoryName(dir)!, "outside.png");
+            await File.WriteAllBytesAsync(outside, [1]);
+
+            (List<string> Removed, List<(string Name, string Reason)> Failed) result;
+            await using (new FileStream(Path.Combine(dir, "b.png"), FileMode.Open, FileAccess.Read, FileShare.None))
+                result = LibraryStore.RemoveNames(id, ["b", "missing", @"..\outside.png", outside]);
+
+            Assert.Empty(result.Removed);
+            Assert.Equal(["b", "missing", @"..\outside.png", outside], result.Failed.Select(f => f.Name));
+            Assert.Contains("占用", result.Failed[0].Reason);
+            Assert.True(File.Exists(outside));
+            Assert.Equal(2, Directory.GetFiles(dir).Length);
+
+            result = LibraryStore.RemoveNames(id, ["a"]);
+            Assert.Equal(["a.png"], result.Removed);
+            Assert.Equal(["b.png"], Directory.GetFiles(dir).Select(Path.GetFileName));
+        }
+        finally { Cleanup(id, source); }
+    }
+
+    [Theory]
+    [InlineData("CON", true)]
+    [InlineData("con.tar", true)]
+    [InlineData("Nul ", true)]
+    [InlineData("COM1", true)]
+    [InlineData("lpt9", true)]
+    [InlineData("COM0", false)]
+    [InlineData("COM10", false)]
+    [InlineData("console", false)]
+    [InlineData("猫", false)]
+    public void Reserved_device_names_are_recognised_with_or_without_an_extension(string name, bool reserved) => Assert.Equal(reserved, Media.IsReservedName(name));
+
     [Fact]
     public void MoveToGroup_changes_only_group_ids_and_reports_the_groups_left_and_FitGroup_matches_the_members()
     {

@@ -211,19 +211,33 @@ public static class Media
         return name is "CON" or "PRN" or "AUX" or "NUL" or "CONIN$" or "CONOUT$" || name.Length == 4 && (name.StartsWith("COM") || name.StartsWith("LPT")) && name[3] is >= '1' and <= '9';
     }
 
+    private static bool IsSeparator(char c) => c is '\\' or '/';
+
     /// <summary>
-    /// Why a path an agent gave cannot be imported, or null: an absolute local path (no UNC or device path, no alternate data stream)
-    /// to an existing file with a supported media extension. There is no size limit, as with dragging a file in.
+    /// Why a path an agent gave cannot be imported, or null: a drive-letter path on a local drive (every path that starts with a separator is refused,
+    /// whatever mix of \ and / it uses: UNC, device and \??\ forms) to an existing file with a supported media extension, with no alternate data stream,
+    /// and not a link that leads to a network path. There is no size limit, as with dragging a file in.
     /// </summary>
     public static string? ImportProblem(string? path)
     {
         if (string.IsNullOrWhiteSpace(path)) return "路径为空";
-        if (path.StartsWith(@"\\") || path.StartsWith("//")) return "不接受网络（UNC）路径和设备路径";
-        if (!Path.IsPathFullyQualified(path)) return "必须是带盘符的绝对路径";
+        if (IsSeparator(path[0])) return "不接受网络（UNC）路径和设备路径";
+        if (path.Length < 3 || !char.IsAsciiLetter(path[0]) || path[1] != ':' || !IsSeparator(path[2])) return "必须是带盘符的绝对路径";
         if (path.IndexOf(':', 2) >= 0 || path.IndexOfAny(Path.GetInvalidPathChars()) >= 0) return "路径含有非法字符";
-        if (KindOf(path) is null) return "不支持的文件类型，可用 png、jpg、jpeg、webp、gif、svg、bmp、mp4、mov、webm、mp3、wav、aac、flac、opus、m4a";
-        if (IsReservedName(Path.GetFileNameWithoutExtension(path))) return "不能使用设备名作为文件名";
-        return File.Exists(path) ? null : "文件不存在";
+        // Normalising can still change what the path means (. and .. segments), so the result is checked again.
+        var full = Path.GetFullPath(path);
+        if (full.Length < 3 || !char.IsAsciiLetter(full[0]) || full[1] != ':' || !IsSeparator(full[2])) return "不接受网络（UNC）路径和设备路径";
+        if (KindOf(full) is null) return "不支持的文件类型，可用 png、jpg、jpeg、webp、gif、svg、bmp、mp4、mov、webm、mp3、wav、aac、flac、opus、m4a";
+        if (IsReservedName(Path.GetFileNameWithoutExtension(full))) return "不能使用设备名作为文件名";
+        if (!File.Exists(full)) return "文件不存在";
+        try
+        {
+            if (new DriveInfo(full[..1]).DriveType == DriveType.Network) return "不接受网络驱动器上的文件";
+            var target = new FileInfo(full).ResolveLinkTarget(true)?.FullName;
+            if (target is not null && (target.Length < 3 || !char.IsAsciiLetter(target[0]) || target[1] != ':' || new DriveInfo(target[..1]).DriveType == DriveType.Network)) return "链接指向了网络或设备路径";
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException) { return "无法确认文件位置：" + ex.Message; }
+        return null;
     }
 
     /// <summary>Vector pictures show and export as they are, but pixel tools and raster-only vendors need them drawn first.</summary>

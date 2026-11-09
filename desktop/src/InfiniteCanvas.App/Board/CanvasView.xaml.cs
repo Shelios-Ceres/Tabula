@@ -1885,6 +1885,16 @@ public sealed partial class CanvasView : UserControl
         finally { if (copy != path) Directory.Delete(Path.GetDirectoryName(copy)!, true); }
     }
 
+    /// <summary>For agents: the same copy, but a name already in the library is an error unless replacing it; the library file name.</summary>
+    internal async Task<string> PutInLibraryAsync(CanvasNode node, bool replace)
+    {
+        var (projectId, path) = (Doc.Id, ProjectStore.AssetPath(Doc.Id, node.Content!));
+        var snapshot = node.Clone();
+        var copy = await Task.Run(() => NamedCopy(snapshot, path));
+        try { return await LibraryStore.PutAsync(projectId, copy, replace); }
+        finally { if (copy != path) Directory.Delete(Path.GetDirectoryName(copy)!, true); }
+    }
+
     private static async Task SaveAsAsync(CanvasNode node, string path)
     {
         var picker = new FileSavePicker { SuggestedFileName = node.Title };

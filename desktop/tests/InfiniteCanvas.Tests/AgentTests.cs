@@ -103,7 +103,18 @@ public class AgentTests
             node.Content = Path.GetFileName(path);
             return Task.CompletedTask;
         }
-        public Task AddToLibraryAsync(CanvasNode node) { LibraryProjects.Add(Document.Id); return Task.CompletedTask; }
+        public async Task<string> AddToLibraryAsync(CanvasNode node, bool replace)
+        {
+            LibraryProjects.Add(Document.Id);
+            var dir = Directory.CreateTempSubdirectory("ic-fake").FullName;
+            try
+            {
+                var file = Path.Combine(dir, node.Title + ".png");
+                await File.WriteAllBytesAsync(file, [9, 9]);
+                return await InfiniteCanvas.Core.Storage.LibraryStore.PutAsync(Document.Id, file, replace);
+            }
+            finally { Directory.Delete(dir, true); }
+        }
     }
 
     private static JsonElement Parse(string json) => JsonDocument.Parse(json).RootElement;
@@ -597,7 +608,7 @@ public class AgentTests
         await using var pipe = new NamedPipeClientStream(".", name, PipeDirection.InOut, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
         await pipe.ConnectAsync(5000);
         await using var client = await McpClient.CreateAsync(new StreamClientTransport(pipe, pipe, null));
-        Assert.Equal(12, (await client.ListToolsAsync()).Count);
+        Assert.Equal(14, (await client.ListToolsAsync()).Count);
     }
 
     [Fact]
@@ -610,7 +621,7 @@ public class AgentTests
         await using var client = await McpClient.CreateAsync(new StreamClientTransport(pipe, pipe, null));
 
         var tools = await client.ListToolsAsync();
-        Assert.Equal(["canvas_apply_ops", "canvas_generate", "canvas_get_image", "canvas_get_node", "canvas_get_state", "canvas_import_file", "canvas_replace_media", "canvas_run_generation", "generation_get_status", "library_add", "library_list", "library_place"], tools.Select(t => t.Name).Order());
+        Assert.Equal(["canvas_apply_ops", "canvas_generate", "canvas_get_image", "canvas_get_node", "canvas_get_state", "canvas_import_file", "canvas_replace_media", "canvas_run_generation", "generation_get_status", "library_add", "library_list", "library_place", "library_remove", "library_rename"], tools.Select(t => t.Name).Order());
 
         var generated = await client.CallToolAsync("canvas_generate", new Dictionary<string, object?> { ["mode"] = "image", ["prompt"] = "一只猫", ["ratio"] = "1:1" });
         var nodeId = Parse(((TextContentBlock)generated.Content[0]).Text).GetProperty("nodeId").GetString();
@@ -708,7 +719,8 @@ public class AgentTests
             var text = TempMedia(dir, "notes.txt");
             var missing = Path.Combine(dir, "missing.png");
             var unc = @"\\server\share\a.png";
-            var rejected = new[] { text, missing, "relative.png", unc, @"\\?\" + good, @"\\.\" + good, "//server/share/a.png", good + ":stream", Path.Combine(dir, "NUL.png"), "" };
+            // Mixed separators and NT-style prefixes are UNC / device paths too; none may reach the host.
+            var rejected = new[] { text, missing, "relative.png", unc, @"\\?\" + good, @"\\.\" + good, "//server/share/a.png", @"\/server/share/a.png", @"/\server\share\a.png", @"\??\UNC\server\share\a.png", @"\??\" + good, @"C:a.png", @"C:\", good + ":stream", Path.Combine(dir, "NUL.png"), "" };
             await using var session = await Session.StartAsync(host);
 
             var (isError, body) = await session.CallAsync("canvas_import_file", new() { ["paths"] = rejected.Append(good).Append(locked).ToArray(), ["x"] = 10d, ["y"] = 20d });
@@ -726,7 +738,8 @@ public class AgentTests
             Assert.Contains("绝对路径", failed["relative.png"]);
             Assert.Contains("UNC", failed[unc]);
             Assert.Contains("UNC", failed[@"\\?\" + good]);
-            Assert.Contains("UNC", failed["//server/share/a.png"]);
+            foreach (var network in new[] { "//server/share/a.png", @"\/server/share/a.png", @"/\server\share\a.png", @"\??\UNC\server\share\a.png" }) Assert.Contains("UNC", failed[network]);
+            Assert.Contains("盘符", failed["C:a.png"]);
 
             // Nothing usable at all is an error naming each path, not an empty success.
             var (allBad, message) = await session.CallAsync("canvas_import_file", new() { ["paths"] = new[] { text, "relative.png" } });
@@ -790,6 +803,54 @@ public class AgentTests
             Assert.Equal(1, Parse(mixed.Text).GetProperty("failed").GetArrayLength());
         }
         finally { Directory.Delete(Path.GetDirectoryName(library)!, true); }
+    }
+
+    [Fact]
+    public async Task Library_tools_add_replace_rename_and_remove_by_name_and_refuse_bad_names()
+    {
+        var host = new FakeHost();
+        var cat = CanvasNode.Create(NodeKind.Image, 0, 0);
+        (cat.Title, cat.Content) = ("猫", "图片-001.png");
+        var dog = CanvasNode.Create(NodeKind.Image, 0, 0);
+        (dog.Title, dog.Content) = ("狗", "图片-002.png");
+        host.Document.Nodes.Add(cat);
+        host.Document.Nodes.Add(dog);
+        var folder = Path.GetDirectoryName(InfiniteCanvas.Core.Storage.ProjectStore.LibraryDir(host.Document.Id))!;
+        try
+        {
+            await using var session = await Session.StartAsync(host);
+            string[] Names(string json) => Parse(json).GetProperty("items").EnumerateArray().Select(i => i.GetProperty("name").GetString()!).Order(StringComparer.Ordinal).ToArray();
+            async Task<string[]> ListAsync() => Names((await session.CallAsync("library_list", new())).Text);
+
+            Assert.Equal("猫.png", Parse((await session.CallAsync("library_add", new() { ["nodeId"] = cat.Id })).Text).GetProperty("added").GetString());
+            var clash = await session.CallAsync("library_add", new() { ["nodeId"] = cat.Id });
+            Assert.True(clash.IsError);
+            Assert.Contains("replace", clash.Text);
+            Assert.Equal(["猫.png"], await ListAsync());
+            Assert.False((await session.CallAsync("library_add", new() { ["nodeId"] = cat.Id, ["replace"] = true })).IsError);
+            Assert.Equal(["猫.png"], await ListAsync());
+            Assert.False((await session.CallAsync("library_add", new() { ["nodeId"] = dog.Id })).IsError);
+
+            Assert.False((await session.CallAsync("library_rename", new() { ["name"] = "猫", ["newName"] = "小猫" })).IsError);
+            Assert.Equal(["小猫.png", "狗.png"], await ListAsync());
+            Assert.False((await session.CallAsync("library_rename", new() { ["name"] = "小猫.png", ["newName"] = "小猫二.PNG" })).IsError);
+            Assert.Equal(["小猫二.png", "狗.png"], await ListAsync());
+            foreach (var newName in new[] { "狗", "狗.png", "con", "NUL.png", "COM1", "lpt9", "..", "a/b", @"a\b", @"..\x", "../x", "C:x", "x:", "a*b", "", " ", "x ", "x.", "x.jpg", "x.mp4" })
+                Assert.True((await session.CallAsync("library_rename", new() { ["name"] = "小猫二", ["newName"] = newName })).IsError, $"rename to '{newName}'");
+            foreach (var name in new[] { "missing", @"..\..\evil.png", "../evil.png", Path.Combine(folder, "library", "小猫二.png") })
+                Assert.True((await session.CallAsync("library_rename", new() { ["name"] = name, ["newName"] = "x" })).IsError, $"rename '{name}'");
+            Assert.Equal(["小猫二.png", "狗.png"], await ListAsync());
+
+            var removed = Parse((await session.CallAsync("library_remove", new() { ["names"] = new[] { "小猫二", "missing", @"..\evil.png" } })).Text);
+            Assert.Equal(["小猫二.png"], removed.GetProperty("removed").EnumerateArray().Select(r => r.GetString()!).ToArray());
+            Assert.Equal(["missing", @"..\evil.png"], removed.GetProperty("failed").EnumerateArray().Select(f => f.GetProperty("name").GetString()!).ToArray());
+            Assert.Equal(["狗.png"], await ListAsync());
+            Assert.Equal(0, host.Records);
+
+            var tools = await session.Client.ListToolsAsync();
+            Assert.All(new[] { "library_add", "library_rename", "library_remove" }, name => Assert.True(tools.Single(t => t.Name == name).ProtocolTool.Annotations?.DestructiveHint));
+        }
+        finally { if (Directory.Exists(folder)) Directory.Delete(folder, true); }
     }
 
     [Fact]
