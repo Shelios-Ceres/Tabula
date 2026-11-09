@@ -64,6 +64,7 @@ public sealed partial class CanvasView : UserControl
     private Button? _imageMarkButton;
     private Button[] _pixelTools = [];
     /// <summary>The 对比 button of the selection bar and its divider, shown when exactly two bitmap pictures are selected.</summary>
+    private readonly Button _composeButton = new() { Content = "拼版…", Style = (Style)Application.Current.Resources["ToolbarButton"], Visibility = Visibility.Collapsed };
     private readonly StackPanel _compareGroup = new() { Orientation = Orientation.Horizontal, Spacing = 2, Visibility = Visibility.Collapsed };
     private readonly TextBlock _selectionCount = new() { Style = (Style)Application.Current.Resources["SecondaryCaption"], VerticalAlignment = VerticalAlignment.Center, Margin = new(10, 0, 6, 0) };
     private readonly List<string> _order = [];
@@ -539,6 +540,10 @@ public sealed partial class CanvasView : UserControl
         compare.Click += async (_, _) => await TrackLocalAsync(ShowCompareAsync);
         _compareGroup.Children.Add(compare);
         row.Children.Add(_compareGroup);
+        ToolTipService.SetToolTip(_composeButton, "把选中的图片拼成一张");
+        AutomationProperties.SetName(_composeButton, "拼版");
+        _composeButton.Click += async (_, _) => { if (ComposeInputs() is { Count: >= 2 } inputs) await TrackLocalAsync(() => ImageTools.ComposeAsync(this, inputs)); };
+        row.Children.Add(_composeButton);
         Divider();
         Add("编组", "把选中节点放进一个分组 (Ctrl+G)", Group);
         return FloatingBar(row, PositionSelectionBar);
@@ -637,7 +642,9 @@ public sealed partial class CanvasView : UserControl
         if (!show) return;
         var nodes = Doc.Nodes.Where(n => _selected.Contains(n.Id)).ToList();
         _selectionCount.Text = $"已选 {nodes.Count} 个";
-        _compareGroup.Visibility = ComposeInputs().Count == 2 ? Visibility.Visible : Visibility.Collapsed;
+        var pictures = ComposeInputs().Count;
+        _compareGroup.Visibility = pictures == 2 ? Visibility.Visible : Visibility.Collapsed;
+        _composeButton.Visibility = pictures >= 2 ? Visibility.Visible : Visibility.Collapsed;
         var bounds = CanvasGraph.Bounds(nodes);
         var topLeft = ToScreen(bounds.Left, bounds.Top);
         var bottom = ToScreen(bounds.Right, bounds.Bottom);
