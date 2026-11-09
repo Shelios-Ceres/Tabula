@@ -232,12 +232,11 @@ public static class CanvasTools
         }),
     ];
 
-    /// <summary>Library errors are the agent's to read; the id is taken once so a canvas switched meanwhile does not change which library is touched.</summary>
-    private static async Task<string> LibraryAsync(ICanvasHost host, Func<string, string> action)
-    {
-        var projectId = await host.OnUiAsync(() => host.Document.Id);
-        return Library(() => action(projectId));
-    }
+    /// <summary>
+    /// Library errors are the agent's to read. The work runs on the UI thread: it raises LibraryStore.Changed, which the open library panel answers by
+    /// updating its list, and the canvas is read once there so a canvas switched meanwhile cannot change which library is touched.
+    /// </summary>
+    private static Task<string> LibraryAsync(ICanvasHost host, Func<string, string> action) => host.OnUiAsync(() => Library(() => action(host.Document.Id)));
 
     private static T Library<T>(Func<T> action)
     {
