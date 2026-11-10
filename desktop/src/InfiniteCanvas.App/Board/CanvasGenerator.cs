@@ -560,7 +560,7 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
         var waiting = true;
         try
         {
-            return await GenerationGate.EnterAsync(channel.Id, channel.MaxConcurrency, GenerationGate.Weight(options.Tier),
+            return await GenerationGate.EnterAsync(channel.Id, channel.MaxConcurrency, GenerationGate.Weight(channel.Vendor, options.Tier),
                 ahead => ui.TryEnqueue(() => { if (waiting) SetQueue(group, ahead); }), ct);
         }
         finally

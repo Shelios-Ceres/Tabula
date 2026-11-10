@@ -43,6 +43,15 @@ public class GenerationGateTests
     }
 
     [Fact]
+    public void MiniMax_auto_tier_renders_at_its_default_4K_so_it_takes_two_slots()
+    {
+        // MiniMaxProvider sends no area on the auto tier (or an unknown / empty one), and MiniMax's default area is 4K.
+        Assert.Equal([2, 2, 2, 2, 1, 1], new[] { "auto", null, "", "4K", "1K", "2K" }.Select(tier => GenerationGate.Weight(Vendor.MiniMax, tier)));
+        // Other vendors keep the plain rule: their auto tier is a 1-slot request.
+        Assert.Equal([1, 1, 2], new[] { "auto", null, "4K" }.Select(tier => GenerationGate.Weight(Vendor.OpenAI, tier)));
+    }
+
+    [Fact]
     public async Task Requests_are_served_strictly_in_order_so_a_big_one_is_not_starved()
     {
         var channel = Channel();

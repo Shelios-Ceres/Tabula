@@ -1,3 +1,5 @@
+using InfiniteCanvas.Core.Settings;
+
 namespace InfiniteCanvas.Core.Models;
 
 /// <summary>
@@ -70,6 +72,9 @@ public static class GenerationGate
 
     /// <summary>Weight of one image request: a 4K tier takes 2 slots, everything else 1.</summary>
     public static int Weight(string? tier) => string.Equals(tier, "4K", StringComparison.OrdinalIgnoreCase) ? 2 : 1;
+
+    /// <summary>MiniMax sends no area on its auto tier and then renders at its default of 4K, so only an explicit 1K or 2K takes 1 slot.</summary>
+    public static int Weight(Vendor vendor, string? tier) => vendor == Vendor.MiniMax && tier is not ("1K" or "2K") ? 2 : Weight(tier);
 
     private static int Taken(Channel channel, int weight) => channel.Limit is { } limit ? Math.Min(weight, limit) : weight;
 
