@@ -875,7 +875,7 @@ public static class CanvasTools
                 Node = Brief(host, n),
                 Batch = Stacks.Of(n) is { } stack ? Stacks.Members(host.Document, stack).Select(member => new { member.Id, Status = StatusOf(member), File = FileOf(member), member.Error }).ToList() : null,
                 Outputs = host.Document.Connections.Where(c => c.From == n.Id).Select(c => host.Document.Find(c.To)).OfType<CanvasNode>()
-                    .Where(o => o.Kind != NodeKind.Config).Select(o => new { o.Id, Status = o.Status.ToString().ToLowerInvariant(), o.Error, File = o.Content }),
+                    .Where(o => o.Kind != NodeKind.Config).Select(o => new { o.Id, Status = StatusOf(o), o.Error, File = o.Content }),
             }),
         });
     }

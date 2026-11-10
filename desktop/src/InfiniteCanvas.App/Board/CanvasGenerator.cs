@@ -463,13 +463,16 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
 
     public static async Task<(int Width, int Height)> ImageSizeAsync(byte[] bytes)
     {
-        try
-        {
-            using var stream = new MemoryStream(bytes);
-            var decoder = await BitmapDecoder.CreateAsync(stream.AsRandomAccessStream());
-            return ((int)decoder.PixelWidth, (int)decoder.PixelHeight);
-        }
+        try { return await BitmapSizeAsync(bytes); }
         catch { return Media.SvgSize(bytes); }
+    }
+
+    /// <summary>Pixel size from the bitmap decoder alone; throws when the bytes are not a bitmap (no SVG fallback).</summary>
+    public static async Task<(int Width, int Height)> BitmapSizeAsync(byte[] bytes)
+    {
+        using var stream = new MemoryStream(bytes);
+        var decoder = await BitmapDecoder.CreateAsync(stream.AsRandomAccessStream());
+        return ((int)decoder.PixelWidth, (int)decoder.PixelHeight);
     }
 
     /// <summary>Frame size from the container metadata; (0, 0) when it cannot be read.</summary>

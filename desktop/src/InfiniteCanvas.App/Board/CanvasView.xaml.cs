@@ -1870,7 +1870,10 @@ public sealed partial class CanvasView : UserControl
     private static async Task<string?> UnreadableImageAsync(string path)
     {
         if (Media.KindOf(path) != NodeKind.Image || Media.IsSvg(path)) return null;
-        var (width, height) = await CanvasGenerator.ImageSizeAsync(await File.ReadAllBytesAsync(path));
+        // The bitmap decoder alone decides: an SVG saved as .png is not a picture the canvas can show.
+        var (width, height) = (0, 0);
+        try { (width, height) = await CanvasGenerator.BitmapSizeAsync(await File.ReadAllBytesAsync(path)); }
+        catch (Exception ex) when (ex is not IOException and not UnauthorizedAccessException) { }
         return width > 0 && height > 0 ? null : "图片无法解码，文件可能已损坏或格式和后缀不符";
     }
 
@@ -1941,8 +1944,13 @@ public sealed partial class CanvasView : UserControl
             if (await UnreadableImageAsync(path) is { } reason) throw new McpException(reason);
             return ProjectStore.ImportAsset(id, path);
         });
-        if (Doc.Find(node.Id) != node) throw new McpException("节点已被删除");
-        if (Generator.IsRunning(node.Id)) throw new McpException("节点已开始生成，没有替换");
+        // Refusing here leaves nothing referencing the file this call just copied, so it goes again.
+        if (Doc.Find(node.Id) != node || Generator.IsRunning(node.Id))
+        {
+            try { File.Delete(ProjectStore.AssetPath(id, asset)); }
+            catch (Exception ex) { App.Log(ex); }
+            throw new McpException(Doc.Find(node.Id) != node ? "节点已被删除" : "节点已开始生成，没有替换");
+        }
         History.Record();
         // Marks, conversations and the model's notes describe the old picture only.
         NodeKeys.ForgetPixels(node);

@@ -790,6 +790,14 @@ public class AgentTests
         await using var session = await Session.StartAsync(host);
         async Task<JsonElement> Node() => Parse((await session.CallAsync("generation_get_status", new() { ["nodeIds"] = new[] { waiting.Id } })).Text).GetProperty("nodes")[0].GetProperty("node");
 
+        var output = CanvasNode.Create(NodeKind.Image, 0, 0);
+        output.Status = NodeStatus.Loading;
+        output.QueueAhead = 2;
+        host.Document.Nodes.Add(output);
+        host.Document.Connections.Add(CanvasConnection.Create(waiting.Id, output.Id));
+        var outputs = Parse((await session.CallAsync("generation_get_status", new() { ["nodeIds"] = new[] { waiting.Id } })).Text).GetProperty("nodes")[0].GetProperty("outputs");
+        Assert.Equal("queued", outputs[0].GetProperty("status").GetString());
+
         waiting.QueueAhead = 3;
         var queued = await Node();
         Assert.Equal(("queued", 3), (queued.GetProperty("status").GetString(), queued.GetProperty("queueAhead").GetInt32()));
