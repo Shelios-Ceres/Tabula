@@ -47,6 +47,7 @@ public static class ModelFamilies
     private static readonly string[] StandardRatios = ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"];
     private static readonly string[] TableRatios = ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "16:9", "9:16", "21:9", "9:21"];
     private static readonly string[] ArkRatios = ["auto", "1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3", "21:9"];
+    private static readonly string[] MiniMaxRatios = ["auto", .. TableRatios, "1:3", "3:1"];
     private static readonly string[] XaiRatios = ["auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "2:1", "1:2", "19.5:9", "9:19.5", "20:9", "9:20", "21:9", "5:2"];
     // Order matters: more specific patterns first.
     public static readonly ImageFamily[] Image =
@@ -69,6 +70,8 @@ public static class ModelFamilies
         new("seedream-4.0", Vendor.Ark, "seedream-4-0$") { Tiers = ["1K", "2K", "4K"], MaxPixels = 16_777_216, Ratios = ArkRatios, MaxReferences = 14, MaxImages = 15, OutputFormats = ["jpeg"], Stream = true, Sequential = true },
         new("grok-imagine-image-2", Vendor.XAI, "^grok-imagine-image-2\\.") { Tiers = ["1k", "1.5k", "2k"], Ratios = XaiRatios, MaxReferences = 5, MaxImages = 10, Qualities = ["auto", "low", "medium"], OutputFormats = ["jpeg"] },
         new("grok-imagine-image", Vendor.XAI, "^grok-imagine-image") { Tiers = ["1k", "2k"], Ratios = XaiRatios, MaxReferences = 5, MaxImages = 10, OutputFormats = ["jpeg"] },
+        // H3 Image and its Highspeed model take the same parameters; any X:Y from 1:3 to 3:1 works, these are the ones offered. The "auto" tier and ratio leave the size to the model (prompt enhancement picks the ratio).
+        new("minimax-h3-image", Vendor.MiniMax, "^minimax-h3-image(-highspeed)?$") { Tiers = ["auto", "1K", "2K", "4K"], Ratios = MiniMaxRatios, MaxReferences = 16, MaxImages = 10, OutputFormats = ["png", "jpeg", "webp"] },
         new("qwen-image-3", Vendor.Qwen, "^qwen-image-3") { Tiers = ["auto", "1K", "2K"], Ratios = TableRatios, MaxReferences = 3, MaxImages = 6, NegativePrompt = true },
         // max / plus / the original qwen-image: text-to-image only, five fixed sizes and one image per request.
         new("qwen-image-plus", Vendor.Qwen, "^qwen-image(-max|-plus)?$") { Ratios = ["16:9", "4:3", "1:1", "3:4", "9:16"] },
@@ -105,7 +108,7 @@ public static class ModelFamilies
         name = Regex.Replace(name, @"(?<=^|-)(\d+)-(\d+)(?=-|$)", "$1.$2");
         var words = name.Split('-', StringSplitOptions.RemoveEmptyEntries).Where(word => word != "generate").ToList();
         if (words.Count == 0) return model;
-        return string.Join(" ", words.Select(word => word is "gpt" or "tts" || Regex.IsMatch(word, @"^[a-z]\d[a-z]$") ? word.ToUpperInvariant() : char.ToUpperInvariant(word[0]) + word[1..]));
+        return string.Join(" ", words.Select(word => word == "minimax" ? "MiniMax" : word is "gpt" or "tts" || Regex.IsMatch(word, @"^[a-z]\d[a-z]$") ? word.ToUpperInvariant() : char.ToUpperInvariant(word[0]) + word[1..]));
     }
 
     /// <summary>A node's OpenAI call mode ("images" or "responses"); models not documented for the Responses image tool always use the Image API.</summary>
@@ -140,6 +143,7 @@ public static class ModelFamilies
         Vendor.Google => ["gemini-nano-banana-2.1", "gemini-3-pro-image", "gemini-3.1-flash-image", "gemini-3.1-flash-lite-image", "gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts"],
         Vendor.Ark => ["doubao-seedream-5-0-pro-260628", "doubao-seedream-5-0-flash-260915", "doubao-seedream-5-0-260128", "doubao-seedream-4-5-251128", "doubao-seedream-4-0-250828"],
         Vendor.XAI => ["grok-imagine-image-2.0"],
+        Vendor.MiniMax => ["MiniMax-H3-Image", "MiniMax-H3-Image-Highspeed"],
         _ => ["qwen-image-3.0-pro", "qwen-image-3.0", "qwen-image-2.1-pro", "qwen3.8-max", "qwen-plus"],
     };
 

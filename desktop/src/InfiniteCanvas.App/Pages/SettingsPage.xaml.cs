@@ -82,6 +82,8 @@ public sealed partial class SettingsPage : Page
         ConcurrencyBox.Value = channel.MaxConcurrency ?? double.NaN;
         VersionBox.SelectedItem = channel.ApiVersion;
         VersionBox.Visibility = channel.Vendor == Vendor.Google ? Visibility.Visible : Visibility.Collapsed;
+        SiteBox.Visibility = channel.Vendor == Vendor.MiniMax ? Visibility.Visible : Visibility.Collapsed;
+        SiteBox.SelectedIndex = channel.IsInternationalSite ? 1 : 0;
         NewEndpointBox.Visibility = channel.Vendor == Vendor.Ark ? Visibility.Visible : Visibility.Collapsed;
         // A pending endpoint typed for another channel or vendor must not stick to the next model added here.
         NewEndpointBox.Text = "";
@@ -90,6 +92,7 @@ public sealed partial class SettingsPage : Page
         {
             Vendor.Qwen => "\n也可填写业务空间专属域名，例如 https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com；模型、地址和 API Key 需属于同一地域。",
             Vendor.Ark => "\n模型名称填底层型号（如 doubao-seedream-5-0-pro-260628），推理接入点填 ep- 开头的 ID：界面显示模型名称，实际请求使用接入点。",
+            Vendor.MiniMax => "\n站点决定请求地址和估算花费的币种（中国大陆 ¥，国际 $）；接口地址框里填了别的地址（如代理）时以它为准。",
             Vendor.OpenAI => "\nOpenAI 的 Sora 视频接口已于 2026-09-24 下线，这里只提供图片、文本和语音。",
             _ => "",
         };
@@ -105,15 +108,16 @@ public sealed partial class SettingsPage : Page
         var month = Labels.Tokens(channel.Id, Labels.MonthStart);
         TokenText.Text = $"Token　今天：{Labels.Tokens(channel.Id, Labels.Today) ?? "暂无"}　本月：{month}";
         TokenText.Visibility = month is null ? Visibility.Collapsed : Visibility.Visible;
-        var google = channel.Vendor == Vendor.Google;
-        EstimateText.Visibility = PriceRows.Visibility = google ? Visibility.Visible : Visibility.Collapsed;
-        if (google) ShowEstimate(channel);
+        var estimated = ModelChannel.NoBillingApi(channel.Vendor);
+        EstimateText.Visibility = PriceRows.Visibility = estimated ? Visibility.Visible : Visibility.Collapsed;
+        if (estimated) ShowEstimate(channel);
         var (idHeader, keyHeader, hint) = channel.Vendor switch
         {
             Vendor.OpenAI => (null, "Admin Key", "OpenAI 没有查询余额的接口，填入 Admin Key 后显示本月花费（Costs API）。Admin Key 只能由组织 Owner 在 OpenAI 平台的 Admin keys 页面创建，建议只开放用量读取权限。"),
             Vendor.XAI => (null, "Management Key", "填入 Management Key 后显示团队的预付余额。Management Key 在 xAI 控制台的设置里创建，账户需要有 Management Keys 权限。"),
             Vendor.Ark => ("Access Key ID", "Secret Access Key", "方舟的 API Key 不能查账，这里用火山引擎的访问密钥（AK/SK）查询账户可用余额；建议新建一个只授予费用中心只读权限的子用户来创建密钥。"),
             Vendor.Qwen => ("AccessKey ID", "AccessKey Secret", "百炼的免费额度没有公开接口，只能在百炼控制台查看；这里用阿里云 AccessKey 查询账户可用额度，建议新建只授予 AliyunBSSReadOnlyAccess 权限的 RAM 用户来创建密钥。"),
+            Vendor.MiniMax => (null, null, "MiniMax 没有能查询额度或余额的接口，请在 MiniMax 开放平台的账户管理里查看；上面的花费是按单价和本机 token 估算的。"),
             _ => ((string?)null, (string?)null, "Google Gemini 没有能用 API Key 查询额度或余额的接口，请在 Google AI Studio 查看用量与费用。"),
         };
         BillingHint.Text = keyHeader is null ? hint : hint + "凭据用 Windows 数据保护（DPAPI）加密保存在本机，只用来查余额。";
@@ -128,17 +132,20 @@ public sealed partial class SettingsPage : Page
         BalanceText.Text = "";
     }
 
-    private void ShowEstimate(ModelChannel channel) =>
-        EstimateText.Text = $"估算花费　今天 ≈ ${Prices.Estimate(channel, Labels.Today):N2}　本月 ≈ ${Prices.Estimate(channel, Labels.MonthStart):N2}（按下面的单价和本机 token 估算，不含免费额度）";
+    private void ShowEstimate(ModelChannel channel)
+    {
+        var sign = UsageReport.CurrencyOf(channel) == "CNY" ? "¥" : "$";
+        EstimateText.Text = $"估算花费　今天 ≈ {sign}{Prices.Estimate(channel, Labels.Today):N2}　本月 ≈ {sign}{Prices.Estimate(channel, Labels.MonthStart):N2}（按下面的单价和本机 token 估算，不含免费额度）";
+    }
 
     /// <summary>Google's per-model prices for the estimate: an empty box uses the built-in official price shown as its placeholder.</summary>
     private void RenderPrices(ModelChannel channel)
     {
         var caption = (Style)Application.Current.Resources["SecondaryCaption"];
-        PriceRows.Children.Add(new TextBlock { Text = "估算单价（美元 / 百万 token，留空使用内置的官方价格）", Style = caption });
+        PriceRows.Children.Add(new TextBlock { Text = $"估算单价（{(UsageReport.CurrencyOf(channel) == "CNY" ? "人民币" : "美元")} / 百万 token，留空使用内置的官方价格）", Style = caption });
         foreach (var model in channel.Models)
         {
-            var builtin = Prices.Default(channel.Vendor, model.Name);
+            var builtin = Prices.Default(channel, model.Name);
             TextBox Box(string header, decimal? own, decimal? fallback) => new()
             {
                 Header = header, Width = 130, Text = own?.ToString(CultureInfo.InvariantCulture) ?? "",
@@ -248,9 +255,9 @@ public sealed partial class SettingsPage : Page
             row.Children.Add(remove);
             ModelRows.Children.Add(row);
         }
-        // Google prices follow the model list, so they are rebuilt with it.
+        // Prices of the vendors without a billing API follow the model list, so they are rebuilt with it.
         PriceRows.Children.Clear();
-        if (_channel.Vendor == Vendor.Google) RenderPrices(_channel);
+        if (ModelChannel.NoBillingApi(_channel.Vendor)) RenderPrices(_channel);
         if (_channel.Models.Count == 0)
             ModelRows.Children.Add(new TextBlock { Text = "还没有模型，可以拉取模型列表、添加推荐模型或手动输入。", Style = (Style)Application.Current.Resources["SecondaryCaption"] });
     }
@@ -300,8 +307,28 @@ public sealed partial class SettingsPage : Page
         Save();
         KeyWarning.IsOpen = KeyBox.Password.Trim().Length == 0;
         ApiHint.Text = ApiHint.Text.Contains('\n') ? $"请求地址：{_channel.ApiBase()}{ApiHint.Text[ApiHint.Text.IndexOf('\n')..]}" : $"请求地址：{_channel.ApiBase()}";
+        // The address decides MiniMax's site and with it the currency of its prices.
+        if (_channel.Vendor == Vendor.MiniMax)
+        {
+            _loading = true;
+            SiteBox.SelectedIndex = _channel.IsInternationalSite ? 1 : 0;
+            ShowBilling(_channel);
+            _loading = false;
+            RenderModels();
+        }
         // Rebuilding the list replays its entrance animation, so it happens only when an entry's text really changed.
         if (ChannelList.ItemsSource is List<ChannelRow> rows && rows.Zip(Rows()).Any(pair => pair.First.Name != pair.Second.Name || pair.First.Detail != pair.Second.Detail)) RefreshChannelNames();
+    }
+
+    /// <summary>MiniMax's two sites are two hosts, so picking one writes its host into the address box; a custom address there still wins.</summary>
+    private void Site_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (_loading || _channel is not { Vendor: Vendor.MiniMax } channel || SiteBox.SelectedIndex < 0) return;
+        var url = SiteBox.SelectedIndex == 1 ? ModelChannel.MiniMaxInternational : ModelChannel.DefaultBaseUrl(Vendor.MiniMax);
+        if (url == channel.BaseUrl) return;
+        channel.BaseUrl = url;
+        Save();
+        ShowChannel(channel);
     }
 
     private void Concurrency_Changed(NumberBox sender, NumberBoxValueChangedEventArgs e)

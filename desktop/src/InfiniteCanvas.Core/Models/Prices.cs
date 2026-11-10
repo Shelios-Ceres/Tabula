@@ -13,7 +13,7 @@ public readonly record struct TokenUsage(long Input, long Output, long Media = 0
     public TokenUsage Per(int count) => new(Input / count, Output / count, Media / count);
 }
 
-/// <summary>USD per 1M tokens: input, text output (thinking included), media output (image / audio tokens).</summary>
+/// <summary>Per 1M tokens in the channel's billing currency (USD, or CNY for mainland MiniMax): input, text output (thinking included), media output (image / audio tokens).</summary>
 public sealed record TokenPrice(decimal Input, decimal Output, decimal Media);
 
 /// <summary>What an image run is expected to cost before it starts: the request total in the vendor's billing currency, and how it was worked out.</summary>
@@ -23,7 +23,7 @@ public sealed record ImageEstimate(decimal Amount, string Currency, string Basis
 }
 
 /// <summary>
-/// Local cost estimates. Token prices: the Gemini API paid tier (ai.google.dev/gemini-api/docs/pricing, standard rates through 2026-12-31)
+/// Local cost estimates. Token prices: MiniMax's H3 Image pages, the Gemini API paid tier (ai.google.dev/gemini-api/docs/pricing, standard rates through 2026-12-31)
 /// and OpenAI's GPT Image rates, matched by model prefix, longest first; each model's price can be overridden in settings.
 /// Free tier, batch, cached input and the >200k-token tier are not modelled.
 /// </summary>
@@ -88,6 +88,21 @@ public static class Prices
     };
     private const int GeminiInputImageTokens = 560;
 
+    // MiniMax H3 Image, per 1M tokens: text input, no text output, image output (platform.minimax.io/docs/pricing/overview and platform.minimax.cn/docs/pricing/overview).
+    // Reference-picture input tokens are billed at their own rate (standard 1.50 / ¥10, Highspeed 3.00 / ¥20) but counted as input here, so edits come out a little off.
+    // The limited 4K half-price offer is not modelled.
+    private static readonly (string Prefix, TokenPrice Price)[] MiniMaxUsd =
+    [
+        ("minimax-h3-image-highspeed", new(2.30m, 0, 7.60m)),
+        ("minimax-h3-image", new(2.30m, 0, 3.80m)),
+    ];
+
+    private static readonly (string Prefix, TokenPrice Price)[] MiniMaxCny =
+    [
+        ("minimax-h3-image-highspeed", new(15, 0, 50)),
+        ("minimax-h3-image", new(15, 0, 25)),
+    ];
+
     private static T? Longest<T>(IEnumerable<(string Prefix, T Value)> table, string name) =>
         table.Where(p => name.StartsWith(p.Prefix, StringComparison.OrdinalIgnoreCase)).OrderByDescending(p => p.Prefix.Length).Select(p => p.Value).FirstOrDefault();
 
@@ -98,8 +113,12 @@ public static class Prices
         _ => null,
     };
 
+    /// <summary>The built-in price for a channel: MiniMax follows the site it talks to, the other vendors only their vendor.</summary>
+    public static TokenPrice? Default(ModelChannel channel, string model) =>
+        channel.Vendor == Vendor.MiniMax ? Longest(channel.IsInternationalSite ? MiniMaxUsd : MiniMaxCny, ModelFamilies.Normalize(model)) : Default(channel.Vendor, model);
+
     /// <summary>The user's override, else the built-in price.</summary>
-    public static TokenPrice? Of(ModelChannel channel, string model) => channel.Models.FirstOrDefault(m => m.Name == model)?.Price ?? Default(channel.Vendor, model);
+    public static TokenPrice? Of(ModelChannel channel, string model) => channel.Models.FirstOrDefault(m => m.Name == model)?.Price ?? Default(channel, model);
 
     public static decimal Cost(TokenUsage tokens, TokenPrice price) => (tokens.Input * price.Input + tokens.Output * price.Output + tokens.Media * price.Media) / 1_000_000m;
 
@@ -164,7 +183,7 @@ public static class Prices
             return new(count * image + extra, "USD", $"{count} 张 × {Money(image, "USD")}，官方单价");
         }
         if (price is not null && UsageStore.LastImage(ImageKey(model, node)) is { } last)
-            return new(Cost(last, price) * count, "USD", $"{count} 张，按上次同样设置的实际用量");
+            return new(Cost(last, price) * count, UsageReport.CurrencyOf(channel), $"{count} 张，按上次同样设置的实际用量");
         return null;
     }
 }

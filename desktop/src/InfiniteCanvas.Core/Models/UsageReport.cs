@@ -12,8 +12,11 @@ public sealed record CurrencyUsage(string Currency, Dictionary<string, int> Resu
 /// <summary>The local usage ledger as a spending overview, per currency. Local estimates only, not the vendor's bill.</summary>
 public static class UsageReport
 {
-    /// <summary>Volcengine and Alibaba Cloud bill in yuan, the others in dollars.</summary>
+    /// <summary>Volcengine and Alibaba Cloud bill in yuan, the others in dollars (MiniMax by site, see the channel overload).</summary>
     public static string CurrencyOf(Vendor vendor) => vendor is Vendor.Ark or Vendor.Qwen ? "CNY" : "USD";
+
+    /// <summary>MiniMax's currency follows the site the channel talks to (mainland CNY, international USD).</summary>
+    public static string CurrencyOf(ModelChannel channel) => channel.Vendor == Vendor.MiniMax ? channel.IsInternationalSite ? "USD" : "CNY" : CurrencyOf(channel.Vendor);
 
     public static List<CurrencyUsage> Summarize(AppSettings settings, DateOnly from)
     {
@@ -26,7 +29,7 @@ public static class UsageReport
             var priced = tokens.Where(pair => Prices.Of(channel, pair.Key) is not null).ToList();
             decimal? amount = priced.Count > 0 ? priced.Sum(pair => Prices.Cost(pair.Value, Prices.Of(channel, pair.Key)!)) : null;
             var unpriced = tokens.Except(priced).Select(pair => pair.Key).ToList();
-            channels.Add((CurrencyOf(channel.Vendor), new ChannelUsage(settings.ChannelName(channel), results, amount, unpriced)));
+            channels.Add((CurrencyOf(channel), new ChannelUsage(settings.ChannelName(channel), results, amount, unpriced)));
         }
         return channels.GroupBy(c => c.Currency).OrderBy(g => g.Key).Select(group =>
         {

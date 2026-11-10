@@ -1022,6 +1022,7 @@ public class CoreTests
     [InlineData("gpt-image-2.5-flare", "GPT Image 2.5 Flare")]
     [InlineData("gpt-4o-mini-tts", "GPT 4o Mini TTS")]
     [InlineData("wan2.7-i2v", "Wan2.7 I2V")]
+    [InlineData("MiniMax-H3-Image-Highspeed", "MiniMax H3 Image Highspeed")]
     public void Short_names_drop_vendor_prefixes_and_snapshot_dates(string model, string expected) => Assert.Equal(expected, ModelFamilies.ShortName(model));
 
     [Fact]
@@ -1040,6 +1041,67 @@ public class CoreTests
     }
 
     [Fact]
+    public void MiniMax_H3_Image_family_covers_both_models_and_nothing_else()
+    {
+        foreach (var model in new[] { "MiniMax-H3-Image", "MiniMax-H3-Image-Highspeed", "minimax/MiniMax-H3-Image" })
+        {
+            var family = ModelFamilies.FindImage(Vendor.MiniMax, model)!;
+            Assert.Equal(("minimax-h3-image", 10, 16), (family.Id, family.MaxImages, family.MaxReferences));
+            Assert.Equal(["auto", "1K", "2K", "4K"], family.Tiers);
+            Assert.Equal(["png", "jpeg", "webp"], family.OutputFormats);
+            // Any X:Y from 1:3 to 3:1 is accepted; every listed ratio is inside that range, and none of the GPT-only extras is on.
+            Assert.All(family.Ratios.Where(r => r != "auto"), r => Assert.InRange(ModelFamilies.AspectOf(r), 1d / 3, 3));
+            Assert.Contains("1:3", family.Ratios);
+            Assert.Contains("3:1", family.Ratios);
+            Assert.False(family.Mask || family.Markup || family.Interactive || family.Background || family.Layers || family.OutputFormats.Contains("svg"));
+        }
+        Assert.Null(ModelFamilies.FindImage(Vendor.MiniMax, "MiniMax-H3-Image-Context-IR"));
+        Assert.Null(ModelFamilies.FindImage(Vendor.OpenAI, "MiniMax-H3-Image"));
+        Assert.Equal(Capability.Image, ModelFamilies.GuessCapability("MiniMax-H3-Image-Highspeed"));
+        Assert.Equal(["MiniMax-H3-Image", "MiniMax-H3-Image-Highspeed"], ModelFamilies.Recommended(Vendor.MiniMax));
+    }
+
+    [Fact]
+    public void MiniMax_prices_and_currency_follow_the_site_the_channel_talks_to()
+    {
+        var mainland = new ModelChannel { Vendor = Vendor.MiniMax, BaseUrl = ModelChannel.DefaultBaseUrl(Vendor.MiniMax) };
+        var international = new ModelChannel { Vendor = Vendor.MiniMax, BaseUrl = ModelChannel.MiniMaxInternational };
+        var proxy = new ModelChannel { Vendor = Vendor.MiniMax, BaseUrl = "https://proxy.example" };
+        Assert.Equal(("CNY", "USD", "CNY"), (UsageReport.CurrencyOf(mainland), UsageReport.CurrencyOf(international), UsageReport.CurrencyOf(proxy)));
+        Assert.Equal((false, true, false), (mainland.IsInternationalSite, international.IsInternationalSite, proxy.IsInternationalSite));
+        Assert.Equal(new TokenPrice(15, 0, 25), Prices.Default(mainland, "MiniMax-H3-Image"));
+        Assert.Equal(new TokenPrice(15, 0, 50), Prices.Default(mainland, "MiniMax-H3-Image-Highspeed"));
+        Assert.Equal(new TokenPrice(2.30m, 0, 3.80m), Prices.Default(international, "MiniMax-H3-Image"));
+        Assert.Equal(new TokenPrice(2.30m, 0, 7.60m), Prices.Default(international, "MiniMax-H3-Image-Highspeed"));
+        Assert.Equal(0.025m, Prices.Cost(new TokenUsage(0, 0, 1000), Prices.Default(mainland, "MiniMax-H3-Image")!));
+
+        // The ledger turns tokens into the channel's own currency, and the mainland and international channels are never added together.
+        var day = DateOnly.FromDateTime(DateTime.Now);
+        UsageStore.Record(mainland.Id, "MiniMax-H3-Image", Capability.Image, 1, new TokenUsage(200, 0, 18_000));
+        UsageStore.Record(international.Id, "MiniMax-H3-Image", Capability.Image, 1, new TokenUsage(200, 0, 18_000));
+        Assert.Equal(200 * 15m / 1_000_000m + 18_000 * 25m / 1_000_000m, Prices.Estimate(mainland, day));
+        Assert.Equal(200 * 2.30m / 1_000_000m + 18_000 * 3.80m / 1_000_000m, Prices.Estimate(international, day));
+        var report = UsageReport.Summarize(new AppSettings { Channels = [mainland, international] }, day);
+        Assert.Equal(["CNY", "USD"], report.Select(r => r.Currency));
+
+        // Without an official per-picture price, the estimate is the last run made the same way, in the channel's currency.
+        var node = new CanvasNode { Kind = NodeKind.Image, Prompt = "x", Size = Guid.NewGuid().ToString("N"), Ratio = "1:1", Count = 2 };
+        UsageStore.RememberImage(Prices.ImageKey("MiniMax-H3-Image", node), new TokenUsage(100, 0, 10_000));
+        var estimate = Prices.EstimateImage(mainland, "MiniMax-H3-Image", node, 0)!;
+        Assert.Equal(("CNY", 2 * (100 * 15m + 10_000 * 25m) / 1_000_000m), (estimate.Currency, estimate.Amount));
+        Assert.Equal("USD", Prices.EstimateImage(international, "MiniMax-H3-Image", node, 0)!.Currency);
+    }
+
+    [Fact]
+    public void MiniMax_has_no_balance_API_whatever_billing_key_is_stored()
+    {
+        var channel = new ModelChannel { Vendor = Vendor.MiniMax, BillingKey = "k" };
+        Assert.False(channel.HasBilling);
+        Assert.True(ModelChannel.NoBillingApi(Vendor.MiniMax));
+        Assert.True(new ModelChannel { Vendor = Vendor.XAI, BillingKey = "k" }.HasBilling);
+    }
+
+    [Fact]
     public void Prompt_tags_split_on_common_separators() =>
         Assert.Equal(["人物", "产品图", "cyber"], InfiniteCanvas.Core.Storage.PromptEntry.ParseTags(" 人物，产品图; cyber  人物 "));
 
@@ -1049,6 +1111,9 @@ public class CoreTests
     [InlineData(Vendor.Google, "https://generativelanguage.googleapis.com", "https://generativelanguage.googleapis.com/v1beta")]
     [InlineData(Vendor.Ark, "https://ark.cn-beijing.volces.com/api/v3", "https://ark.cn-beijing.volces.com/api/v3")]
     [InlineData(Vendor.XAI, "", "https://api.x.ai/v1")]
+    [InlineData(Vendor.MiniMax, "", "https://api.minimax.cn/v1")]
+    [InlineData(Vendor.MiniMax, "https://api.minimax.io", "https://api.minimax.io/v1")]
+    [InlineData(Vendor.MiniMax, "https://proxy.example/v1", "https://proxy.example/v1")]
     [InlineData(Vendor.Qwen, "https://ws1.cn-beijing.maas.aliyuncs.com", "https://ws1.cn-beijing.maas.aliyuncs.com/api/v1")]
     public void Api_base_appends_vendor_version_once(Vendor vendor, string baseUrl, string expected) =>
         Assert.Equal(expected, new ModelChannel { Vendor = vendor, BaseUrl = baseUrl }.ApiBase());

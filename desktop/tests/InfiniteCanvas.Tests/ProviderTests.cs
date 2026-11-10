@@ -726,6 +726,136 @@ public class ProviderTests
         Assert.Equal("未完成", await provider.GenerateTextAsync(new TextRequest("text-model", "继续", []), null, default));
     }
 
+    private static HttpResponseMessage MiniMaxOk(string data, string usage = "", string format = "png") =>
+        Json($$"""{"created":1,"data":[{{data}}],"output_format":"{{format}}",{{usage}}"request_id":"req-1"}""");
+
+    private static string MiniMaxItem(string name) => $$"""{"url":"https://cdn.example/{{name}}.png","size":"2720x1536","revised_prompt":"一只猫"}""";
+
+    [Fact]
+    public async Task MiniMax_text_to_image_sends_area_ratio_and_format_then_downloads_each_url()
+    {
+        var (provider, handler) = Create(Vendor.MiniMax, (request, _) => request.Method == HttpMethod.Post ? MiniMaxOk($"{MiniMaxItem("a")},{MiniMaxItem("b")}") : Bytes("application/octet-stream"));
+        var events = new List<ImageEvent>();
+        var result = await provider.GenerateImageAsync(Image("MiniMax-H3-Image", count: 2, options: new() { Tier = "2K", Ratio = "16:9" }), new SyncProgress<ImageEvent>(events.Add), default);
+        var (request, body) = handler.Calls[0];
+        Assert.Equal("https://api.minimax.cn/v1/images/generations", request.RequestUri!.ToString());
+        Assert.Equal("Bearer test-key", request.Headers.Authorization!.ToString());
+        var json = JsonNode.Parse(body)!;
+        Assert.Equal(("MiniMax-H3-Image", "一只猫", 2, "2K", "16:9", "png", "url"), ((string?)json["model"]!, (string?)json["prompt"]!, (int)json["n"]!, (string?)json["area"]!, (string?)json["aspect_ratio"]!, (string?)json["output_format"]!, (string?)json["response_format"]!));
+        // Enhancement is MiniMax's default, so nothing is sent for it; text-to-image carries no pictures and no size.
+        Assert.Null(json["disable_prompt_enhanced"]);
+        Assert.Null(json["images"]);
+        Assert.Null(json["size"]);
+        Assert.Equal(["https://cdn.example/a.png", "https://cdn.example/b.png"], handler.Calls.Skip(1).Select(c => c.Request.RequestUri!.ToString()));
+        Assert.Equal(["image/png", "image/png"], result.Images.Select(i => i.MimeType));
+        Assert.Equal([0, 1], events.Select(e => e.Index));
+        Assert.Empty(result.Errors);
+    }
+
+    [Fact]
+    public async Task MiniMax_uses_the_international_host_and_the_chosen_output_format()
+    {
+        var (provider, handler) = Create(Vendor.MiniMax, (request, _) => request.Method == HttpMethod.Post ? MiniMaxOk(MiniMaxItem("a"), format: "webp") : Bytes("image/webp"), "https://api.minimax.io",
+            channel => Assert.True(channel.IsInternationalSite));
+        var result = await provider.GenerateImageAsync(Image("MiniMax-H3-Image-Highspeed", options: new() { Tier = "4K", Ratio = "3:1", OutputFormat = "webp" }), null, default);
+        Assert.Equal("https://api.minimax.io/v1/images/generations", handler.Calls[0].Request.RequestUri!.ToString());
+        var json = JsonNode.Parse(handler.Calls[0].Body)!;
+        Assert.Equal(("MiniMax-H3-Image-Highspeed", "4K", "3:1", "webp"), ((string?)json["model"]!, (string?)json["area"]!, (string?)json["aspect_ratio"]!, (string?)json["output_format"]!));
+        Assert.Equal("image/webp", result.Images.Single().MimeType);
+    }
+
+    [Fact]
+    public async Task MiniMax_auto_tier_sends_neither_area_nor_ratio_and_an_auto_ratio_sends_only_the_area()
+    {
+        var (provider, handler) = Create(Vendor.MiniMax, (request, _) => request.Method == HttpMethod.Post ? MiniMaxOk(MiniMaxItem("a")) : Bytes("image/png"));
+        await provider.GenerateImageAsync(Image("MiniMax-H3-Image", options: new() { Tier = "auto", Ratio = "16:9" }), null, default);
+        await provider.GenerateImageAsync(Image("MiniMax-H3-Image", options: new() { Tier = "1K", Ratio = "auto" }), null, default);
+        var posts = handler.Calls.Where(c => c.Request.Method == HttpMethod.Post).Select(c => JsonNode.Parse(c.Body)!).ToList();
+        Assert.Equal((null, null), ((string?)posts[0]["area"], (string?)posts[0]["aspect_ratio"]));
+        Assert.Equal(("1K", null), ((string?)posts[1]["area"], (string?)posts[1]["aspect_ratio"]));
+    }
+
+    [Fact]
+    public async Task MiniMax_turning_enhancement_off_needs_a_fixed_ratio_and_is_refused_before_any_request()
+    {
+        var (provider, handler) = Create(Vendor.MiniMax, (request, _) => request.Method == HttpMethod.Post ? MiniMaxOk(MiniMaxItem("a")) : Bytes("image/png"));
+        foreach (var options in new ImageOptions[] { new() { Tier = "2K", Ratio = "auto", PromptExtend = false }, new() { Tier = "auto", Ratio = "1:1", PromptExtend = false } })
+            Assert.Contains("提示词增强", (await Assert.ThrowsAsync<ApiException>(() => provider.GenerateImageAsync(Image("MiniMax-H3-Image", options: options), null, default))).Message);
+        Assert.Empty(handler.Calls);
+
+        await provider.GenerateImageAsync(Image("MiniMax-H3-Image", options: new() { Tier = "2K", Ratio = "1:1", PromptExtend = false }), null, default);
+        var json = JsonNode.Parse(handler.Calls[0].Body)!;
+        Assert.Equal((true, "1:1"), ((bool)json["disable_prompt_enhanced"]!, (string?)json["aspect_ratio"]));
+    }
+
+    [Fact]
+    public async Task MiniMax_edit_sends_references_as_data_uris_in_order_and_never_the_enhancement_switch()
+    {
+        var (provider, handler) = Create(Vendor.MiniMax, (request, _) => request.Method == HttpMethod.Post ? MiniMaxOk(MiniMaxItem("a")) : Bytes("image/png"));
+        // The edits endpoint always enhances the prompt and has no switch, so an off setting with an auto ratio is neither sent nor refused.
+        await provider.GenerateImageAsync(Image("MiniMax-H3-Image", refs: [Reference, new([4, 5], "image/jpeg")], options: new() { Tier = "2K", Ratio = "auto", PromptExtend = false }), null, default);
+        var (request, body) = handler.Calls[0];
+        Assert.Equal("https://api.minimax.cn/v1/images/edits", request.RequestUri!.ToString());
+        var json = JsonNode.Parse(body)!;
+        Assert.Equal(["data:image/png;base64,AQID", "data:image/jpeg;base64,BAU="], json["images"]!.AsArray().Select(i => (string?)i!["image_url"]));
+        Assert.Null(json["disable_prompt_enhanced"]);
+        Assert.Equal("2K", (string?)json["area"]);
+        Assert.Null(json["aspect_ratio"]);
+    }
+
+    [Fact]
+    public async Task MiniMax_partial_failure_fills_the_pictures_that_succeeded_and_keeps_the_failure_messages()
+    {
+        var (provider, handler) = Create(Vendor.MiniMax, (request, _) => request.Method == HttpMethod.Post
+            ? MiniMaxOk(MiniMaxItem("a") + """,{"error":{"code":1027,"message":"生成的图片未通过内容安全检查 (1027)"}},""" + MiniMaxItem("c"),
+                """
+                "usage":{"generated_images":2,"total_tokens":8120,"input_tokens":120,"output_tokens":8000,"input_tokens_details":{"text_tokens":120,"image_tokens":0},"output_tokens_details":{"image_tokens":8000}},
+                """)
+            : Bytes("image/png"));
+        var events = new List<ImageEvent>();
+        var result = await provider.GenerateImageAsync(Image("MiniMax-H3-Image", count: 3, options: new() { Tier = "1K", Ratio = "1:1" }), new SyncProgress<ImageEvent>(events.Add), default);
+        Assert.Equal(2, result.Images.Count);
+        Assert.Equal(["生成的图片未通过内容安全检查 (1027)"], result.Errors);
+        // The generator fills the first nodes with the pictures and fails the rest with these messages.
+        Assert.Equal([0, 1], events.Select(e => e.Index));
+        Assert.Equal(["https://cdn.example/a.png", "https://cdn.example/c.png"], handler.Calls.Skip(1).Select(c => c.Request.RequestUri!.ToString()));
+        // Only the pictures that were delivered are billed, and the image output tokens are kept apart.
+        Assert.Equal(new TokenUsage(120, 0, 8000), provider.Tokens);
+    }
+
+    [Fact]
+    public async Task MiniMax_a_picture_that_cannot_be_downloaded_fails_only_its_own_node()
+    {
+        var (provider, _) = Create(Vendor.MiniMax, (request, _) => request.Method == HttpMethod.Post ? MiniMaxOk($"{MiniMaxItem("a")},{MiniMaxItem("b")}")
+            : request.RequestUri!.AbsolutePath.EndsWith("a.png") ? new HttpResponseMessage(HttpStatusCode.NotFound) : Bytes("image/png"));
+        var result = await provider.GenerateImageAsync(Image("MiniMax-H3-Image", count: 2, options: new() { Tier = "1K", Ratio = "1:1" }), null, default);
+        Assert.Single(result.Images);
+        Assert.Contains("下载失败", result.Errors.Single());
+    }
+
+    [Fact]
+    public async Task MiniMax_error_body_gives_its_message_status_and_request_id()
+    {
+        var (provider, _) = Create(Vendor.MiniMax, (_, _) => new HttpResponseMessage(HttpStatusCode.PaymentRequired)
+        {
+            Content = new StringContent("""{"type":"error","error":{"type":"insufficient_balance_error","message":"insufficient balance (1008)","http_code":"402"},"request_id":"req-9"}""", Encoding.UTF8, "application/json"),
+        });
+        var error = await Assert.ThrowsAsync<ApiException>(() => provider.GenerateImageAsync(Image("MiniMax-H3-Image", options: new() { Tier = "1K", Ratio = "1:1" }), null, default));
+        Assert.Equal(("insufficient balance (1008)", 402, "req-9"), (error.Message, error.Status, error.RequestId));
+        Assert.Equal(default(TokenUsage), provider.Tokens);
+    }
+
+    [Fact]
+    public async Task MiniMax_refuses_what_its_endpoints_cannot_do()
+    {
+        var (provider, handler) = Create(Vendor.MiniMax, (_, _) => MiniMaxOk(MiniMaxItem("a")));
+        await Assert.ThrowsAsync<ApiException>(() => provider.GenerateImageAsync(Image("MiniMax-H3-Image", count: 11), null, default));
+        await Assert.ThrowsAsync<ApiException>(() => provider.GenerateImageAsync(Image("MiniMax-H3-Image-Context-IR"), null, default));
+        await Assert.ThrowsAsync<ApiException>(() => provider.GenerateImageAsync(new("MiniMax-H3-Image", "改", [Reference], Reference, 1, new()), null, default));
+        await Assert.ThrowsAsync<NotSupportedException>(() => provider.BalanceAsync(default));
+        Assert.Empty(handler.Calls);
+    }
+
     private sealed class SyncProgress<T>(Action<T> report) : IProgress<T>
     {
         public void Report(T value) => report(value);

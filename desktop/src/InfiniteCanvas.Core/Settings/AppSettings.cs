@@ -9,7 +9,7 @@ using InfiniteCanvas.Core.Storage;
 namespace InfiniteCanvas.Core.Settings;
 
 /// <summary>The vendor decides every protocol a channel uses: image, video, text, audio and model listing.</summary>
-public enum Vendor { OpenAI, Google, Ark, XAI, Qwen }
+public enum Vendor { OpenAI, Google, Ark, XAI, Qwen, MiniMax }
 
 public sealed class ChannelModel
 {
@@ -51,9 +51,19 @@ public sealed class ModelChannel
     /// <summary>Volcengine and Alibaba Cloud sign billing requests with an AccessKey pair, so they also need the ID.</summary>
     public static bool BillingNeedsId(Vendor vendor) => vendor is Vendor.Ark or Vendor.Qwen;
 
-    /// <summary>Whether the vendor's balance can be queried: Google has no billing API reachable with a key.</summary>
+    /// <summary>Google and MiniMax have no billing API reachable with a key; their line is a local estimate from the reported tokens and per-model prices.</summary>
+    public static bool NoBillingApi(Vendor vendor) => vendor is Vendor.Google or Vendor.MiniMax;
+
+    /// <summary>The international MiniMax site; the mainland one (api.minimax.cn) is the default.</summary>
+    public const string MiniMaxInternational = "https://api.minimax.io";
+
+    /// <summary>MiniMax bills the international site in USD and the mainland site in CNY, so the host decides the currency of its prices.</summary>
     [JsonIgnore]
-    public bool HasBilling => Vendor != Vendor.Google && BillingKey.Length > 0 && (!BillingNeedsId(Vendor) || !string.IsNullOrWhiteSpace(BillingId));
+    public bool IsInternationalSite => Vendor == Vendor.MiniMax && BaseUrl.Contains("minimax.io", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Whether the vendor's balance can be queried.</summary>
+    [JsonIgnore]
+    public bool HasBilling => !NoBillingApi(Vendor) && BillingKey.Length > 0 && (!BillingNeedsId(Vendor) || !string.IsNullOrWhiteSpace(BillingId));
 
     // A key encrypted by another Windows user or machine, or a damaged value, cannot be decrypted here: treat it as missing so it is re-entered.
     private static string Unprotect(string? value)
@@ -71,6 +81,7 @@ public sealed class ModelChannel
         Vendor.Google => "https://generativelanguage.googleapis.com",
         Vendor.Ark => "https://ark.cn-beijing.volces.com",
         Vendor.XAI => "https://api.x.ai",
+        Vendor.MiniMax => "https://api.minimax.cn",
         _ => "https://dashscope.aliyuncs.com",
     };
 
@@ -80,10 +91,11 @@ public sealed class ModelChannel
         Vendor.Google => "Google Gemini",
         Vendor.Ark => "火山方舟",
         Vendor.XAI => "xAI",
+        Vendor.MiniMax => "MiniMax",
         _ => "千问",
     };
 
-    /// <summary>Request base: OpenAI/xAI add /v1, Google adds its version, Ark /api/v3, DashScope /api/v1.</summary>
+    /// <summary>Request base: OpenAI/xAI/MiniMax add /v1, Google adds its version, Ark /api/v3, DashScope /api/v1.</summary>
     public string ApiBase()
     {
         var host = (string.IsNullOrWhiteSpace(BaseUrl) ? DefaultBaseUrl(Vendor) : BaseUrl).Trim().TrimEnd('/');

@@ -131,6 +131,7 @@ public abstract class AiProvider(ModelChannel channel, HttpClient http)
         Vendor.Google => new GoogleProvider(channel, http),
         Vendor.Ark => new ArkProvider(channel, http),
         Vendor.XAI => new XaiProvider(channel, http),
+        Vendor.MiniMax => new MiniMaxProvider(channel, http),
         _ => new QwenProvider(channel, http),
     };
 }

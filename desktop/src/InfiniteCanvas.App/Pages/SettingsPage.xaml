@@ -53,7 +53,7 @@
                     <StackPanel Spacing="10" HorizontalAlignment="Center">
                         <FontIcon Glyph="&#xE8D7;" FontSize="32" Foreground="{ThemeResource KindVideoBrush}" />
                         <TextBlock Text="还没有服务商" Style="{StaticResource BodyStrongTextBlockStyle}" HorizontalAlignment="Center" />
-                        <TextBlock Text="添加 OpenAI、Google Gemini、火山方舟、xAI 或千问，填入 API Key 后即可在画布里生成" Style="{StaticResource SecondaryCaption}"
+                        <TextBlock Text="添加 OpenAI、Google Gemini、火山方舟、xAI、千问或 MiniMax，填入 API Key 后即可在画布里生成" Style="{StaticResource SecondaryCaption}"
                                    TextWrapping="Wrap" TextAlignment="Center" HorizontalAlignment="Center" />
                         <Button Style="{StaticResource AccentActionButton}" Content="添加服务商" HorizontalAlignment="Center" Click="AddChannelButton_Click" />
                     </StackPanel>
@@ -73,6 +73,10 @@
                             <ComboBox x:Name="VersionBox" Grid.Column="1" Header="接口版本" Width="120" SelectionChanged="Field_Changed">
                                 <x:String>v1beta</x:String>
                                 <x:String>v1</x:String>
+                            </ComboBox>
+                            <ComboBox x:Name="SiteBox" Grid.Column="1" Header="站点" Width="120" AutomationProperties.Name="接口站点" SelectionChanged="Site_Changed">
+                                <x:String>中国大陆</x:String>
+                                <x:String>国际</x:String>
                             </ComboBox>
                         </Grid>
                         <StackPanel Spacing="4">

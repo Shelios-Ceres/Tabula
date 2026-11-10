@@ -43,11 +43,11 @@ internal sealed class QuotaFlyout : Flyout
         {
             var balance = new TextBlock
             {
-                Text = channel.Vendor == Vendor.Google ? "Google 不提供余额查询" : channel.HasBilling ? "正在查询余额…" : "未设置查账凭据，可在设置里填写",
+                Text = ModelChannel.NoBillingApi(channel.Vendor) ? $"{ModelChannel.VendorName(channel.Vendor)} 不提供余额查询" : channel.HasBilling ? "正在查询余额…" : "未设置查账凭据，可在设置里填写",
                 Style = caption, TextWrapping = TextWrapping.Wrap,
             };
-            // Google has no billing API, so its line is an estimate from the reported tokens and per-model prices.
-            if (channel.Vendor == Vendor.Google) Accent(balance, $"本月估算 ≈ ${Prices.Estimate(channel, Labels.MonthStart):N2}（按单价和本机 token）");
+            // Google and MiniMax have no billing API, so their line is an estimate from the reported tokens and per-model prices.
+            if (ModelChannel.NoBillingApi(channel.Vendor)) Accent(balance, $"本月估算 ≈ {(UsageReport.CurrencyOf(channel) == "CNY" ? "¥" : "$")}{Prices.Estimate(channel, Labels.MonthStart):N2}（按单价和本机 token）");
             var block = new StackPanel
             {
                 Spacing = 2, Children =

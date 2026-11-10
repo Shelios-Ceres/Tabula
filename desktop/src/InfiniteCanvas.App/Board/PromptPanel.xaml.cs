@@ -397,6 +397,11 @@ public sealed partial class PromptPanel : UserControl
                     if (image.Stream) Toggle("流式返回", node.Option("stream") == "true", value => node.SetOption("stream", value ? "true" : null));
                     if (image.FastPrompt) Toggle("快速提示词优化", node.Option("fastPrompt") == "true", value => node.SetOption("fastPrompt", value ? "true" : null));
                 }
+                if (vendor == Vendor.MiniMax)
+                {
+                    Toggle("提示词增强", node.Option("promptExtend", "true") == "true", value => node.SetOption("promptExtend", value ? "true" : "false"));
+                    Note("关闭后按原提示词生成，此时必须选定分辨率和比例（不能选「自动」）。有参考图的改图始终会增强提示词。自动分辨率由 MiniMax 决定，默认 4K，花费最高。");
+                }
                 if (vendor == Vendor.Qwen)
                 {
                     Toggle("提示词智能改写", node.Option("promptExtend", "true") == "true", value => node.SetOption("promptExtend", value ? "true" : "false"));
