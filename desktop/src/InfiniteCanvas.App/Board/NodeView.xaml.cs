@@ -283,7 +283,7 @@ public sealed partial class NodeView : UserControl
             case nameof(CanvasNode.X) or nameof(CanvasNode.Y): SyncPosition(); break;
             case nameof(CanvasNode.Width) or nameof(CanvasNode.Height) or nameof(CanvasNode.FreeResize): SyncSize(); break;
             case nameof(CanvasNode.Title): SyncTitle(); break;
-            case nameof(CanvasNode.Status) or nameof(CanvasNode.Error): SyncStatus(); break;
+            case nameof(CanvasNode.Status) or nameof(CanvasNode.Error) or nameof(CanvasNode.QueueAhead): SyncStatus(); break;
             case nameof(CanvasNode.Content): SyncContent(); SyncTitle(); UpdateChrome(); break;
             case nameof(CanvasNode.Preview): SyncPreview(); break;
             case nameof(CanvasNode.Prompt) or nameof(CanvasNode.Model) or nameof(CanvasNode.Mode) or nameof(CanvasNode.Count): SyncConfig(); break;
@@ -313,7 +313,9 @@ public sealed partial class NodeView : UserControl
         var failed = Node.Status == NodeStatus.Error && !string.IsNullOrEmpty(Node.Error);
         var paused = Node.Error is CanvasGenerator.Stopped or CanvasGenerator.Interrupted;
         // An image being generated paints a waiting animation from the local loaders folder, with the small corner chip still spinning.
-        var painting = loading && Node.Kind == NodeKind.Image && !Node.HasContent && Node.Preview is null && ShowLoader();
+        // A request still waiting for its channel shows its place in the queue instead.
+        var queued = loading && Node.QueueAhead is not null;
+        var painting = loading && !queued && Node.Kind == NodeKind.Image && !Node.HasContent && Node.Preview is null && ShowLoader();
         if (!painting) HideLoader();
         // Empty cards explain the state in the middle; cards with content or a preview keep only the small corner chip.
         var center = (loading || failed) && !Node.HasContent && Node.Preview is null && !painting;
@@ -325,8 +327,8 @@ public sealed partial class NodeView : UserControl
         // A failed or stopped empty node can be retried in place.
         RetryButton.Visibility = center && failed && CanvasGenerator.CanGenerate(Node) ? Visibility.Visible : Visibility.Collapsed;
         InfoIcon.Glyph = "";
-        StatusTitle.Text = loading ? "正在生成…" : paused ? Node.Error! : "生成失败";
-        StatusDetail.Text = loading || paused ? "" : Node.Error ?? "";
+        StatusTitle.Text = queued ? "排队中" : loading ? "正在生成…" : paused ? Node.Error! : "生成失败";
+        StatusDetail.Text = queued ? (Node.QueueAhead == 0 ? "下一个就是它" : $"前面还有 {Node.QueueAhead} 个请求") : loading || paused ? "" : Node.Error ?? "";
         StatusDetail.Visibility = StatusDetail.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
         ToolTipService.SetToolTip(StatusDetail, failed && !paused ? Node.Error : null);
         Busy.IsActive = loading && !center;

@@ -75,6 +75,10 @@
                                 <x:String>v1</x:String>
                             </ComboBox>
                         </Grid>
+                        <StackPanel Spacing="4">
+                            <NumberBox x:Name="ConcurrencyBox" Header="同时请求上限" Minimum="1" SpinButtonPlacementMode="Compact" PlaceholderText="不限" HorizontalAlignment="Left" Width="160" AutomationProperties.Name="同时请求上限" ValueChanged="Concurrency_Changed" />
+                            <TextBlock Text="同一服务商在所有画布里同时发出的图片请求数，4K 一张算 2 个，其余排队。留空表示不限。" Style="{StaticResource SecondaryCaption}" TextWrapping="Wrap" />
+                        </StackPanel>
                         <PasswordBox x:Name="KeyBox" Header="API Key" PlaceholderText="粘贴服务商控制台里的 API Key" PasswordChanged="Field_Changed" />
                         <InfoBar x:Name="KeyWarning" Severity="Warning" IsClosable="False" Title="还没有填写 API Key" Message="填写后才能用这家服务商生成；Key 用 Windows 数据保护（DPAPI）加密保存在本机。" />
                         <TextBlock x:Name="ApiHint" Style="{StaticResource SecondaryCaption}" TextWrapping="Wrap" />

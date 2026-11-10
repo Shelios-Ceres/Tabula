@@ -38,6 +38,14 @@ public static class NodeKeys
 
     public static readonly string[] PerImage = [Mask, Markup, Selections, ConversationId, ConversationModel, ModelText, InputNote, SourceId, Stack, StackOpen, Layout, Gap, Compose];
 
+    /// <summary>Keys that describe one picture's pixels or the server conversation that made it; dropped when the node gets another file.</summary>
+    public static readonly string[] OfPixels = [Mask, Markup, Selections, ConversationId, ConversationModel, ModelText, InputNote];
+
+    public static void ForgetPixels(CanvasNode node)
+    {
+        foreach (var key in OfPixels) node.SetOption(key, null);
+    }
+
     /// <summary>
     /// Options for an output of <paramref name="from"/>: its settings without the per-image keys and the one-off layer split. The output keeps what says
     /// where it belongs (its source and its batch), so a retried member stays in its stack and can be retried again.

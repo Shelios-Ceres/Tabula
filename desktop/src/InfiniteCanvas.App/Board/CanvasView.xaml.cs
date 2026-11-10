@@ -1864,20 +1864,33 @@ public sealed partial class CanvasView : UserControl
 
     /// <summary>The same import for agents: no dialog, failures come back in the result so a tool call never waits for someone to dismiss one.</summary>
     internal Task<ImportResult> ImportFilesQuietAsync(IReadOnlyList<string> paths, Point world) => IsClosing
-        ? Task.FromResult(new ImportResult([], [])) : TrackLocalAsync(() => ImportFilesCoreAsync(paths, world));
+        ? Task.FromResult(new ImportResult([], [])) : TrackLocalAsync(() => ImportFilesCoreAsync(paths, world, decodeFirst: true));
 
-    private async Task<ImportResult> ImportFilesCoreAsync(IReadOnlyList<string> paths, Point world)
+    /// <summary>Why a picture cannot be shown, or null; SVG, video and audio are not checked (an SVG may legally declare no size, and a video's size is not always readable).</summary>
+    private static async Task<string?> UnreadableImageAsync(string path)
+    {
+        if (Media.KindOf(path) != NodeKind.Image || Media.IsSvg(path)) return null;
+        var (width, height) = await CanvasGenerator.ImageSizeAsync(await File.ReadAllBytesAsync(path));
+        return width > 0 && height > 0 ? null : "图片无法解码，文件可能已损坏或格式和后缀不符";
+    }
+
+    private async Task<ImportResult> ImportFilesCoreAsync(IReadOnlyList<string> paths, Point world, bool decodeFirst = false)
     {
         var id = Doc.Id;
         var failed = new List<ImportFailure>();
         // Copy off the UI thread before touching the document, so a large or unreadable file never freezes the window or leaves an empty node.
-        var imported = await Task.Run(() =>
+        var imported = await Task.Run(async () =>
         {
             var done = new List<(string Path, string Asset)>();
             foreach (var path in paths.Where(p => Media.KindOf(p) is not null))
             {
                 // A file already in this canvas's folder (dragged back from 画布文件) is placed as it is, not copied again.
-                try { done.Add((path, string.Equals(Path.GetDirectoryName(Path.GetFullPath(path)), ProjectStore.AssetsDir(id), StringComparison.OrdinalIgnoreCase) ? Path.GetFileName(path) : ProjectStore.ImportAsset(id, path))); }
+                try
+                {
+                    // Agents get a file that cannot be decoded refused before anything is copied; dragging one in stays as it was.
+                    if (decodeFirst && await UnreadableImageAsync(path) is { } reason) failed.Add(new(path, reason));
+                    else done.Add((path, string.Equals(Path.GetDirectoryName(Path.GetFullPath(path)), ProjectStore.AssetsDir(id), StringComparison.OrdinalIgnoreCase) ? Path.GetFileName(path) : ProjectStore.ImportAsset(id, path)));
+                }
                 catch (Exception ex)
                 {
                     App.Log(ex);
@@ -1923,11 +1936,16 @@ public sealed partial class CanvasView : UserControl
     internal Task ReplaceMediaAsync(CanvasNode node, string path) => IsClosing ? throw new McpException("画布正在关闭，请稍后重试") : TrackLocalAsync(async () =>
     {
         var id = Doc.Id;
-        var asset = await Task.Run(() => ProjectStore.ImportAsset(id, path));
+        var asset = await Task.Run(async () =>
+        {
+            if (await UnreadableImageAsync(path) is { } reason) throw new McpException(reason);
+            return ProjectStore.ImportAsset(id, path);
+        });
         if (Doc.Find(node.Id) != node) throw new McpException("节点已被删除");
+        if (Generator.IsRunning(node.Id)) throw new McpException("节点已开始生成，没有替换");
         History.Record();
-        // Marks and conversations describe the old picture only.
-        foreach (var key in new[] { NodeKeys.Mask, NodeKeys.Markup, NodeKeys.Selections, NodeKeys.ConversationId, NodeKeys.ConversationModel }) node.SetOption(key, null);
+        // Marks, conversations and the model's notes describe the old picture only.
+        NodeKeys.ForgetPixels(node);
         await FillMediaAsync(node, asset, Media.MimeOf(path), null);
     });
 

@@ -79,6 +79,7 @@ public sealed partial class SettingsPage : Page
         BaseUrlBox.PlaceholderText = ModelChannel.DefaultBaseUrl(channel.Vendor);
         KeyBox.Password = channel.ApiKey;
         KeyWarning.IsOpen = KeyBox.Password.Length == 0;
+        ConcurrencyBox.Value = channel.MaxConcurrency ?? double.NaN;
         VersionBox.SelectedItem = channel.ApiVersion;
         VersionBox.Visibility = channel.Vendor == Vendor.Google ? Visibility.Visible : Visibility.Collapsed;
         NewEndpointBox.Visibility = channel.Vendor == Vendor.Ark ? Visibility.Visible : Visibility.Collapsed;
@@ -301,6 +302,15 @@ public sealed partial class SettingsPage : Page
         ApiHint.Text = ApiHint.Text.Contains('\n') ? $"请求地址：{_channel.ApiBase()}{ApiHint.Text[ApiHint.Text.IndexOf('\n')..]}" : $"请求地址：{_channel.ApiBase()}";
         // Rebuilding the list replays its entrance animation, so it happens only when an entry's text really changed.
         if (ChannelList.ItemsSource is List<ChannelRow> rows && rows.Zip(Rows()).Any(pair => pair.First.Name != pair.Second.Name || pair.First.Detail != pair.Second.Detail)) RefreshChannelNames();
+    }
+
+    private void Concurrency_Changed(NumberBox sender, NumberBoxValueChangedEventArgs e)
+    {
+        if (_loading || _channel is null) return;
+        int? limit = double.IsNaN(sender.Value) ? null : (int)Math.Round(sender.Value);
+        if (limit == _channel.MaxConcurrency) return;
+        _channel.MaxConcurrency = limit;
+        Save();
     }
 
     private void AddChannelButton_Click(object sender, RoutedEventArgs e) => VendorMenu.ShowAt((FrameworkElement)sender);

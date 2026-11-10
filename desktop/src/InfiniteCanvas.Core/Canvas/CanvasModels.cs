@@ -52,6 +52,9 @@ public partial class CanvasNode : ObservableObject
     /// <summary>Transient streaming preview; never persisted.</summary>
     [ObservableProperty] [property: JsonIgnore] private byte[]? _preview;
 
+    /// <summary>While the request waits for its channel: how many requests are ahead of it (0 = next). Never persisted.</summary>
+    [ObservableProperty] [property: JsonIgnore] private int? _queueAhead;
+
     // Media facts.
     public int NaturalWidth { get; set; }
     public int NaturalHeight { get; set; }

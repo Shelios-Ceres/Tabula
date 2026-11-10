@@ -781,6 +781,28 @@ public class AgentTests
     }
 
     [Fact]
+    public async Task Status_reports_a_request_waiting_for_its_channel_as_queued_with_its_place()
+    {
+        var host = new FakeHost();
+        var waiting = CanvasNode.Create(NodeKind.Image, 0, 0);
+        waiting.Status = NodeStatus.Loading;
+        host.Document.Nodes.Add(waiting);
+        await using var session = await Session.StartAsync(host);
+        async Task<JsonElement> Node() => Parse((await session.CallAsync("generation_get_status", new() { ["nodeIds"] = new[] { waiting.Id } })).Text).GetProperty("nodes")[0].GetProperty("node");
+
+        waiting.QueueAhead = 3;
+        var queued = await Node();
+        Assert.Equal(("queued", 3), (queued.GetProperty("status").GetString(), queued.GetProperty("queueAhead").GetInt32()));
+        var summary = Parse((await session.CallAsync("canvas_get_state", new())).Text).GetProperty("nodes")[0];
+        Assert.Equal(("queued", 3), (summary.GetProperty("status").GetString(), summary.GetProperty("queueAhead").GetInt32()));
+
+        waiting.QueueAhead = null;
+        var running = await Node();
+        Assert.Equal("loading", running.GetProperty("status").GetString());
+        Assert.False(running.TryGetProperty("queueAhead", out _));
+    }
+
+    [Fact]
     public async Task Replace_media_keeps_the_node_and_rejects_wrong_kinds_busy_nodes_and_bad_paths()
     {
         var host = new FakeHost();
@@ -1038,6 +1060,20 @@ public class AgentTests
         Assert.False(again.GetProperty("started").GetBoolean());
         Assert.False(again.TryGetProperty("estimatedCost", out _));
         Assert.True((await session.CallAsync("canvas_run_generation", new() { ["nodeId"] = "missing" })).IsError);
+
+        // The same estimate inside a batch of ops, which stays one undo step.
+        var recordsBefore = host.Records;
+        var batch = Parse((await session.CallAsync("canvas_apply_ops", new()
+        {
+            ["ops"] = new object[]
+            {
+                new Dictionary<string, object?> { ["type"] = "add_node", ["ref"] = "a", ["kind"] = "image", ["prompt"] = "猫", ["model"] = xai, ["count"] = 3 },
+                new Dictionary<string, object?> { ["type"] = "run_generation", ["id"] = "a" },
+            },
+        })).Text).GetProperty("results");
+        Assert.True(batch[1].GetProperty("started").GetBoolean());
+        Assert.Equal(0.06m, batch[1].GetProperty("estimatedCost").GetProperty("amount").GetDecimal());
+        Assert.Equal(1, host.Records - recordsBefore);
     }
 
     [Fact]

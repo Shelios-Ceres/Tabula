@@ -548,9 +548,32 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
         }
     }
 
+    /// <summary>
+    /// Wait for a slot on the channel; the group's nodes show their place in the queue meanwhile. Stopping or leaving the canvas ends the wait before anything is sent.
+    /// The slot is returned by disposing it (more than once is fine): when the request ends, or earlier once a background task ID arrives.
+    /// </summary>
+    private async Task<IDisposable> EnterGateAsync(ModelChannel channel, ImageOptions options, IReadOnlyList<CanvasNode> group, CancellationToken ct)
+    {
+        var waiting = true;
+        try
+        {
+            return await GenerationGate.EnterAsync(channel.Id, channel.MaxConcurrency, GenerationGate.Weight(options.Tier),
+                ahead => ui.TryEnqueue(() => { if (waiting) SetQueue(group, ahead); }), ct);
+        }
+        finally
+        {
+            waiting = false;
+            SetQueue(group, null);
+        }
+    }
+
+    private static void SetQueue(IEnumerable<CanvasNode> group, int? ahead)
+    {
+        foreach (var node in group.Where(n => n.Status == NodeStatus.Loading)) node.QueueAhead = ahead;
+    }
+
     private async Task RunImageAsync(AiProvider provider, ModelChannel channel, ChannelModel model, CanvasNode source, ImageOptions options, string prompt, List<MediaInput> images, List<CanvasNode> targets, CancellationToken ct)
     {
-        var started = DateTime.Now;
         var family = ModelFamilies.FindImage(channel.Vendor, model.Name);
         // Editing an image node: its own marks travel with the request (mask for GPT Image, points / boxes for Seedream).
         var editing = source.Kind == NodeKind.Image && source.HasContent;
@@ -567,7 +590,7 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
         if (previousId.Length > 0) images = images.Skip(1).ToList();
         if (options.LayerDecomposition)
         {
-            await RunLayersAsync(provider, model, prompt, images, options, targets[0], ct);
+            await RunLayersAsync(provider, channel, model, prompt, images, options, targets[0], ct);
             return;
         }
         // Each request carries as many images as the family allows (the OpenAI Responses image tool and SVG output return one;
@@ -576,6 +599,10 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
         var groups = targets.Chunk(perRequest).ToList();
         await Task.WhenAll(groups.Select(async group =>
         {
+            // Requests wait here, first come first served, until the channel has room. A stop leaves the queue by cancelling, outside the catch below.
+            using var slot = await EnterGateAsync(channel, options, group, ct);
+            // The time reported after a dropped connection counts from the moment the request goes out, not from the wait.
+            var started = DateTime.Now;
             var progress = new ImageProgress(ui, async e =>
             {
                 // An OpenAI Responses background task: saved with the canvas so reopening it keeps polling.
@@ -584,6 +611,8 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
                     group[0].TaskId = taskId;
                     group[0].TaskModel = source.Model;
                     changed();
+                    // From here on the server only works and we only poll, so the next queued request may go.
+                    slot.Dispose();
                 }
                 if (e.Preview is { } preview && group[0].Status == NodeStatus.Loading) group[0].Preview = preview.Bytes;
                 // Output is a finished picture, unlike a preview: retain it even if later pictures fail or are cancelled.
@@ -631,9 +660,18 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
     /// Seedream layer decomposition: the base image fills the target, each layer becomes an image node placed by its
     /// bounding box on top of the base (stacked by z-index), and everything is wrapped in one group.
     /// </summary>
-    private async Task RunLayersAsync(AiProvider provider, ChannelModel model, string prompt, List<MediaInput> images, ImageOptions options, CanvasNode target, CancellationToken ct)
+    private async Task RunLayersAsync(AiProvider provider, ModelChannel channel, ChannelModel model, string prompt, List<MediaInput> images, ImageOptions options, CanvasNode target, CancellationToken ct)
     {
-        var result = await provider.GenerateImageAsync(new ImageRequest(model.Name, prompt, images, null, 1, options, model.EndpointId), null, ct);
+        using var slot = await EnterGateAsync(channel, options, [target], ct);
+        var started = DateTime.Now;
+        ImageResult result;
+        try { result = await provider.GenerateImageAsync(new ImageRequest(model.Name, prompt, images, null, 1, options, model.EndpointId), null, ct); }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Reported here so the elapsed time starts after the wait in the queue.
+            Fail([target], ErrorText(ex, started), false);
+            return;
+        }
         if (result.Images.Count == 0) throw new ApiException(result.Errors.FirstOrDefault() ?? "图层拆分没有返回图片");
         await FillAsync(target, result.Images[0].Bytes, result.Images[0].MimeType);
         target.Title = "底图";

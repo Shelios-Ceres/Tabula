@@ -119,6 +119,7 @@ public static class CanvasTools
         - 先用 canvas_get_state 了解节点、连线、选区和可用模型；用户说「这张图」「选中的」时指的是 selection 里的节点。
         - canvas_get_state 默认不带提示词、文本正文和生成参数；要读这些用 canvas_get_node（或 detail=full）。画布很大时先用 rect 或 groupId 缩小范围。
         - 生成图片、文本或语音用 canvas_generate（这个版本不支持生成视频，视频节点只用来放导入的视频）：它会新建节点、连上参考节点并立刻开始生成。生成是异步的，用 generation_get_status 查看结果，不要在没有结果时声称已经完成。
+        - 同一服务商同时发出的图片请求超过设置里的上限时会自动排队（状态 queued，queueAhead 是前面还有几个），不用把批次拆小，排队不是失败。
         - 增删改节点、连线、选择和视口用 canvas_apply_ops，一次调用就是一步撤销。
         - 需要看图片内容时用 canvas_get_image；资料库（这个画布自己的常用素材）用 library_list / library_place / library_add；一次生成多张时用 layout=row 或 grid 直接排开，已有的一批用 stack_open / stack_close 展开或收起，挑定稿用 keep_one（留下一批里的一张）和 promote（让一张图取代另一张，占它的位置和连线）；编组用 canvas_apply_ops 的 group / ungroup，把节点加入或移出已有分组（分组 ID 和连线不变）用 group_add / group_remove。
         - 要把单独生成的多个视角拼成转面图、对比图时用 canvas_compose，不要自己在本地拼；人物大小不一时用 marks 按头顶和脚底对齐。
@@ -181,7 +182,7 @@ public static class CanvasTools
         McpServerTool.Create(([Description("要查询的节点 ID；省略时返回所有生成中或失败的节点")] List<string>? nodeIds = null) => host.OnUiAsync(() => Status(host, nodeIds)), new()
         {
             Name = "generation_get_status", ReadOnly = true,
-            Description = "查询节点的生成状态（idle / loading / success / error）、错误信息和结果文件。batch 列出同批全部成员（含节点本身），outputs 列出下游输出。",
+            Description = "查询节点的生成状态（idle / queued / loading / success / error；queued 表示在等同一服务商的空位，queueAhead 是前面还有几个请求）、错误信息和结果文件。batch 列出同批全部成员（含节点本身），outputs 列出下游输出。",
         }),
         McpServerTool.Create(async ([Description("图片节点 ID")] string nodeId) => await GetImageAsync(host, nodeId), new()
         {
@@ -467,6 +468,9 @@ public static class CanvasTools
 
     private static string? Clip(string? text, int max) => text is null || text.Length <= max ? text : text[..max] + "…";
 
+    /// <summary>A request still waiting for its channel reads as queued, not loading: it has not been sent yet and stopping it sends nothing.</summary>
+    private static string StatusOf(CanvasNode n) => n.Status == NodeStatus.Loading && n.QueueAhead is not null ? "queued" : n.Status.ToString().ToLowerInvariant();
+
     private static string? FileOf(CanvasNode n) => n.Kind is NodeKind.Image or NodeKind.Video or NodeKind.Audio && n.HasContent ? n.Content : null;
 
     /// <summary>What an overview needs: no prompts, text or generation settings, which repeat across a batch and dominate the payload.</summary>
@@ -476,7 +480,8 @@ public static class CanvasTools
         Kind = n.Kind.ToString().ToLowerInvariant(),
         n.Title,
         X = Math.Round(n.X), Y = Math.Round(n.Y), Width = Math.Round(n.Width), Height = Math.Round(n.Height),
-        Status = n.Status.ToString().ToLowerInvariant(),
+        Status = StatusOf(n),
+        QueueAhead = n.Status == NodeStatus.Loading ? n.QueueAhead : null,
         Running = host.IsRunning(n.Id) ? true : (bool?)null,
         n.Error,
         File = FileOf(n),
@@ -491,7 +496,8 @@ public static class CanvasTools
         Kind = n.Kind.ToString().ToLowerInvariant(),
         n.Title,
         X = Math.Round(n.X), Y = Math.Round(n.Y), Width = Math.Round(n.Width), Height = Math.Round(n.Height),
-        Status = n.Status.ToString().ToLowerInvariant(),
+        Status = StatusOf(n),
+        QueueAhead = n.Status == NodeStatus.Loading ? n.QueueAhead : null,
         Running = host.IsRunning(n.Id) ? true : (bool?)null,
         n.Error,
         Text = n.Kind == NodeKind.Text ? Clip(n.Content, 4000) : null,
@@ -695,7 +701,11 @@ public static class CanvasTools
                         results.Add(new { Index = index, Viewport = new { host.Viewport.X, host.Viewport.Y, Zoom = host.Viewport.K } });
                         break;
                     case "run_generation":
-                        results.Add(new { Index = index, Started = Run(host, Find(host, Resolve(op.Id)), recordHistory: false) });
+                        var runNode = Find(host, Resolve(op.Id));
+                        // Worked out before the run starts, like canvas_run_generation: the run changes the node and its outputs.
+                        var runCost = Estimate(doc, runNode);
+                        var runStarted = Run(host, runNode, recordHistory: false);
+                        results.Add(runStarted ? WithCost(new Dictionary<string, object?> { ["index"] = index, ["started"] = true }, runCost) : new Dictionary<string, object?> { ["index"] = index, ["started"] = false });
                         break;
                     case "group":
                         var requested = (op.Ids ?? []).Select(Resolve).ToList();
@@ -863,7 +873,7 @@ public static class CanvasTools
             Nodes = nodes.Select(n => new
             {
                 Node = Brief(host, n),
-                Batch = Stacks.Of(n) is { } stack ? Stacks.Members(host.Document, stack).Select(member => new { member.Id, Status = member.Status.ToString().ToLowerInvariant(), File = FileOf(member), member.Error }).ToList() : null,
+                Batch = Stacks.Of(n) is { } stack ? Stacks.Members(host.Document, stack).Select(member => new { member.Id, Status = StatusOf(member), File = FileOf(member), member.Error }).ToList() : null,
                 Outputs = host.Document.Connections.Where(c => c.From == n.Id).Select(c => host.Document.Find(c.To)).OfType<CanvasNode>()
                     .Where(o => o.Kind != NodeKind.Config).Select(o => new { o.Id, Status = o.Status.ToString().ToLowerInvariant(), o.Error, File = o.Content }),
             }),

@@ -38,6 +38,9 @@ public sealed class ModelChannel
     /// <summary>The AccessKey ID that goes with <see cref="BillingKey"/> (Volcengine / Alibaba Cloud only); not a secret.</summary>
     public string? BillingId { get; set; }
     public List<ChannelModel> Models { get; set; } = [];
+    /// <summary>Image requests this channel may have in flight across all canvases; a 4K request counts twice. Null = no limit.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public int? MaxConcurrency { get; set; } = 8;
 
     [JsonIgnore]
     public string ApiKey { get => Unprotect(ProtectedKey); set => ProtectedKey = Protect(value); }
