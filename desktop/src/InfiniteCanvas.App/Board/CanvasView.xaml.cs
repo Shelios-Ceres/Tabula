@@ -1677,6 +1677,9 @@ public sealed partial class CanvasView : UserControl
         scroller.AddHandler(PointerPressedEvent, new PointerEventHandler((_, e) =>
         {
             if (e.Pointer.PointerDeviceType == PointerDeviceType.Touch || (scroller.ScrollableWidth <= 0 && scroller.ScrollableHeight <= 0)) return;
+            // A press on a scroll bar (thumb, arrow or track) belongs to the bar, not to the picture drag.
+            for (var element = e.OriginalSource as DependencyObject; element is not null && element != scroller; element = VisualTreeHelper.GetParent(element))
+                if (element is Microsoft.UI.Xaml.Controls.Primitives.ScrollBar) return;
             var point = e.GetCurrentPoint(scroller);
             if (!point.Properties.IsLeftButtonPressed || !scroller.CapturePointer(e.Pointer)) return;
             (grab, offset0, moved) = (point.Position, (scroller.HorizontalOffset, scroller.VerticalOffset), false);
