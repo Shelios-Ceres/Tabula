@@ -1093,6 +1093,45 @@ public class CoreTests
     }
 
     [Fact]
+    public void MiniMax_first_estimate_uses_the_pages_reference_prices_and_the_last_run_wins_once_recorded()
+    {
+        var mainland = new ModelChannel { Vendor = Vendor.MiniMax, BaseUrl = ModelChannel.DefaultBaseUrl(Vendor.MiniMax) };
+        var international = new ModelChannel { Vendor = Vendor.MiniMax, BaseUrl = ModelChannel.MiniMaxInternational };
+        var unique = Guid.NewGuid().ToString("N");
+        CanvasNode Node(string size, int count = 1) => new() { Kind = NodeKind.Image, Prompt = "x", Size = size, Ratio = unique, Count = count };
+        ImageEstimate Estimate(ModelChannel channel, string model, string size, int references, int count = 1) => Prices.EstimateImage(channel, model, Node(size, count), references)!;
+
+        string[] tiers = ["1K", "2K", "4K"];
+        // Text-to-image at each tier, both sites and models, count times the row.
+        Assert.Equal([0.1430m, 0.1531m, 0.4522m], tiers.Select(t => Estimate(mainland, "MiniMax-H3-Image", t, 0).Amount));
+        Assert.Equal([0.2319m, 0.2380m, 0.8550m], tiers.Select(t => Estimate(mainland, "MiniMax-H3-Image-Highspeed", t, 0).Amount));
+        Assert.Equal([0.02179m, 0.02333m, 0.06879m], tiers.Select(t => Estimate(international, "MiniMax-H3-Image", t, 0).Amount));
+        Assert.Equal([0.03529m, 0.03622m, 0.13001m], tiers.Select(t => Estimate(international, "MiniMax-H3-Image-Highspeed", t, 0).Amount));
+        Assert.Equal(("CNY", "USD"), (Estimate(mainland, "MiniMax-H3-Image", "1K", 0).Currency, Estimate(international, "MiniMax-H3-Image", "1K", 0).Currency));
+        Assert.Equal(3 * 0.1531m, Estimate(mainland, "MiniMax-H3-Image", "2K", 0, 3).Amount);
+        Assert.Contains("官方参考价", Estimate(mainland, "MiniMax-H3-Image", "2K", 0).Basis);
+
+        // Edits: 1 reference, 2 references use the 3-reference row, and so do more than 3.
+        Assert.Equal(0.1747m, Estimate(mainland, "MiniMax-H3-Image", "2K", 1).Amount);
+        Assert.Equal(0.04576m, Estimate(international, "MiniMax-H3-Image-Highspeed", "2K", 1).Amount);
+        var two = Estimate(mainland, "MiniMax-H3-Image", "2K", 2);
+        Assert.Equal(0.2746m, two.Amount);
+        Assert.Contains("3 张参考图档", two.Basis);
+        Assert.Equal(0.04177m, Estimate(international, "MiniMax-H3-Image", "2K", 3).Amount);
+        Assert.Equal(0.5211m, Estimate(mainland, "MiniMax-H3-Image", "4K", 7).Amount);
+
+        // The auto tier is priced as 4K (regular price, not the half-price offer).
+        Assert.Equal(0.4522m, Estimate(mainland, "MiniMax-H3-Image", "auto", 0).Amount);
+        Assert.Equal(0.07312m, Estimate(international, "MiniMax-H3-Image", "auto", 1).Amount);
+
+        // Once a run with the same settings is recorded, its actual usage wins.
+        UsageStore.RememberImage(Prices.ImageKey("MiniMax-H3-Image", Node("1K")), new TokenUsage(100, 0, 10_000));
+        var last = Estimate(mainland, "MiniMax-H3-Image", "1K", 0, 2);
+        Assert.Equal(2 * (100 * 15m + 10_000 * 25m) / 1_000_000m, last.Amount);
+        Assert.Contains("实际用量", last.Basis);
+    }
+
+    [Fact]
     public void MiniMax_has_no_balance_API_whatever_billing_key_is_stored()
     {
         var channel = new ModelChannel { Vendor = Vendor.MiniMax, BillingKey = "k" };

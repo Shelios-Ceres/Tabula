@@ -103,6 +103,20 @@ public static class Prices
         ("minimax-h3-image", new(15, 0, 25)),
     ];
 
+    // MiniMax's per-picture reference costs (the "参考任务总费用" tables on the same pricing pages), regular prices: the 4K half-price offer is not modelled.
+    // Rows per tier 1K / 2K / 4K: text-to-image, edit with 1 reference, edit with 3 references (1K references). Actual cost follows token use.
+    private static readonly string[] MiniMaxTiers = ["1K", "2K", "4K"];
+    private static readonly (string Prefix, decimal[][] Rows)[] MiniMaxUsdPerImage =
+    [
+        ("minimax-h3-image-highspeed", [[0.03529m, 0.03622m, 0.13001m], [0.04525m, 0.04576m, 0.13673m], [0.06037m, 0.06069m, 0.15407m]]),
+        ("minimax-h3-image", [[0.02179m, 0.02333m, 0.06879m], [0.02654m, 0.02658m, 0.07312m], [0.03563m, 0.04177m, 0.07914m]]),
+    ];
+    private static readonly (string Prefix, decimal[][] Rows)[] MiniMaxCnyPerImage =
+    [
+        ("minimax-h3-image-highspeed", [[0.2319m, 0.2380m, 0.8550m], [0.2978m, 0.3011m, 0.8998m], [0.3982m, 0.4003m, 1.0146m]]),
+        ("minimax-h3-image", [[0.1430m, 0.1531m, 0.4522m], [0.1744m, 0.1747m, 0.4809m], [0.2346m, 0.2746m, 0.5211m]]),
+    ];
+
     private static T? Longest<T>(IEnumerable<(string Prefix, T Value)> table, string name) =>
         table.Where(p => name.StartsWith(p.Prefix, StringComparison.OrdinalIgnoreCase)).OrderByDescending(p => p.Prefix.Length).Select(p => p.Value).FirstOrDefault();
 
@@ -144,7 +158,7 @@ public static class Prices
     /// <summary>
     /// Expected cost of an image run from a node before it starts, from the vendor's published prices: per picture (Ark, Qwen, xAI),
     /// per-tier image tokens (Gemini) or the per-size table (OpenAI, 1024 sizes only); otherwise this client's last run of the same model
-    /// and settings. Null when nothing is known yet. Thinking tokens and OpenAI reference-image input are not included.
+    /// and settings, and for MiniMax the pages' per-picture reference costs when there is no such run. Null when nothing is known yet. Thinking tokens and OpenAI reference-image input are not included.
     /// </summary>
     public static ImageEstimate? EstimateImage(ModelChannel channel, string model, CanvasNode node, int references)
     {
@@ -184,6 +198,17 @@ public static class Prices
         }
         if (price is not null && UsageStore.LastImage(ImageKey(model, node)) is { } last)
             return new(Cost(last, price) * count, UsageReport.CurrencyOf(channel), $"{count} 张，按上次同样设置的实际用量");
+        if (vendor == Vendor.MiniMax && Longest(channel.IsInternationalSite ? MiniMaxUsdPerImage : MiniMaxCnyPerImage, name) is { } rows)
+        {
+            // Auto tier renders at MiniMax's default 4K; 2 references use the 3-reference row, more than 3 as well.
+            var column = Math.Max(0, Array.IndexOf(MiniMaxTiers, tier is "auto" or null ? "4K" : tier));
+            var row = Math.Min(references, 3) switch { 0 => 0, 1 => 1, _ => 2 };
+            var unit = rows[row][column];
+            var currency = UsageReport.CurrencyOf(channel);
+            var shown = tier is "auto" or null ? "自动按 4K" : MiniMaxTiers[column];
+            var kind = row == 0 ? "文生图" : row == 1 ? "改图 1 张参考图" : references == 3 ? "改图 3 张参考图" : $"改图 {references} 张参考图按 3 张参考图档";
+            return new(count * unit, currency, $"{count} 张 × {Money(unit, currency)}，MiniMax 官方参考价（{shown} {kind}），实际按 token 计费");
+        }
         return null;
     }
 }
