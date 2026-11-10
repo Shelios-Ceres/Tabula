@@ -2,6 +2,7 @@
 
 ## Unreleased
 
++ [优化] 桌面客户端全屏图片预览放大后，可以按住鼠标左键拖动图片，不再只能靠触摸滑动。
 + [调整] 仓库改为 Shelios-Ceres/infinite-canvas 独立维护：README 注明改自 basketikun/infinite-canvas 并保留原作者版权，去掉原作者的赞助、联系方式与交流群，漏洞报告改走 GitHub 私密报告，文档站去掉商务合作与赞助页。
 + [新增] 桌面客户端适配 GPT Image 2.6 Flare / Sunburst：新增复杂度参数和 GIF 动图、SVG 矢量输出，局部编辑新增画圈标注改图（2.5 也能用），画布可以显示 SVG。
 + [调整] 移除网页版（`web/`）及只为它服务的 canvas-agent、canvas-proxy、网页节点插件、Codex 插件和 Docker / Render / Vercel / GitHub Pages 部署配置，项目只保留 Windows 桌面客户端，文档同步改为只介绍桌面客户端。

@@ -1669,6 +1669,34 @@ public sealed partial class CanvasView : UserControl
         };
         scroller.SizeChanged += (_, e) => (frame.Width, frame.Height) = (e.NewSize.Width, e.NewSize.Height);
         Grid.SetRow(scroller, 1);
+        // WinUI pans a ScrollViewer by touch only, so a mouse or pen drags the zoomed picture by hand (handledEventsToo: the scroller may already have handled the press).
+        Point? grab = null;
+        (double H, double V) offset0 = default;
+        var moved = false;
+        var dragEnded = 0L;
+        scroller.AddHandler(PointerPressedEvent, new PointerEventHandler((_, e) =>
+        {
+            if (e.Pointer.PointerDeviceType == PointerDeviceType.Touch || (scroller.ScrollableWidth <= 0 && scroller.ScrollableHeight <= 0)) return;
+            var point = e.GetCurrentPoint(scroller);
+            if (!point.Properties.IsLeftButtonPressed || !scroller.CapturePointer(e.Pointer)) return;
+            (grab, offset0, moved) = (point.Position, (scroller.HorizontalOffset, scroller.VerticalOffset), false);
+        }), true);
+        scroller.AddHandler(PointerMovedEvent, new PointerEventHandler((_, e) =>
+        {
+            if (grab is not { } start) return;
+            var position = e.GetCurrentPoint(scroller).Position;
+            moved |= Math.Abs(position.X - start.X) > 4 || Math.Abs(position.Y - start.Y) > 4;
+            scroller.ChangeView(offset0.H - (position.X - start.X), offset0.V - (position.Y - start.Y), null, true);
+        }), true);
+        void EndDrag()
+        {
+            if (grab is null) return;
+            grab = null;
+            if (moved) dragEnded = Environment.TickCount64;
+        }
+        scroller.AddHandler(PointerReleasedEvent, new PointerEventHandler((_, e) => { EndDrag(); scroller.ReleasePointerCapture(e.Pointer); }), true);
+        scroller.PointerCaptureLost += (_, _) => EndDrag();
+        scroller.PointerCanceled += (_, _) => EndDrag();
         var close = new Button { Style = (Style)Application.Current.Resources["ToolbarButton"], Content = new FontIcon { Glyph = "", FontSize = 14 }, HorizontalAlignment = HorizontalAlignment.Right, AllowFocusOnInteraction = true };
         ToolTipService.SetToolTip(close, "关闭 (Esc)");
         AutomationProperties.SetName(close, "关闭预览");
@@ -1683,7 +1711,8 @@ public sealed partial class CanvasView : UserControl
         surface.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         surface.RowDefinitions.Add(new RowDefinition());
         AutomationProperties.SetName(surface, "图片预览");
-        surface.Tapped += (_, e) => { if (e.OriginalSource is not Image) ClosePreview(); };
+        // A tap that ends a drag must not close the preview.
+        surface.Tapped += (_, e) => { if (e.OriginalSource is not Image && Environment.TickCount64 - dragEnded > 400) ClosePreview(); };
         surface.KeyDown += (_, e) => { if (e.Key == VirtualKey.Escape) { e.Handled = true; ClosePreview(); } };
         // Focus inside the popup so Esc reaches it.
         surface.Loaded += (_, _) => close.Focus(FocusState.Programmatic);
