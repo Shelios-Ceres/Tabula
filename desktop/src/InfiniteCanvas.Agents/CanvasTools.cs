@@ -236,7 +236,7 @@ public static class CanvasTools
             [Description("新文件的绝对路径，类型必须和节点一致（图片换图片）")] string path) => await ReplaceMediaAsync(host, nodeId, path), new()
         {
             Name = "canvas_replace_media", Destructive = true,
-            Description = "给已有的图片 / 视频 / 音频节点换上本机的一个新文件，节点 ID、位置、宽度、分组和连线都不变，整次算一步撤销，旧文件仍留在画布文件夹里。节点正在生成时不能替换；节点上的提示词和模型参数不会清除，之后重新生成会盖掉替换进去的文件。只用用户在对话里明确点名的文件。",
+            Description = "给已有的图片 / 视频 / 音频节点换上本机的一个新文件，节点 ID、位置、宽度、分组和连线都不变，整次算一步撤销，旧文件仍留在画布文件夹里。节点正在生成时不能替换；节点上的提示词和模型参数不会清除；图片节点之后重新生成时，会把节点现在的图片当作第一张输入，按提示词在它上面修改，不是凭空重画。只用用户在对话里明确点名的文件。",
         }),
         McpServerTool.Create(async (
             [Description("图片、视频或音频节点 ID")] string nodeId,
@@ -391,7 +391,7 @@ public static class CanvasTools
         }
         // A file that cannot be copied (held open, no permission) is the agent's to read, like a failed import.
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { throw new McpException($"文件复制失败：{ex.Message}"); }
-        return Json(new { NodeId = node.Id, File = node.Content, Note = "节点上的提示词和模型参数没有清除，重新生成会盖掉替换进去的文件；旧文件仍在画布文件夹里，可以撤销。" });
+        return Json(new { NodeId = node.Id, File = node.Content, Note = "节点上的提示词和模型参数没有清除；图片节点重新生成时，会把节点现在的图片当作第一张输入，按提示词在它上面修改，不是凭空重画。旧文件仍在画布文件夹里，可以撤销。" });
     }
 
     private static async Task<string> AddToLibraryAsync(ICanvasHost host, string nodeId, bool replace)
