@@ -638,7 +638,7 @@ public class AgentTests
         await using var pipe = new NamedPipeClientStream(".", name, PipeDirection.InOut, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
         await pipe.ConnectAsync(5000);
         await using var client = await McpClient.CreateAsync(new StreamClientTransport(pipe, pipe, null));
-        Assert.Equal(17, (await client.ListToolsAsync()).Count);
+        Assert.Equal(18, (await client.ListToolsAsync()).Count);
     }
 
     [Fact]
@@ -651,7 +651,7 @@ public class AgentTests
         await using var client = await McpClient.CreateAsync(new StreamClientTransport(pipe, pipe, null));
 
         var tools = await client.ListToolsAsync();
-        Assert.Equal(["canvas_apply_ops", "canvas_compose", "canvas_generate", "canvas_get_image", "canvas_get_node", "canvas_get_state", "canvas_import_file", "canvas_replace_media", "canvas_run_generation", "generation_get_status", "image_compare", "library_add", "library_list", "library_place", "library_remove", "library_rename", "usage_summary"], tools.Select(t => t.Name).Order());
+        Assert.Equal(["canvas_apply_ops", "canvas_compose", "canvas_generate", "canvas_get_image", "canvas_get_node", "canvas_get_state", "canvas_import_file", "canvas_replace_media", "canvas_run_generation", "generation_get_status", "generation_wait", "image_compare", "library_add", "library_list", "library_place", "library_remove", "library_rename", "usage_summary"], tools.Select(t => t.Name).Order());
 
         var generated = await client.CallToolAsync("canvas_generate", new Dictionary<string, object?> { ["mode"] = "image", ["prompt"] = "一只猫", ["ratio"] = "1:1" });
         var nodeId = Parse(((TextContentBlock)generated.Content[0]).Text).GetProperty("nodeId").GetString();
@@ -778,6 +778,142 @@ public class AgentTests
             Assert.True((await session.CallAsync("canvas_import_file", new() { ["paths"] = Array.Empty<string>() })).IsError);
         }
         finally { Directory.Delete(dir, true); }
+    }
+
+    private static CanvasNode Generating(FakeHost host)
+    {
+        var node = CanvasNode.Create(NodeKind.Image, 0, 0);
+        node.Status = NodeStatus.Loading;
+        host.Document.Nodes.Add(node);
+        return node;
+    }
+
+    private static void Fail(CanvasNode node, string error) { node.Status = NodeStatus.Error; node.Error = error; }
+
+    /// <summary>Starts generation_wait, gives it a moment to subscribe, and runs the change; the wait must end on its own, long before its limit.</summary>
+    private static async Task<(bool IsError, string Text)> WaitDuring(Session session, Dictionary<string, object?> args, Action change)
+    {
+        var wait = session.CallAsync("generation_wait", args);
+        await Task.Delay(150);
+        change();
+        return await wait.WaitAsync(TimeSpan.FromSeconds(10));
+    }
+
+    [Fact]
+    public async Task Wait_returns_at_once_on_a_failure_while_another_node_is_still_loading()
+    {
+        var host = new FakeHost();
+        var first = Generating(host);
+        var second = Generating(host);
+        await using var session = await Session.StartAsync(host);
+
+        var (isError, text) = await WaitDuring(session, new() { ["nodeIds"] = new[] { first.Id, second.Id } }, () => Fail(second, "429 Too Many Requests"));
+        Assert.False(isError);
+        var result = Parse(text);
+        Assert.Equal("failed", result.GetProperty("reason").GetString());
+        var failed = result.GetProperty("failed").EnumerateArray().Single();
+        Assert.Equal((second.Id, "429 Too Many Requests"), (failed.GetProperty("nodeId").GetString(), failed.GetProperty("error").GetString()));
+        var nodes = result.GetProperty("nodes").EnumerateArray().Select(n => n.GetProperty("node").GetProperty("status").GetString()!).ToArray();
+        Assert.Equal(["loading", "error"], nodes);
+
+        // A node that has already failed ends the next wait at once, even though the other one still runs.
+        var again = Parse((await session.CallAsync("generation_wait", new() { ["nodeIds"] = new[] { first.Id, second.Id } })).Text);
+        Assert.Equal("failed", again.GetProperty("reason").GetString());
+
+        // Once the first one finishes and only the failed one is asked about, the answer is still the failure; the first alone is done.
+        first.Status = NodeStatus.Success;
+        var done = Parse((await session.CallAsync("generation_wait", new() { ["nodeIds"] = new[] { first.Id } })).Text);
+        Assert.Equal("done", done.GetProperty("reason").GetString());
+        Assert.False(done.TryGetProperty("failed", out _));
+    }
+
+    [Fact]
+    public async Task Wait_returns_done_when_every_node_has_finished_and_none_failed()
+    {
+        var host = new FakeHost();
+        var first = Generating(host);
+        var second = Generating(host);
+        await using var session = await Session.StartAsync(host);
+
+        var (_, text) = await WaitDuring(session, new() { ["nodeIds"] = new[] { first.Id, second.Id } }, () =>
+        {
+            first.Status = NodeStatus.Success;
+            Task.Delay(100).Wait();
+            second.Status = NodeStatus.Success;
+        });
+        var result = Parse(text);
+        Assert.Equal("done", result.GetProperty("reason").GetString());
+        Assert.Equal(2, result.GetProperty("nodes").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task Wait_with_no_node_ids_watches_what_is_generating_when_it_is_called()
+    {
+        var host = new FakeHost();
+        var finished = CanvasNode.Create(NodeKind.Image, 0, 0);
+        finished.Status = NodeStatus.Success;
+        host.Document.Nodes.Add(finished);
+        await using var session = await Session.StartAsync(host);
+        // Nothing generating: nothing to wait for.
+        var none = Parse((await session.CallAsync("generation_wait", new())).Text);
+        Assert.Equal(("done", 0), (none.GetProperty("reason").GetString(), none.GetProperty("nodes").GetArrayLength()));
+
+        var running = Generating(host);
+        var (_, text) = await WaitDuring(session, new(), () => Fail(running, "出错了"));
+        var result = Parse(text);
+        Assert.Equal("failed", result.GetProperty("reason").GetString());
+        Assert.Equal(running.Id, result.GetProperty("nodes").EnumerateArray().Single().GetProperty("node").GetProperty("id").GetString());
+    }
+
+    [Fact]
+    public async Task Wait_reports_timedOut_without_stopping_anything_and_checks_the_limit()
+    {
+        var host = new FakeHost();
+        var running = Generating(host);
+        await using var session = await Session.StartAsync(host);
+
+        var started = DateTime.UtcNow;
+        var timedOut = Parse((await session.CallAsync("generation_wait", new() { ["nodeIds"] = new[] { running.Id }, ["timeoutSeconds"] = 1 })).Text);
+        Assert.InRange(DateTime.UtcNow - started, TimeSpan.FromSeconds(0.9), TimeSpan.FromSeconds(8));
+        Assert.Equal("timedOut", timedOut.GetProperty("reason").GetString());
+        Assert.Equal("loading", timedOut.GetProperty("nodes")[0].GetProperty("node").GetProperty("status").GetString());
+        Assert.Equal(NodeStatus.Loading, running.Status);
+
+        foreach (var bad in new[] { 0, -5, 601 }) Assert.True((await session.CallAsync("generation_wait", new() { ["nodeIds"] = new[] { running.Id }, ["timeoutSeconds"] = bad })).IsError, $"timeoutSeconds {bad}");
+        Assert.True((await session.CallAsync("generation_wait", new() { ["nodeIds"] = new[] { "missing" } })).IsError);
+    }
+
+    [Fact]
+    public async Task Wait_expands_a_batch_to_its_members()
+    {
+        var host = new FakeHost();
+        var first = Generating(host);
+        var second = Generating(host);
+        var third = Generating(host);
+        Stacks.Form([first, second, third]);
+        await using var session = await Session.StartAsync(host);
+
+        var (_, text) = await WaitDuring(session, new() { ["nodeIds"] = new[] { first.Id } }, () => Fail(third, "第三张失败"));
+        var result = Parse(text);
+        Assert.Equal("failed", result.GetProperty("reason").GetString());
+        Assert.Equal(third.Id, result.GetProperty("failed").EnumerateArray().Single().GetProperty("nodeId").GetString());
+        Assert.Equal(3, result.GetProperty("nodes")[0].GetProperty("batch").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task Wait_fails_with_the_canvas_switched_error_when_another_canvas_is_opened_meanwhile()
+    {
+        var host = new FakeHost();
+        var running = Generating(host);
+        await using var session = await Session.StartAsync(host);
+
+        var (isError, text) = await WaitDuring(session, new() { ["nodeIds"] = new[] { running.Id } }, () =>
+        {
+            host.Document = new CanvasDocument { Id = "canvas-2", Title = "另一张" };
+            running.Status = NodeStatus.Success;
+        });
+        Assert.True(isError);
+        Assert.Contains("画布已切换", text);
     }
 
     [Fact]

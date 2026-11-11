@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using InfiniteCanvas.Core.Canvas;
@@ -118,7 +119,7 @@ public static class CanvasTools
         你正在操作用户在「无限画布」桌面客户端里当前打开的画布。
         - 先用 canvas_get_state 了解节点、连线、选区和可用模型；用户说「这张图」「选中的」时指的是 selection 里的节点。
         - canvas_get_state 默认不带提示词、文本正文和生成参数；要读这些用 canvas_get_node（或 detail=full）。画布很大时先用 rect 或 groupId 缩小范围。
-        - 生成图片、文本或语音用 canvas_generate（这个版本不支持生成视频，视频节点只用来放导入的视频）：它会新建节点、连上参考节点并立刻开始生成。生成是异步的，用 generation_get_status 查看结果，不要在没有结果时声称已经完成。
+        - 生成图片、文本或语音用 canvas_generate（这个版本不支持生成视频，视频节点只用来放导入的视频）：它会新建节点、连上参考节点并立刻开始生成。生成是异步的：开始后用 generation_wait 等结果，它在有节点失败时立刻返回，不用反复轮询 generation_get_status；返回 timedOut 说明还在生成，再调用一次即可。不要在没有结果时声称已经完成。
         - 同一服务商同时发出的图片请求超过设置里的上限时会自动排队（状态 queued，queueAhead 是前面还有几个），不用把批次拆小，排队不是失败。
         - 增删改节点、连线、选择和视口用 canvas_apply_ops，一次调用就是一步撤销。
         - 需要看图片内容时用 canvas_get_image；资料库（这个画布自己的常用素材）用 library_list / library_place / library_add；一次生成多张时用 layout=row 或 grid 直接排开，已有的一批用 stack_open / stack_close 展开或收起，挑定稿用 keep_one（留下一批里的一张）和 promote（让一张图取代另一张，占它的位置和连线）；编组用 canvas_apply_ops 的 group / ungroup，把节点加入或移出已有分组（分组 ID 和连线不变）用 group_add / group_remove。
@@ -167,12 +168,12 @@ public static class CanvasTools
             [Description("true 时只校验参数并估价，不建节点、不发请求")] bool? dryRun = null) => host.OnUiAsync(() => Generate(host, mode, prompt, referenceNodeIds, model, ratio, size, quality, count, x, y, layout, gap, dryRun ?? false)), new()
         {
             Name = "canvas_generate",
-            Description = "新建一个生成节点（图片 / 文本 / 语音），连上参考节点并立刻开始生成，返回节点 ID。多张图默认叠成一摞，用 layout=row 或 grid 可直接排成横排或网格。图片生成会返回 estimatedCost {amount, currency, basis}，没有官方单价时为 null 并附 estimatedCostNote；dryRun=true 只校验和估价、不花钱。估价是本机估算，不含思考 token，也不是账单。",
+            Description = "新建一个生成节点（图片 / 文本 / 语音），连上参考节点并立刻开始生成，返回节点 ID；开始后用 generation_wait 等结果。多张图默认叠成一摞，用 layout=row 或 grid 可直接排成横排或网格。图片生成会返回 estimatedCost {amount, currency, basis}，没有官方单价时为 null 并附 estimatedCostNote；dryRun=true 只校验和估价、不花钱。估价是本机估算，不含思考 token，也不是账单。",
         }),
         McpServerTool.Create(([Description("要生成的节点 ID")] string nodeId) => host.OnUiAsync(() => RunTool(host, Find(host, nodeId))), new()
         {
             Name = "canvas_run_generation",
-            Description = "按节点当前的提示词、模型和连线输入重新触发生成。图片生成会返回 estimatedCost {amount, currency, basis}，没有官方单价时为 null 并附 estimatedCostNote。",
+            Description = "按节点当前的提示词、模型和连线输入重新触发生成；开始后用 generation_wait 等结果。图片生成会返回 estimatedCost {amount, currency, basis}，没有官方单价时为 null 并附 estimatedCostNote。",
         }),
         McpServerTool.Create(([Description("起始日期 yyyy-MM-dd（含当天），或 today、month（本月 1 号起）；省略时是今天")] string? since = null) => host.OnUiAsync(() => Usage(since)), new()
         {
@@ -182,7 +183,12 @@ public static class CanvasTools
         McpServerTool.Create(([Description("要查询的节点 ID；省略时返回所有生成中或失败的节点")] List<string>? nodeIds = null) => host.OnUiAsync(() => Status(host, nodeIds)), new()
         {
             Name = "generation_get_status", ReadOnly = true,
-            Description = "查询节点的生成状态（idle / queued / loading / success / error；queued 表示在等同一服务商的空位，queueAhead 是前面还有几个请求）、错误信息和结果文件。batch 列出同批全部成员（含节点本身），outputs 列出下游输出。",
+            Description = "查询节点的生成状态（idle / queued / loading / success / error；queued 表示在等同一服务商的空位，queueAhead 是前面还有几个请求）、错误信息和结果文件。batch 列出同批全部成员（含节点本身），outputs 列出下游输出。只看一次当前状态；要等结果用 generation_wait。",
+        }),
+        McpServerTool.Create(([Description("要等待的节点 ID（批次会展开成全部成员）；省略时等调用时所有正在生成的节点")] List<string>? nodeIds = null, [Description("最长等待秒数，1 到 600，默认 120")] int? timeoutSeconds = null, CancellationToken cancel = default) => WaitAsync(host, nodeIds, timeoutSeconds, cancel), new()
+        {
+            Name = "generation_wait", ReadOnly = true,
+            Description = "等节点的生成结果，不用反复查询：只要有一个被等的节点失败（含已停止、已中断）就立刻返回 reason=failed 并在 failed 里列出节点和错误，此时其他节点可能仍在生成；已经失败的节点会立即返回；全部结束且没有失败返回 done；到时限仍有节点在生成返回 timedOut（只是不再等待，生成不会被停止，再调用一次继续等）。其余字段和 generation_get_status 一样。",
         }),
         McpServerTool.Create(async ([Description("图片节点 ID")] string nodeId) => await GetImageAsync(host, nodeId), new()
         {
@@ -843,7 +849,7 @@ public static class CanvasTools
         if (host.CannotGenerate(node) is { } reason) throw new McpException($"节点已创建（{node.Id}），但无法开始生成：{reason}");
         var cost = Estimate(host.Document, node);
         host.Generate(node, recordHistory: false);
-        return Json(WithCost(new Dictionary<string, object?> { ["nodeId"] = node.Id, ["started"] = true, ["note"] = "生成是异步的，用 generation_get_status 查看结果；多张图会在旁边追加节点并从同样的输入连线，按 layout 叠成一摞或排成横排 / 网格。" }, cost));
+        return Json(WithCost(new Dictionary<string, object?> { ["nodeId"] = node.Id, ["started"] = true, ["note"] = "生成是异步的，用 generation_wait 等结果（或 generation_get_status 看一次）；多张图会在旁边追加节点并从同样的输入连线，按 layout 叠成一摞或排成横排 / 网格。" }, cost));
     }
 
     private static string RunTool(ICanvasHost host, CanvasNode node)
@@ -867,17 +873,70 @@ public static class CanvasTools
         var nodes = ids is { Count: > 0 }
             ? ids.Select(id => Find(host, id)).ToList()
             : host.Document.Nodes.Where(n => n.Status is NodeStatus.Loading or NodeStatus.Error || host.IsRunning(n.Id)).ToList();
-        // Outputs of a node are listed too, so the agent finds the extra images of a multi-image run.
-        return Json(new
+        return Json(new { Nodes = Report(host, nodes) });
+    }
+
+    // Outputs of a node are listed too, so the agent finds the extra images of a multi-image run.
+    private static List<object> Report(ICanvasHost host, IEnumerable<CanvasNode> nodes) => nodes.Select(n => (object)new
+    {
+        Node = Brief(host, n),
+        Batch = Stacks.Of(n) is { } stack ? Stacks.Members(host.Document, stack).Select(member => new { member.Id, Status = StatusOf(member), File = FileOf(member), member.Error }).ToList() : null,
+        Outputs = host.Document.Connections.Where(c => c.From == n.Id).Select(c => host.Document.Find(c.To)).OfType<CanvasNode>()
+            .Where(o => o.Kind != NodeKind.Config).Select(o => new { o.Id, Status = StatusOf(o), o.Error, File = o.Content }).ToList(),
+    }).ToList();
+
+    private const int DefaultWaitSeconds = 120, MaxWaitSeconds = 600;
+
+    /// <summary>
+    /// Wait for node status changes instead of polling: the document is only read through OnUiAsync, and a PropertyChanged handler merely wakes the loop,
+    /// so the state is read after the UI-thread code that changed it (Status, then Error) has finished. A node counts as generating while it is Loading
+    /// (queued included), or Idle but already registered as running.
+    /// </summary>
+    private static async Task<string> WaitAsync(ICanvasHost host, List<string>? ids, int? timeoutSeconds, CancellationToken cancel)
+    {
+        var seconds = timeoutSeconds ?? DefaultWaitSeconds;
+        if (seconds is < 1 or > MaxWaitSeconds) throw new McpException($"timeoutSeconds 必须在 1 到 {MaxWaitSeconds} 之间，默认 {DefaultWaitSeconds}");
+        using var wake = new SemaphoreSlim(0);
+        var subscribed = new HashSet<CanvasNode>();
+        void OnChanged(object? sender, PropertyChangedEventArgs e)
         {
-            Nodes = nodes.Select(n => new
+            if (e.PropertyName == nameof(CanvasNode.Status) && wake.CurrentCount == 0) wake.Release();
+        }
+        var canvas = await host.OnUiAsync(() => host.Document);
+        List<CanvasNode>? roots = null;
+        // Runs on the UI thread: subscribes to every node watched now (batch members can appear after the call) and returns the finished result, or null while still waiting.
+        string? Check(bool final)
+        {
+            if (!ReferenceEquals(canvas, host.Document)) throw new McpException("画布已切换，请重新读取当前画布后再操作");
+            roots ??= ids is { Count: > 0 }
+                ? ids.Select(id => Find(host, id)).ToList()
+                : host.Document.Nodes.Where(n => n.Status == NodeStatus.Loading || host.IsRunning(n.Id)).ToList();
+            var live = roots.Where(n => canvas.Find(n.Id) == n).ToList();
+            var watched = live.SelectMany(n => Stacks.Of(n) is { } stack ? Stacks.Members(canvas, stack).Append(n) : [n]).Distinct().ToList();
+            foreach (var node in watched.Where(subscribed.Add)) node.PropertyChanged += OnChanged;
+            var failed = watched.Where(n => n.Status == NodeStatus.Error).Select(n => new { NodeId = n.Id, n.Error }).ToList();
+            var running = watched.Any(n => n.Status == NodeStatus.Loading || n.Status == NodeStatus.Idle && host.IsRunning(n.Id));
+            var reason = failed.Count > 0 ? "failed" : !running ? "done" : final ? "timedOut" : null;
+            return reason is null ? null : Json(new { Reason = reason, Failed = failed.Count > 0 ? failed : null, Nodes = Report(host, live) });
+        }
+        var clock = Stopwatch.StartNew();
+        try
+        {
+            while (true)
             {
-                Node = Brief(host, n),
-                Batch = Stacks.Of(n) is { } stack ? Stacks.Members(host.Document, stack).Select(member => new { member.Id, Status = StatusOf(member), File = FileOf(member), member.Error }).ToList() : null,
-                Outputs = host.Document.Connections.Where(c => c.From == n.Id).Select(c => host.Document.Find(c.To)).OfType<CanvasNode>()
-                    .Where(o => o.Kind != NodeKind.Config).Select(o => new { o.Id, Status = StatusOf(o), o.Error, File = o.Content }),
-            }),
-        });
+                cancel.ThrowIfCancellationRequested();
+                var remaining = TimeSpan.FromSeconds(seconds) - clock.Elapsed;
+                var final = remaining <= TimeSpan.Zero;
+                if (await host.OnUiAsync(() => Check(final)) is { } result) return result;
+                await wake.WaitAsync(remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero, cancel);
+            }
+        }
+        finally
+        {
+            // The handlers belong to the UI-side nodes: release them there even when the wait was cancelled or failed.
+            try { await host.OnUiAsync(() => { foreach (var node in subscribed) node.PropertyChanged -= OnChanged; return 0; }); }
+            catch (Exception) { }
+        }
     }
 
     private static async Task<CallToolResult> GetImageAsync(ICanvasHost host, string nodeId)
