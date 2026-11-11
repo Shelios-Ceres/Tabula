@@ -1667,7 +1667,13 @@ public sealed partial class CanvasView : UserControl
             Content = frame, ZoomMode = ZoomMode.Enabled, MinZoomFactor = 0.5f, MaxZoomFactor = 8,
             HorizontalScrollMode = ScrollMode.Enabled, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
         };
-        scroller.SizeChanged += (_, e) => (frame.Width, frame.Height) = (e.NewSize.Width, e.NewSize.Height);
+        scroller.SizeChanged += (_, e) =>
+        {
+            (frame.Width, frame.Height) = (e.NewSize.Width, e.NewSize.Height);
+            // Zoom until one picture pixel covers 16 × 16 DIPs (the fit scale is how far the picture is shrunk or enlarged at zoom 1), and never less than 8x.
+            var fit = node.NaturalWidth > 0 && node.NaturalHeight > 0 ? Math.Min(e.NewSize.Width / node.NaturalWidth, e.NewSize.Height / node.NaturalHeight) : 0;
+            scroller.MaxZoomFactor = fit > 0 ? (float)Math.Max(8, 16 / fit) : 8;
+        };
         Grid.SetRow(scroller, 1);
         // WinUI pans a ScrollViewer by touch only, so a mouse or pen drags the zoomed picture by hand (handledEventsToo: the scroller may already have handled the press).
         Point? grab = null;
