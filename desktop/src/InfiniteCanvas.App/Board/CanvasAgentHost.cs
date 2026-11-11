@@ -33,6 +33,7 @@ public sealed class CanvasAgentHost(CanvasView view) : ICanvasHost
     public void Delete(IEnumerable<string> ids) => view.DeleteNodes(ids.ToList());
     public void Reveal(IReadOnlyList<CanvasNode> nodes) => view.EnsureVisible(CanvasGraph.Bounds(nodes));
     public bool IsRunning(string nodeId) => view.Generator.IsRunning(nodeId);
+    public event Action? RunningChanged { add => view.Generator.RunningChanged += value; remove => view.Generator.RunningChanged -= value; }
     public string? CannotGenerate(CanvasNode node) => CanvasGenerator.CannotGenerate(view.Doc, node);
     public void Generate(CanvasNode node, bool recordHistory = true) => _ = view.Generator.GenerateAsync(node, recordHistory);
     public string? Group(IReadOnlyCollection<string> ids, string? title) => view.GroupNodes(ids, title)?.Id;

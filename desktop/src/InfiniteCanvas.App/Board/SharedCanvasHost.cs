@@ -51,6 +51,26 @@ public sealed class SharedCanvasHost(DispatcherQueue ui) : ICanvasHost
     public void Delete(IEnumerable<string> ids) => Canvas.Delete(ids);
     public void Reveal(IReadOnlyList<CanvasNode> nodes) => Canvas.Reveal(nodes);
     public bool IsRunning(string nodeId) => Canvas.IsRunning(nodeId);
+
+    // Handlers stay on the canvas that was open when they were added, so removing one later still reaches it after another canvas has been opened.
+    private readonly List<(Action Handler, CanvasAgentHost Canvas)> _running = [];
+
+    public event Action? RunningChanged
+    {
+        add
+        {
+            var canvas = Canvas;
+            canvas.RunningChanged += value;
+            _running.Add((value!, canvas));
+        }
+        remove
+        {
+            var index = _running.FindIndex(r => r.Handler == value);
+            if (index < 0) return;
+            _running[index].Canvas.RunningChanged -= value;
+            _running.RemoveAt(index);
+        }
+    }
     public string? CannotGenerate(CanvasNode node) => Canvas.CannotGenerate(node);
     public void Generate(CanvasNode node, bool recordHistory = true) => Canvas.Generate(node, recordHistory);
     public Task<(byte[] Bytes, string MimeType)?> LoadImageAsync(CanvasNode node, int maxEdge) => Canvas.LoadImageAsync(node, maxEdge);

@@ -28,6 +28,8 @@ public interface ICanvasHost
     void Delete(IEnumerable<string> ids);
     void Reveal(IReadOnlyList<CanvasNode> nodes);
     bool IsRunning(string nodeId);
+    /// <summary>Raised on the UI thread when a node starts or stops being registered as running, with or without a Status change.</summary>
+    event Action? RunningChanged;
     /// <summary>Why a generation cannot start (missing model, key or prompt), or null when it can.</summary>
     string? CannotGenerate(CanvasNode node);
     void Generate(CanvasNode node, bool recordHistory = true);
@@ -888,22 +890,30 @@ public static class CanvasTools
     private const int DefaultWaitSeconds = 120, MaxWaitSeconds = 600;
 
     /// <summary>
-    /// Wait for node status changes instead of polling: the document is only read through OnUiAsync, and a PropertyChanged handler merely wakes the loop,
-    /// so the state is read after the UI-thread code that changed it (Status, then Error) has finished. A node counts as generating while it is Loading
-    /// (queued included), or Idle but already registered as running.
+    /// Wait for node status changes instead of polling: the document is only read through OnUiAsync, and a PropertyChanged or RunningChanged handler
+    /// merely wakes the loop, so the state is read after the UI-thread code that changed it (Status, then Error) has finished. A node counts as generating
+    /// while it is Loading (queued included), or Idle but already registered as running (which can end with no Status change, hence RunningChanged).
     /// </summary>
     private static async Task<string> WaitAsync(ICanvasHost host, List<string>? ids, int? timeoutSeconds, CancellationToken cancel)
     {
         var seconds = timeoutSeconds ?? DefaultWaitSeconds;
         if (seconds is < 1 or > MaxWaitSeconds) throw new McpException($"timeoutSeconds 必须在 1 到 {MaxWaitSeconds} 之间，默认 {DefaultWaitSeconds}");
-        using var wake = new SemaphoreSlim(0);
+        // Not disposed on purpose: if the cleanup below cannot run (the canvas is closing), a handler may still fire later and must find a live semaphore.
+        // It never creates a wait handle, so there is nothing to leak. Once the wait has ended the handlers do nothing.
+        var wake = new SemaphoreSlim(0);
+        var ended = false;
         var subscribed = new HashSet<CanvasNode>();
+        void Wake()
+        {
+            if (!Volatile.Read(ref ended) && wake.CurrentCount == 0) wake.Release();
+        }
         void OnChanged(object? sender, PropertyChangedEventArgs e)
         {
-            if (e.PropertyName == nameof(CanvasNode.Status) && wake.CurrentCount == 0) wake.Release();
+            if (e.PropertyName == nameof(CanvasNode.Status)) Wake();
         }
         var canvas = await host.OnUiAsync(() => host.Document);
         List<CanvasNode>? roots = null;
+        var listening = false;
         // Runs on the UI thread: subscribes to every node watched now (batch members can appear after the call) and returns the finished result, or null while still waiting.
         string? Check(bool final)
         {
@@ -911,6 +921,7 @@ public static class CanvasTools
             roots ??= ids is { Count: > 0 }
                 ? ids.Select(id => Find(host, id)).ToList()
                 : host.Document.Nodes.Where(n => n.Status == NodeStatus.Loading || host.IsRunning(n.Id)).ToList();
+            if (!listening) { host.RunningChanged += Wake; listening = true; }
             var live = roots.Where(n => canvas.Find(n.Id) == n).ToList();
             var watched = live.SelectMany(n => Stacks.Of(n) is { } stack ? Stacks.Members(canvas, stack).Append(n) : [n]).Distinct().ToList();
             foreach (var node in watched.Where(subscribed.Add)) node.PropertyChanged += OnChanged;
@@ -934,7 +945,8 @@ public static class CanvasTools
         finally
         {
             // The handlers belong to the UI-side nodes: release them there even when the wait was cancelled or failed.
-            try { await host.OnUiAsync(() => { foreach (var node in subscribed) node.PropertyChanged -= OnChanged; return 0; }); }
+            Volatile.Write(ref ended, true);
+            try { await host.OnUiAsync(() => { foreach (var node in subscribed) node.PropertyChanged -= OnChanged; if (listening) host.RunningChanged -= Wake; return 0; }); }
             catch (Exception) { }
         }
     }

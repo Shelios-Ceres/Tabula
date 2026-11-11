@@ -31,8 +31,11 @@ public class AgentTests
         public (double X, double Y) ViewCenter => (500, 400);
         /// <summary>True while this thread is inside OnUiAsync: the stand-in for "on the UI thread", since the fake runs the action where it is called.</summary>
         [ThreadStatic] public static bool OnUi;
+        /// <summary>Like a closing canvas: every OnUiAsync fails, so cleanup that needs the UI thread cannot run.</summary>
+        public bool Closing { get; set; }
         public Task<T> OnUiAsync<T>(Func<T> action)
         {
+            if (Closing) return Task.FromException<T>(new ModelContextProtocol.McpException("画布正在关闭，请稍后重试"));
             var nested = OnUi;
             OnUi = true;
             T result;
@@ -51,6 +54,13 @@ public class AgentTests
         }
         public void Reveal(IReadOnlyList<CanvasNode> nodes) { }
         public bool IsRunning(string nodeId) => Generated.Contains(nodeId);
+        public event Action? RunningChanged;
+        /// <summary>A node leaves the running set with no Status change, as when a run is cancelled while it still loads its references.</summary>
+        public void StopRunning(string nodeId)
+        {
+            Generated.Remove(nodeId);
+            RunningChanged?.Invoke();
+        }
         public string? CannotGenerate(CanvasNode node) => string.IsNullOrWhiteSpace(node.Prompt) ? "请先输入提示词" : null;
         public void Generate(CanvasNode node, bool recordHistory = true)
         {
@@ -898,6 +908,49 @@ public class AgentTests
         Assert.Equal("failed", result.GetProperty("reason").GetString());
         Assert.Equal(third.Id, result.GetProperty("failed").EnumerateArray().Single().GetProperty("nodeId").GetString());
         Assert.Equal(3, result.GetProperty("nodes")[0].GetProperty("batch").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task Wait_returns_at_once_when_an_idle_node_stops_running_without_a_status_change()
+    {
+        var host = new FakeHost();
+        var preparing = CanvasNode.Create(NodeKind.Image, 0, 0);
+        host.Document.Nodes.Add(preparing);
+        host.Generated.Add(preparing.Id);
+        await using var session = await Session.StartAsync(host);
+
+        var started = DateTime.UtcNow;
+        var (isError, text) = await WaitDuring(session, new() { ["nodeIds"] = new[] { preparing.Id }, ["timeoutSeconds"] = 60 }, () => host.StopRunning(preparing.Id));
+        Assert.False(isError);
+        Assert.True(DateTime.UtcNow - started < TimeSpan.FromSeconds(10));
+        var result = Parse(text);
+        Assert.Equal("done", result.GetProperty("reason").GetString());
+        Assert.Equal("idle", result.GetProperty("nodes")[0].GetProperty("node").GetProperty("status").GetString());
+    }
+
+    [Fact]
+    public async Task Wait_leaves_nothing_that_throws_when_the_canvas_closes_before_its_cleanup_can_run()
+    {
+        var host = new FakeHost();
+        var first = Generating(host);
+        var others = new[] { Generating(host), Generating(host) };
+        await using var session = await Session.StartAsync(host);
+
+        var (isError, _) = await WaitDuring(session, new() { ["nodeIds"] = new[] { first.Id, others[0].Id, others[1].Id } }, () =>
+        {
+            host.Closing = true;
+            first.Status = NodeStatus.Success;
+        });
+        Assert.True(isError);
+
+        // The handlers could not be removed; the shutdown still changes the other members one by one, and none of that may throw into the caller.
+        foreach (var node in others)
+        {
+            Fail(node, "生成已中断");
+            node.Status = NodeStatus.Loading;
+            node.Status = NodeStatus.Success;
+        }
+        host.StopRunning(others[0].Id);
     }
 
     [Fact]
