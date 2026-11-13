@@ -83,8 +83,10 @@ public static class CanvasGraph
         if (node.HasContent && node.Kind is NodeKind.Image)
         {
             resources.Insert(0, new(node, NodeKind.Image, null));
-            // Layer decomposition and transparent background take exactly one image: on an existing image only the node itself is sent.
-            if ((node.Option("layers") == "true" || node.Option("transparent") == "true") && SettingsStore.Current.Resolve(node.Model) is { } resolved && ModelFamilies.FindImage(resolved.Channel.Vendor, resolved.Model.Name)?.Interactive == true)
+            // Layer decomposition and Seedream 5.0's transparent background take exactly one image: on an existing image only the node itself is sent.
+            // (5.5 draws transparency from up to 10 references, so its background setting never trims them.)
+            if ((node.Option("layers") == "true" || node.Option("transparent") == "true") && SettingsStore.Current.Resolve(node.Model) is { } resolved
+                && ModelFamilies.FindImage(resolved.Channel.Vendor, resolved.Model.Name) is { Interactive: true } family && (node.Option("layers") == "true" || !family.Rgba))
                 resources.RemoveAll(r => r.Type == NodeKind.Image && r.Node != node);
         }
         if (node.HasContent && node.Kind is NodeKind.Text) resources.Insert(0, new(node, NodeKind.Text, node.Content));

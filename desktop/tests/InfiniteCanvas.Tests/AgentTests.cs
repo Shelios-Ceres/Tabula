@@ -1274,6 +1274,69 @@ public class AgentTests
     }
 
     [Fact]
+    public async Task Seedream_layer_settings_pass_through_canvas_generate_and_apply_ops_within_2_to_100()
+    {
+        var host = new FakeHost();
+        await using var session = await Session.StartAsync(host);
+        var options = (string layerMax) => new Dictionary<string, string?> { ["layers"] = "true", ["layerMax"] = layerMax, ["layerText"] = "true" };
+
+        var ok = Parse((await session.CallAsync("canvas_generate", new() { ["mode"] = "image", ["prompt"] = "拆分", ["options"] = options("40") })).Text);
+        var node = host.Document.Find(ok.GetProperty("nodeId").GetString()!)!;
+        Assert.Equal(("true", "40", "true"), (node.Option("layers"), node.Option("layerMax"), node.Option("layerText")));
+        Assert.Contains(node.Id, host.Generated);
+
+        // Out of range or not a number: refused before any node, history or request.
+        var nodes = host.Document.Nodes.Count;
+        var generated = host.Generated.Count;
+        foreach (var bad in new[] { "1", "101", "0", "abc", "" })
+        {
+            Assert.True((await session.CallAsync("canvas_generate", new() { ["mode"] = "image", ["prompt"] = "拆分", ["options"] = options(bad) })).IsError, bad);
+            Assert.True((await session.CallAsync("canvas_generate", new() { ["mode"] = "image", ["prompt"] = "拆分", ["dryRun"] = true, ["options"] = options(bad) })).IsError, bad);
+        }
+        Assert.Equal((nodes, generated), (host.Document.Nodes.Count, host.Generated.Count));
+        var dry = Parse((await session.CallAsync("canvas_generate", new() { ["mode"] = "image", ["prompt"] = "拆分", ["dryRun"] = true, ["options"] = options("100") })).Text);
+        Assert.True(dry.GetProperty("valid").GetBoolean());
+        Assert.Equal(nodes, host.Document.Nodes.Count);
+
+        // The same check inside canvas_apply_ops; a null value clears the limit.
+        async Task<JsonElement> Update(string? layerMax) => Parse((await session.CallAsync("canvas_apply_ops", new() { ["ops"] = new object[] { new Dictionary<string, object?> { ["type"] = "update_node", ["id"] = node.Id, ["options"] = new Dictionary<string, string?> { ["layerMax"] = layerMax } } } })).Text).GetProperty("results")[0];
+        Assert.Contains("layerMax", (await Update("101")).GetProperty("error").GetString());
+        Assert.Equal("40", node.Option("layerMax"));
+        Assert.False((await Update("2")).TryGetProperty("error", out _));
+        Assert.Equal("2", node.Option("layerMax"));
+        Assert.False((await Update(null)).TryGetProperty("error", out _));
+        Assert.Equal("", node.Option("layerMax"));
+        var added = Parse((await session.CallAsync("canvas_apply_ops", new() { ["ops"] = new object[] { new Dictionary<string, object?> { ["type"] = "add_node", ["kind"] = "image", ["options"] = new Dictionary<string, string?> { ["layerMax"] = "1" } } } })).Text).GetProperty("results")[0];
+        Assert.True(added.TryGetProperty("error", out _));
+    }
+
+    [Fact]
+    public async Task Canvas_get_node_returns_the_text_recognition_of_a_layer()
+    {
+        var host = new FakeHost();
+        var json = """{"text":"夏日特卖","lines":[{"bounding_box":{"absolute":[1,2,3,4],"normalized":[100,100,900,200]},"runs":[{"text":"夏日特卖","style":{"bold":true}}]}]}""";
+        var text = new CanvasNode { Kind = NodeKind.Image, Title = "标题" };
+        text.SetOption(NodeKeys.TextRecognition, json);
+        var plain = new CanvasNode { Kind = NodeKind.Image, Title = "人物" };
+        host.Document.Nodes.Add(text);
+        host.Document.Nodes.Add(plain);
+        await using var session = await Session.StartAsync(host);
+
+        var nodes = Parse((await session.CallAsync("canvas_get_node", new() { ["ids"] = new[] { text.Id, plain.Id } })).Text).GetProperty("nodes");
+        var recognition = JsonDocument.Parse(nodes[0].GetProperty("options").GetProperty(NodeKeys.TextRecognition).GetString()!).RootElement;
+        Assert.Equal("夏日特卖", recognition.GetProperty("text").GetString());
+        Assert.True(recognition.GetProperty("lines")[0].GetProperty("runs")[0].GetProperty("style").GetProperty("bold").GetBoolean());
+        Assert.Equal([100, 100, 900, 200], recognition.GetProperty("lines")[0].GetProperty("bounding_box").GetProperty("normalized").EnumerateArray().Select(v => v.GetInt32()).ToArray());
+        // A layer without OCR carries no such entry, and the key is one of the per-image keys, so outputs never inherit it.
+        Assert.False(nodes[1].TryGetProperty("options", out _));
+        Assert.Contains(NodeKeys.TextRecognition, NodeKeys.PerImage);
+        Assert.Contains(NodeKeys.TextRecognition, NodeKeys.OfPixels);
+        Assert.DoesNotContain(NodeKeys.TextRecognition, NodeKeys.OutputOptions(text, new CanvasNode()).Keys);
+        NodeKeys.ForgetPixels(text);
+        Assert.Equal("", text.Option(NodeKeys.TextRecognition));
+    }
+
+    [Fact]
     public async Task Dry_run_estimates_with_the_connected_references_and_creates_no_node_history_or_request()
     {
         var host = new FakeHost();

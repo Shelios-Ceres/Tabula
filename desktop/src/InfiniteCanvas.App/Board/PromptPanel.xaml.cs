@@ -160,7 +160,7 @@ public sealed partial class PromptPanel : UserControl
                 : mask && markup ? "涂抹要重绘的区域，或画圈标注要改的地方" : mask ? "涂抹要重绘的区域，其余保持不变" : "点选或框选要修改的位置";
             ClearMarksButton.Visibility = parts.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         }
-        var notes = new[] { (Label: "模型说明", Text: node.Option(NodeKeys.ModelText)), (Label: "参考图", Text: node.Option(NodeKeys.InputNote)) }.Where(n => n.Text.Length > 0).ToList();
+        var notes = new[] { (Label: "模型说明", Text: node.Option(NodeKeys.ModelText)), (Label: "识别文字", Text: NodeKeys.RecognizedText(node)), (Label: "参考图", Text: node.Option(NodeKeys.InputNote)) }.Where(n => n.Text.Length > 0).ToList();
         ModelText.Text = string.Join("\n", notes.Select(n => $"{n.Label}：{n.Text}"));
         ModelText.Visibility = notes.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
     }
@@ -385,9 +385,22 @@ public sealed partial class PromptPanel : UserControl
                 }
                 if (image.Interactive)
                 {
-                    Toggle("图层拆分", node.Option("layers") == "true", value => node.SetOption("layers", value ? "true" : null));
-                    Toggle("透明背景", node.Option("transparent") == "true", value => node.SetOption("transparent", value ? "true" : null));
-                    Note("图层拆分：把 1 张输入图拆成底图和最多 16 个透明图层，按原位置铺到画布并编组。透明背景：输入 1 张带透明通道的图，输出保留透明。两者都只接受 1 张输入图片。");
+                    Toggle("图层拆分", node.Option("layers") == "true", value =>
+                    {
+                        node.SetOption("layers", value ? "true" : null);
+                        // The 5.5 layer settings only show while the split is on, so the list is rebuilt.
+                        if (image.LayerOptions) DispatcherQueue.TryEnqueue(() => ParamsFlyout_Opening(ParamsPanel, EventArgs.Empty));
+                    });
+                    if (image.LayerOptions && node.Option("layers") == "true")
+                    {
+                        Text($"最多张数（{NodeKeys.LayerMin}–{NodeKeys.LayerMaxLimit}，含底图，留空为 {NodeKeys.LayerMaxDefault}）", node.Option(NodeKeys.LayerMax),
+                            value => node.SetOption(NodeKeys.LayerMax, int.TryParse(value.Trim(), out var layerMax) && layerMax is >= NodeKeys.LayerMin and <= NodeKeys.LayerMaxLimit ? layerMax.ToString() : null));
+                        Toggle("识别文字", node.Option(NodeKeys.LayerText) == "true", value => node.SetOption(NodeKeys.LayerText, value ? "true" : null));
+                    }
+                    if (!image.Rgba) Toggle("透明背景", node.Option("transparent") == "true", value => node.SetOption("transparent", value ? "true" : null));
+                    Note(image.LayerOptions
+                        ? "图层拆分：把 1 张输入图拆成底图和最多 99 个透明图层（上面的最多张数含底图，越大拆得越细，按返回的张数计费），按原位置铺到画布并编组；开启「识别文字」后，规整文字的图层会带上识别出的文字。图层拆分只接受 1 张输入图片，也不使用「背景」设置。"
+                        : "图层拆分：把 1 张输入图拆成底图和最多 16 个透明图层，按原位置铺到画布并编组。透明背景：输入 1 张带透明通道的图，输出保留透明。两者都只接受 1 张输入图片。");
                 }
                 if (image.ThinkingLevels.Length > 1) Combo("思考强度", image.ThinkingLevels.Select(t => (t, t == "auto" ? "自动" : t)), node.Option("thinking", "auto"), value => node.SetOption("thinking", value));
                 if (image.WebSearch) Toggle("联网搜索", node.Option("webSearch") == "true", value => node.SetOption("webSearch", value ? "true" : null));

@@ -432,6 +432,104 @@ public class ProviderTests
     }
 
     [Fact]
+    public async Task Ark_55_draws_transparent_output_from_text_or_up_to_ten_references()
+    {
+        var (provider, handler) = Create(Vendor.Ark, (_, _) => Json($$"""{"data":[{"b64_json":"{{Png}}"}]}"""));
+        const string model = "doubao-seedream-5-5-261028";
+        // Text to image, no reference at all; transparent forces PNG even when JPEG was picked.
+        await provider.GenerateImageAsync(Image(model, options: new() { Background = "transparent", OutputFormat = "jpeg" }), null, default);
+        var text = JsonNode.Parse(handler.Calls[0].Body)!;
+        Assert.Equal((model, "transparent", "png"), ((string?)text["model"], (string?)text["background"], (string?)text["output_format"]));
+        Assert.Equal("standard", (string?)text["optimize_prompt_options"]!["mode"]);
+        Assert.Null(text["layer_decomposition"]);
+        Assert.Null(text["layer_decomposition_options"]);
+        // Three references that carry no alpha channel are fine.
+        await provider.GenerateImageAsync(Image(model, refs: [Reference, Reference, Reference], options: new() { Background = "transparent", OutputFormat = "jpeg" }), null, default);
+        var edit = JsonNode.Parse(handler.Calls[1].Body)!;
+        Assert.Equal(("transparent", "png", 3), ((string?)edit["background"], (string?)edit["output_format"], edit["image"]!.AsArray().Count));
+        // Opaque keeps the chosen format; auto sends no background; the default output is PNG.
+        await provider.GenerateImageAsync(Image(model, options: new() { Background = "opaque", OutputFormat = "jpeg" }), null, default);
+        var opaque = JsonNode.Parse(handler.Calls[2].Body)!;
+        Assert.Equal(("opaque", "jpeg"), ((string?)opaque["background"], (string?)opaque["output_format"]));
+        await provider.GenerateImageAsync(Image(model), null, default);
+        var auto = JsonNode.Parse(handler.Calls[3].Body)!;
+        Assert.Null(auto["background"]);
+        Assert.Equal("png", (string?)auto["output_format"]);
+        // 11 references are over the limit.
+        await Assert.ThrowsAsync<ApiException>(() => provider.GenerateImageAsync(Image(model, refs: Enumerable.Repeat(Reference, 11).ToList()), null, default));
+    }
+
+    [Fact]
+    public async Task Ark_5_pro_keeps_its_one_transparent_input_rule_and_ignores_the_5_5_settings()
+    {
+        var (provider, handler) = Create(Vendor.Ark, (_, _) => Json($$"""{"data":[{"b64_json":"{{Png}}"}]}"""));
+        const string pro = "doubao-seedream-5-0-pro-260628";
+        await Assert.ThrowsAsync<ApiException>(() => provider.GenerateImageAsync(Image(pro, options: new() { Transparent = true }), null, default));
+        await Assert.ThrowsAsync<ApiException>(() => provider.GenerateImageAsync(Image(pro, refs: [Reference, Reference], options: new() { Transparent = true }), null, default));
+        Assert.Empty(handler.Calls);
+        // The background setting of the panel means nothing to 5.0 pro; only its own switch sends transparency.
+        await provider.GenerateImageAsync(Image(pro, refs: [Reference], options: new() { Background = "opaque" }), null, default);
+        Assert.Null(JsonNode.Parse(handler.Calls.Single().Body)!["background"]);
+        await provider.GenerateImageAsync(Image(pro, refs: [Reference], options: new() { LayerDecomposition = true, LayerMax = 50, TextRecognition = true }), null, default);
+        Assert.Null(JsonNode.Parse(handler.Calls[1].Body)!["layer_decomposition_options"]);
+    }
+
+    [Fact]
+    public async Task Ark_55_layer_split_sends_its_options_only_when_set_and_never_a_background()
+    {
+        var (provider, handler) = Create(Vendor.Ark, (_, _) => Json($$"""{"data":[{"b64_json":"{{Png}}"}]}"""));
+        const string model = "doubao-seedream-5-5-261028";
+        await provider.GenerateImageAsync(Image(model, refs: [Reference], options: new() { LayerDecomposition = true, Background = "transparent", Tier = "2K", Ratio = "16:9" }), null, default);
+        var plain = JsonNode.Parse(handler.Calls[0].Body)!;
+        Assert.Equal((true, "2K"), ((bool?)plain["layer_decomposition"], (string?)plain["size"]));
+        Assert.Null(plain["background"]);
+        Assert.Null(plain["layer_decomposition_options"]);
+        await provider.GenerateImageAsync(Image(model, refs: [Reference], options: new() { LayerDecomposition = true, LayerMax = 60, TextRecognition = true }), null, default);
+        var both = JsonNode.Parse(handler.Calls[1].Body)!["layer_decomposition_options"]!;
+        Assert.Equal((60, true), ((int?)both["max_images"], (bool?)both["text_recognition"]));
+        await provider.GenerateImageAsync(Image(model, refs: [Reference], options: new() { LayerDecomposition = true, TextRecognition = true }), null, default);
+        var onlyText = JsonNode.Parse(handler.Calls[2].Body)!["layer_decomposition_options"]!.AsObject();
+        Assert.Equal(["text_recognition"], onlyText.Select(p => p.Key).ToArray());
+        // Without a split the options are not sent at all, even when the settings are on the node.
+        await provider.GenerateImageAsync(Image(model, refs: [Reference], options: new() { LayerMax = 60, TextRecognition = true }), null, default);
+        Assert.Null(JsonNode.Parse(handler.Calls[3].Body)!["layer_decomposition_options"]);
+        // The limit is 2 to 100, base included; 2 and 100 are fine.
+        foreach (var bad in new[] { 1, 101, 0, -5 })
+            await Assert.ThrowsAsync<ApiException>(() => provider.GenerateImageAsync(Image(model, refs: [Reference], options: new() { LayerDecomposition = true, LayerMax = bad }), null, default));
+        Assert.Equal(4, handler.Calls.Count);
+        foreach (var edge in new[] { 2, 100 })
+            await provider.GenerateImageAsync(Image(model, refs: [Reference], options: new() { LayerDecomposition = true, LayerMax = edge }), null, default);
+        Assert.Equal(100, (int?)JsonNode.Parse(handler.Calls[^1].Body)!["layer_decomposition_options"]!["max_images"]);
+    }
+
+    [Fact]
+    public async Task Ark_55_text_recognition_comes_back_on_the_text_layers_only()
+    {
+        var (provider, _) = Create(Vendor.Ark, (_, _) => Json($$$"""
+            {"data":[{"b64_json":"{{{Png}}}","z_index":0},
+                     {"b64_json":"{{{Png}}}","z_index":1,"name":"标题","description":"大标题","bounding_box":{"absolute":[1,2,3,4],"normalized":[100,100,900,300]},
+                      "text_recognition":{"text":"夏日特卖\n全场 5 折","lines":[{"bounding_box":{"absolute":[1,2,3,4],"normalized":[100,100,900,200]},"runs":[{"text":"夏日特卖","style":{"bold":true,"foreground_color":"#FF0000"}}]}]}},
+                     {"b64_json":"{{{Png}}}","z_index":2,"name":"人物","description":"模特","bounding_box":{"absolute":[1,2,3,4],"normalized":[0,300,500,1000]}}]}
+            """));
+        var result = await provider.GenerateImageAsync(Image("doubao-seedream-5-5-261028", refs: [Reference], options: new() { LayerDecomposition = true, TextRecognition = true }), null, default);
+        Assert.Null(result.Images[0].Layer);
+        Assert.Null(result.Images[2].Layer!.TextRecognition);
+        var raw = result.Images[1].Layer!.TextRecognition!;
+        var recognition = JsonNode.Parse(raw)!;
+        Assert.Equal("夏日特卖\n全场 5 折", (string?)recognition["text"]);
+        Assert.Equal((true, "#FF0000"), ((bool?)recognition["lines"]![0]!["runs"]![0]!["style"]!["bold"], (string?)recognition["lines"]![0]!["runs"]![0]!["style"]!["foreground_color"]));
+        Assert.Contains("夏日特卖", raw);
+
+        // The node keeps that JSON; the panel reads the plain text from it.
+        var layer = new Core.Canvas.CanvasNode();
+        layer.SetOption(Core.Canvas.NodeKeys.TextRecognition, raw);
+        Assert.Equal("夏日特卖\n全场 5 折", Core.Canvas.NodeKeys.RecognizedText(layer));
+        Assert.Equal("", Core.Canvas.NodeKeys.RecognizedText(new Core.Canvas.CanvasNode()));
+        layer.SetOption(Core.Canvas.NodeKeys.TextRecognition, "not json");
+        Assert.Equal("", Core.Canvas.NodeKeys.RecognizedText(layer));
+    }
+
+    [Fact]
     public async Task Google_continues_a_stored_interaction()
     {
         var (provider, handler) = Create(Vendor.Google, (_, _) => Json($$"""{"id":"int-2","status":"completed","steps":[{"type":"model_output","content":[{"type":"image","mime_type":"image/jpeg","data":"{{Png}}"}]}]}"""));

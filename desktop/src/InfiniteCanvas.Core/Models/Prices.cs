@@ -143,13 +143,17 @@ public static class Prices
     public static string Money(decimal amount, string currency) =>
         (currency switch { "CNY" => "¥", "USD" => "$", _ => currency + " " }) + amount.ToString(amount >= 1 ? "N2" : "0.00##", CultureInfo.InvariantCulture);
 
+    /// <summary>Seedream 5.5 layer split: the node's picture limit (base included), the API default 30 when unset or out of range.</summary>
+    public static int LayerMax(CanvasNode node) => int.TryParse(node.Option(NodeKeys.LayerMax), out var max) && max is >= NodeKeys.LayerMin and <= NodeKeys.LayerMaxLimit ? max : NodeKeys.LayerMaxDefault;
+
     /// <summary>Settings that decide an image's cost, so a run can be compared with the last one made the same way.</summary>
     public static string ImageKey(string model, CanvasNode node) => $"{ModelFamilies.Normalize(model)}|{node.Size}|{node.Ratio}|{node.Quality}";
 
     // Per-picture list prices for vendors billing by the picture: Ark (Volcengine official page), Qwen (Beijing region list price), xAI.
     private static decimal? PerImage(Vendor vendor, ImageFamily? family, string name, string? tier) => vendor switch
     {
-        Vendor.Ark => family?.Id switch { "seedream-5-pro" => tier == "2K" ? 0.60m : 0.30m, "seedream-5-flash" => 0.12m, "seedream-5-lite" => 0.22m, "seedream-4.5" => 0.25m, "seedream-4.0" => 0.20m, _ => null },
+        // Seedream 5.5 bills by output pixels: up to 2.61 MP ¥0.13, up to 4.63 MP ¥0.23. Every 1K / 1.5K size is under 2.61 MP and every 2K size over it.
+        Vendor.Ark => family?.Id switch { "seedream-5.5" => tier == "2K" ? 0.23m : 0.13m, "seedream-5-pro" => tier == "2K" ? 0.60m : 0.30m, "seedream-5-flash" => 0.12m, "seedream-5-lite" => 0.22m, "seedream-4.5" => 0.25m, "seedream-4.0" => 0.20m, _ => null },
         Vendor.Qwen => name.StartsWith("qwen-image-3.0-pro") ? tier == "2K" ? 0.50m : 0.25m : name.StartsWith("qwen-image-3.0") ? 0.18m : name.StartsWith("qwen-image-2.1-pro") ? 0.25m : null,
         Vendor.XAI => name.StartsWith("grok-imagine-image-quality") ? 0.05m : name.StartsWith("grok-imagine-image-2") ? 0.04m : name.StartsWith("grok-imagine-image") ? 0.02m : null,
         _ => null,
@@ -175,12 +179,17 @@ public static class Prices
 
         if (PerImage(vendor, family, name, tier) is { } each)
         {
-            // Ark Seedream 5.0 pro charges ¥0.02 per reference after the first; Qwen 3.0 ¥0.02 per reference.
-            var perReference = family?.Id == "seedream-5-pro" ? Math.Max(0, references - 1) * 0.02m : name.StartsWith("qwen-image-3.0") ? references * 0.02m : 0;
+            // Ark Seedream 5.0 pro charges ¥0.02 per reference after the first, Seedream 5.5 ¥0.05 for every input picture; Qwen 3.0 ¥0.02 per reference.
+            var perReference = family?.Id == "seedream-5-pro" ? Math.Max(0, references - 1) * 0.02m : family?.Id == "seedream-5.5" ? references * 0.05m : name.StartsWith("qwen-image-3.0") ? references * 0.02m : 0;
             var currency = vendor == Vendor.XAI ? "USD" : "CNY";
-            var basis = $"{count} 张 × {Money(each, currency)}" + (perReference > 0 ? $" + 参考图 {Money(perReference * requests, currency)}" : "")
+            // A 5.5 layer split is one request of at most max_images pictures (base included): the base is billed at the chosen size, each layer by its own size band,
+            // and the layers' sizes are unknown here, so they are counted at the lower band; the bill follows the pictures actually returned.
+            var split = family?.Id == "seedream-5.5" && node.Option("layers") == "true";
+            var layers = split ? LayerMax(node) - 1 : 0;
+            if (split) (count, requests) = (1, 1);
+            var basis = $"{count} 张 × {Money(each, currency)}" + (layers > 0 ? $" + 最多 {layers} 个图层 × {Money(0.13m, currency)}（实际按返回的张数，各图层按自己的像素档）" : "") + (perReference > 0 ? $" + 参考图 {Money(perReference * requests, currency)}" : "")
                 + (name.StartsWith("qwen-image-3.0-pro") && tier is "auto" ? "，自动尺寸按 1K 估" : "");
-            return new(count * each + perReference * requests, currency, basis);
+            return new(count * each + layers * 0.13m + perReference * requests, currency, basis);
         }
         if (vendor == Vendor.Google && family is not null && GeminiImageTokens.TryGetValue(family.Id, out var tiers) && tier is not null && tiers.TryGetValue(tier, out var media) && price is not null)
         {

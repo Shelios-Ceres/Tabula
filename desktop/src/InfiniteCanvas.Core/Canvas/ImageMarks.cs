@@ -36,10 +36,25 @@ public static class NodeKeys
     /// <summary>JSON <see cref="ComposeSpec"/> of the composition that made this image, kept for "re-compose with the last settings"; it describes this image only, so outputs never inherit it.</summary>
     public const string Compose = "compose";
 
-    public static readonly string[] PerImage = [Mask, Markup, Selections, ConversationId, ConversationModel, ModelText, InputNote, SourceId, Stack, StackOpen, Layout, Gap, Compose];
+    /// <summary>Seedream 5.5 layer split settings on the generating node: the picture limit (base included, 2–100, default 30) and the text recognition switch.</summary>
+    public const string LayerMax = "layerMax", LayerText = "layerText";
+    public const int LayerMin = 2, LayerMaxLimit = 100, LayerMaxDefault = 30;
+
+    /// <summary>JSON of the vendor's <c>text_recognition</c> for a text layer (full text, lines with boxes, runs with styles); describes this layer's pixels only.</summary>
+    public const string TextRecognition = "textRecognition";
+
+    public static readonly string[] PerImage = [Mask, Markup, Selections, ConversationId, ConversationModel, ModelText, InputNote, TextRecognition, SourceId, Stack, StackOpen, Layout, Gap, Compose];
 
     /// <summary>Keys that describe one picture's pixels or the server conversation that made it; dropped when the node gets another file.</summary>
-    public static readonly string[] OfPixels = [Mask, Markup, Selections, ConversationId, ConversationModel, ModelText, InputNote];
+    public static readonly string[] OfPixels = [Mask, Markup, Selections, ConversationId, ConversationModel, ModelText, InputNote, TextRecognition];
+
+    /// <summary>The plain text of a layer's text recognition result, empty when the layer has none.</summary>
+    public static string RecognizedText(CanvasNode node)
+    {
+        if (node.Option(TextRecognition) is not { Length: > 0 } json) return "";
+        try { return System.Text.Json.Nodes.JsonNode.Parse(json)?["text"]?.GetValue<string>() ?? ""; }
+        catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException) { return ""; }
+    }
 
     public static void ForgetPixels(CanvasNode node)
     {

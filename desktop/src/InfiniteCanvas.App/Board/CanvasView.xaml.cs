@@ -2036,7 +2036,7 @@ public sealed partial class CanvasView : UserControl
         {
             await Dialogs.MessageAsync(Media.IsSvg(node.Content) ? "SVG 不能局部编辑" : "当前模型不支持局部编辑", Media.IsSvg(node.Content)
                 ? "局部编辑需要位图，SVG 矢量图请直接用提示词修改。"
-                : "GPT Image 支持涂抹蒙版局部重绘，GPT Image 2.5 / 2.6 还支持画圈标注，Seedream 5.0 pro / flash 支持点选和框选。请先在下方面板把模型切换到这些型号。");
+                : "GPT Image 支持涂抹蒙版局部重绘，GPT Image 2.5 / 2.6 还支持画圈标注，Seedream 5.0 pro / flash / 5.5 支持点选和框选。请先在下方面板把模型切换到这些型号。");
             return;
         }
         try

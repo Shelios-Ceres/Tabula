@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json.Nodes;
 using InfiniteCanvas.Core.Models;
 using InfiniteCanvas.Core.Settings;
+using NodeKeys = InfiniteCanvas.Core.Canvas.NodeKeys;
 
 namespace InfiniteCanvas.Providers;
 
@@ -29,11 +30,15 @@ public sealed class ArkProvider(ModelChannel channel, HttpClient http) : AiProvi
         if (request.References.Count + request.Count > family.MaxImages && request.Count > 1) throw new ApiException($"参考图与输出数量之和不能超过 {family.MaxImages}");
         if (request.Mask is not null) throw new ApiException("方舟图片接口不支持蒙版编辑，请改用点选或框选");
         var layers = options.LayerDecomposition;
-        if (layers && (!family.Layers || request.References.Count != 1 || request.Count != 1)) throw new ApiException("图层拆分仅支持 Seedream 5.0 pro / flash，且只能输入 1 张图片、输出 1 组");
-        if (options.Transparent && (!family.Interactive || request.References.Count != 1)) throw new ApiException("透明背景仅支持 Seedream 5.0 pro / flash，且只能输入 1 张带透明通道的图片");
-        if (request.Selections is { Count: > 0 } && !family.Interactive) throw new ApiException($"{request.Model} 不支持点选 / 框选编辑，请使用 Seedream 5.0 pro / flash");
+        if (layers && (!family.Layers || request.References.Count != 1 || request.Count != 1)) throw new ApiException("图层拆分仅支持 Seedream 5.0 pro / flash / 5.5，且只能输入 1 张图片、输出 1 组");
+        if (layers && family.LayerOptions && options.LayerMax is { } max && max is < NodeKeys.LayerMin or > NodeKeys.LayerMaxLimit) throw new ApiException($"图层拆分的最多张数（含底图）应在 {NodeKeys.LayerMin} 到 {NodeKeys.LayerMaxLimit} 之间");
+        // 5.5 draws transparent output from text or from up to 10 references (no alpha channel needed); 5.0 pro / flash only keep the alpha of 1 transparent input.
+        // A layer split takes no background (the API rejects it), its layers are transparent PNGs anyway.
+        var alpha = family.Rgba ? options.Background == "transparent" && !layers : options.Transparent;
+        if (alpha && !family.Rgba && (!family.Interactive || request.References.Count != 1)) throw new ApiException("透明背景仅支持 Seedream 5.0 pro / flash / 5.5；5.0 只能输入 1 张带透明通道的图片");
+        if (request.Selections is { Count: > 0 } && !family.Interactive) throw new ApiException($"{request.Model} 不支持点选 / 框选编辑，请使用 Seedream 5.0 pro / flash / 5.5");
 
-        var format = options.Transparent ? "png" : family.OutputFormats.Contains(options.OutputFormat) ? options.OutputFormat : family.OutputFormats[0];
+        var format = alpha ? "png" : family.OutputFormats.Contains(options.OutputFormat) ? options.OutputFormat : family.OutputFormats[0];
         var stream = options.Stream && family.Stream;
         var body = new JsonObject
         {
@@ -48,7 +53,9 @@ public sealed class ArkProvider(ModelChannel channel, HttpClient http) : AiProvi
         // Seedream 4.x has no output_format and always returns JPEG.
         .Set("output_format", family.OutputFormats.Length > 1 ? format : null)
         .Set("layer_decomposition", layers ? true : null)
-        .Set("background", options.Transparent ? "transparent" : null)
+        .Set("layer_decomposition_options", layers && family.LayerOptions && (options.LayerMax is not null || options.TextRecognition)
+            ? new JsonObject().Set("max_images", options.LayerMax).Set("text_recognition", options.TextRecognition ? true : null) : null)
+        .Set("background", alpha ? "transparent" : family.Rgba && !layers && options.Background == "opaque" ? "opaque" : null)
         .Set("image", request.References.Count switch { 0 => null, 1 => request.References[0].DataUrl, _ => new JsonArray(request.References.Select(r => (JsonNode)r.DataUrl).ToArray()) })
         .Set("tools", options.WebSearch && family.WebSearch ? new JsonArray { new JsonObject { ["type"] = "web_search" } } : null)
         .Set("stream", stream ? true : null);
@@ -108,7 +115,8 @@ public sealed class ArkProvider(ModelChannel channel, HttpClient http) : AiProvi
     {
         var box = item["bounding_box"]?["normalized"] as JsonArray;
         return new(item["z_index"]?.GetValue<int>() ?? 0, Http.Str(item["name"]), Http.Str(item["description"]),
-            box is { Count: 4 } ? box.Select(v => v!.GetValue<double>()).ToArray() : null);
+            box is { Count: 4 } ? box.Select(v => v!.GetValue<double>()).ToArray() : null,
+            item["text_recognition"] is JsonObject { Count: > 0 } text ? text.ToJsonString(new() { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping }) : null);
     }
 
     /// <summary>Seedream interactive editing: coordinates are 0–999 tags after the prompt, prefixed with the image number when several references are sent.</summary>

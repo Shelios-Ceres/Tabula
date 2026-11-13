@@ -94,7 +94,7 @@ public sealed class CanvasOp
     public string? Quality { get; set; }
     [Description("一次生成的张数")]
     public int? Count { get; set; }
-    [Description("其他生成参数，键值与 canvas_get_state 节点的 options 相同，例如 background=transparent、outputFormat=webp、voice=Kore；watermark、layers、store 等开关取 \"true\"；值为 null 时清除")]
+    [Description("其他生成参数，键值与 canvas_get_state 节点的 options 相同，例如 background=transparent、outputFormat=webp、voice=Kore；watermark、layers、store 等开关取 \"true\"；Seedream 5.5 图层拆分用 layers=true，layerMax（2 到 100，含底图，默认 30）限制最多张数，layerText=true 识别文字图层；值为 null 时清除")]
     public Dictionary<string, string?>? Options { get; set; }
     [Description("connect / disconnect 的上游节点")]
     public string? From { get; set; }
@@ -167,7 +167,8 @@ public static class CanvasTools
             double? y = null,
             [Description("张数大于 1 时这一批结果的排布：stack（默认，叠成一摞）、row（横排）、grid（网格）")] string? layout = null,
             [Description("row / grid 排布时成员之间的间距（世界坐标），默认 24")] double? gap = null,
-            [Description("true 时只校验参数并估价，不建节点、不发请求")] bool? dryRun = null) => host.OnUiAsync(() => Generate(host, mode, prompt, referenceNodeIds, model, ratio, size, quality, count, x, y, layout, gap, dryRun ?? false)), new()
+            [Description("true 时只校验参数并估价，不建节点、不发请求")] bool? dryRun = null,
+            [Description("其他生成参数，同 canvas_apply_ops 的 options，例如 background=transparent；Seedream 5.5 图层拆分：layers=true、layerMax（2 到 100，含底图）、layerText=true（识别文字图层）；图层拆分只接受 1 个参考图")] Dictionary<string, string?>? options = null) => host.OnUiAsync(() => Generate(host, mode, prompt, referenceNodeIds, model, ratio, size, quality, count, x, y, layout, gap, dryRun ?? false, options)), new()
         {
             Name = "canvas_generate",
             Description = "新建一个生成节点（图片 / 文本 / 语音），连上参考节点并立刻开始生成，返回节点 ID；开始后用 generation_wait 等结果。多张图默认叠成一摞，用 layout=row 或 grid 可直接排成横排或网格。图片生成会返回 estimatedCost {amount, currency, basis}，没有官方单价时为 null 并附 estimatedCostNote；dryRun=true 只校验和估价、不花钱。估价是本机估算，不含思考 token，也不是账单。",
@@ -586,9 +587,17 @@ public static class CanvasTools
         if (gap is { } g) node.SetOption(NodeKeys.Gap, g.ToString("R", System.Globalization.CultureInfo.InvariantCulture));
     }
 
+    /// <summary>Seedream 5.5 layer split limit (<c>layerMax</c>, base included) must be a whole number from 2 to 100; a null value clears it.</summary>
+    private static void ValidateOptions(Dictionary<string, string?>? options)
+    {
+        if (options?.GetValueOrDefault(NodeKeys.LayerMax) is { } value && !(int.TryParse(value, out var max) && max is >= NodeKeys.LayerMin and <= NodeKeys.LayerMaxLimit))
+            throw new McpException($"{NodeKeys.LayerMax} 应是 {NodeKeys.LayerMin} 到 {NodeKeys.LayerMaxLimit} 的整数（含底图），收到「{value}」");
+    }
+
     private static void ValidateNodeOp(CanvasOp op, NodeKind kind)
     {
         ValidateGeometry(op.X, op.Y, op.Width, op.Height);
+        ValidateOptions(op.Options);
         ValidateModel(op.Model);
         if (op.Mode is not null) _ = ParseMode(op.Mode);
         if (op.Text is not null && kind != NodeKind.Text) throw new McpException("只有文本节点可以设置 text");
@@ -798,11 +807,12 @@ public static class CanvasTools
         return Json(new { Results = results });
     }
 
-    private static string Generate(ICanvasHost host, string mode, string prompt, List<string>? references, string? model, string? ratio, string? size, string? quality, int? count, double? x, double? y, string? layout, double? gap, bool dryRun)
+    private static string Generate(ICanvasHost host, string mode, string prompt, List<string>? references, string? model, string? ratio, string? size, string? quality, int? count, double? x, double? y, string? layout, double? gap, bool dryRun, Dictionary<string, string?>? options = null)
     {
         var capability = ParseMode(mode);
         ValidateGeometry(x, y);
         ValidateLayout(layout, gap);
+        ValidateOptions(options);
         ValidateModel(model);
         var inputs = (references ?? []).Select(id => Find(host, id)).ToList();
         if (dryRun)
@@ -810,6 +820,7 @@ public static class CanvasTools
             // The same checks and the same estimate on a node that never joins the canvas: no history, no node, no request.
             var probe = CanvasNode.Create(NodeSpec.KindOf(capability), 0, 0);
             SetParams(probe, prompt, model, ratio, size, quality, count);
+            foreach (var (key, value) in options ?? []) probe.SetOption(key, value);
             SetLayout(probe, layout, gap);
             var scratch = new CanvasDocument { Nodes = new(host.Document.Nodes.Append(probe)), Connections = new(host.Document.Connections) };
             foreach (var input in inputs) Connect(scratch, input, probe);
@@ -827,7 +838,12 @@ public static class CanvasTools
             node.Y = inputs.Min(i => i.Y);
             node.X = CanvasGraph.FreeX(node, host.Document.Nodes.Where(n => n != node));
         }
-        try { SetParams(node, prompt, model, ratio, size, quality, count); SetLayout(node, layout, gap); }
+        try
+        {
+            SetParams(node, prompt, model, ratio, size, quality, count);
+            foreach (var (key, value) in options ?? []) node.SetOption(key, value);
+            SetLayout(node, layout, gap);
+        }
         catch
         {
             host.Document.Nodes.Remove(node);

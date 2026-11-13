@@ -28,6 +28,10 @@ public sealed record ImageFamily(string Id, Vendor Vendor, string Pattern)
     public bool Layers { get; init; }
     /// <summary>Ark Seedream 5.0 pro / flash: points and boxes on the reference steer local edits; transparent output from an alpha input.</summary>
     public bool Interactive { get; init; }
+    /// <summary>Ark Seedream 5.5: native transparent output (<c>background</c>) for text-to-image and for up to <see cref="MaxReferences"/> references that need no alpha channel.</summary>
+    public bool Rgba { get; init; }
+    /// <summary>Ark Seedream 5.5 layer split: <c>layer_decomposition_options.max_images</c> (2–100, base included) and text recognition (OCR) on text layers.</summary>
+    public bool LayerOptions { get; init; }
     public bool FastPrompt { get; init; }
     public bool Mask { get; init; }
     /// <summary>GPT Image 2.5 / 2.6: a transparent annotation layer over the first image shows where to change it (<c>markup</c>, never with a mask).</summary>
@@ -63,6 +67,8 @@ public static class ModelFamilies
         new("gemini-3-pro-image", Vendor.Google, "^gemini-3-pro-image") { Tiers = ["1K", "2K", "4K"], Ratios = StandardRatios, MaxReferences = 14, ThinkingLevels = ["auto"], WebSearch = true, OutputFormats = ["jpeg"] },
         new("gemini-2.5-flash-image", Vendor.Google, "^gemini-2\\.5-flash-image") { Tiers = ["1K"], Ratios = StandardRatios, MaxReferences = 14, OutputFormats = ["jpeg"] },
         new("gemini-image", Vendor.Google, "^gemini-.*(image|banana)") { Tiers = ["1K", "2K", "4K"], Ratios = StandardRatios, MaxReferences = 14, OutputFormats = ["jpeg"] },
+        // 5.5 takes the same calls as 5.0 pro / flash (interactive edits, layer split) with PNG as the default output, standard prompt optimisation only, and the extras flagged above.
+        new("seedream-5.5", Vendor.Ark, "seedream-5-5$") { Tiers = ["1K", "1.5K", "2K"], MaxPixels = 4_624_220, Ratios = ArkRatios, MaxReferences = 10, OutputFormats = ["png", "jpeg"], Layers = true, Interactive = true, Rgba = true, LayerOptions = true, Background = true },
         new("seedream-5-pro", Vendor.Ark, "seedream-5-0-pro$") { Tiers = ["1K", "1.5K", "2K"], MaxPixels = 4_624_220, Ratios = ArkRatios, MaxReferences = 10, OutputFormats = ["jpeg", "png"], Layers = true, Interactive = true, FastPrompt = true },
         new("seedream-5-flash", Vendor.Ark, "seedream-5-0-flash$") { Tiers = ["1K", "1.5K", "2K"], MaxPixels = 4_624_220, Ratios = ArkRatios, MaxReferences = 10, OutputFormats = ["jpeg", "png"], Layers = true, Interactive = true },
         new("seedream-5-lite", Vendor.Ark, "seedream-5-0(-lite)?$") { Tiers = ["2K", "3K", "4K"], MaxPixels = 16_777_216, Ratios = ArkRatios, MaxReferences = 14, MaxImages = 15, OutputFormats = ["jpeg", "png"], Stream = true, WebSearch = true, Sequential = true },
@@ -141,7 +147,7 @@ public static class ModelFamilies
     {
         Vendor.OpenAI => ["gpt-image-2.6-flare", "gpt-image-2.6-sunburst", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2", "gpt-5.5", "gpt-4o-mini-tts"],
         Vendor.Google => ["gemini-nano-banana-2.1", "gemini-3-pro-image", "gemini-3.1-flash-image", "gemini-3.1-flash-lite-image", "gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts"],
-        Vendor.Ark => ["doubao-seedream-5-0-pro-260628", "doubao-seedream-5-0-flash-260915", "doubao-seedream-5-0-260128", "doubao-seedream-4-5-251128", "doubao-seedream-4-0-250828"],
+        Vendor.Ark => ["doubao-seedream-5-5-261028", "doubao-seedream-5-0-pro-260628", "doubao-seedream-5-0-flash-260915", "doubao-seedream-5-0-260128", "doubao-seedream-4-5-251128", "doubao-seedream-4-0-250828"],
         Vendor.XAI => ["grok-imagine-image-2.0"],
         Vendor.MiniMax => ["MiniMax-H3-Image", "MiniMax-H3-Image-Highspeed"],
         _ => ["qwen-image-3.0-pro", "qwen-image-3.0", "qwen-image-2.1-pro", "qwen3.8-max", "qwen-plus"],
@@ -216,7 +222,7 @@ public static class ModelFamilies
                 if (!hasRatio || tier is null) return tier;
                 // The top tier fills the documented pixel ceiling for the ratio; lower tiers follow the official mapping table.
                 if (family.MaxPixels > 0 && tier == family.Tiers[^1]) return MaxAreaSize(AspectOf(ratio), family.MaxPixels);
-                var key = tier == "1K" && family.Id == "seedream-4.0" ? "1K-4.0" : tier == "2K" && family.Id is "seedream-5-pro" or "seedream-5-flash" ? "2K-5" : tier;
+                var key = tier == "1K" && family.Id == "seedream-4.0" ? "1K-4.0" : tier == "2K" && family.Id is "seedream-5-pro" or "seedream-5-flash" or "seedream-5.5" ? "2K-5" : tier;
                 var index = Array.IndexOf(ArkTableRatios, ratio);
                 return ArkTable.TryGetValue(key, out var row) && index >= 0 ? row[index] : tier;
             default:

@@ -522,6 +522,9 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
         // Switches stay on the node after a model change; only the families that show them may send them.
         LayerDecomposition = node.Option("layers") == "true" && family?.Layers == true,
         Transparent = node.Option("transparent") == "true" && family?.Interactive == true,
+        // Seedream 5.5 layer split: the limit and the OCR switch (a limit outside 2–100 goes to the vendor adapter, which refuses it).
+        LayerMax = family?.LayerOptions == true && int.TryParse(node.Option(NodeKeys.LayerMax), out var layerMax) ? layerMax : null,
+        TextRecognition = family?.LayerOptions == true && node.Option(NodeKeys.LayerText) == "true",
         PromptExtendMode = node.Option("promptExtendMode", "direct"),
         EnableThinking = node.Option("qwenThinking") is { Length: > 0 } thinking ? thinking == "true" : null,
         Seed = long.TryParse(node.Option("seed"), out var seed) ? seed : null,
@@ -692,6 +695,7 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
                 Height = Math.Max(24, (box[3] - box[1]) / 1000 * target.Height),
             };
             layer.SetOption(NodeKeys.ModelText, image.Layer.Description);
+            layer.SetOption(NodeKeys.TextRecognition, image.Layer.TextRecognition);
             doc.Nodes.Add(layer);
             await FillAsync(layer, image.Bytes, image.MimeType);
             members.Add(layer);

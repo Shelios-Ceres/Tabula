@@ -898,6 +898,61 @@ public class CoreTests
     }
 
     [Fact]
+    public void Seedream_55_is_its_own_family_with_png_first_and_the_5_5_extras()
+    {
+        var family = ModelFamilies.FindImage(Vendor.Ark, "doubao-seedream-5-5-261028")!;
+        Assert.Equal("seedream-5.5", family.Id);
+        Assert.Equal(["1K", "1.5K", "2K"], family.Tiers);
+        Assert.Equal(["png", "jpeg"], family.OutputFormats);
+        Assert.Equal((10, 4_624_220L, 1), (family.MaxReferences, family.MaxPixels, family.MaxImages));
+        Assert.True(family.Layers && family.Interactive && family.Rgba && family.LayerOptions && family.Background);
+        Assert.False(family.FastPrompt || family.Sequential || family.Stream);
+        Assert.Equal("seedream-5.5", ModelFamilies.FindImage(Vendor.Ark, "seedream-5-5")!.Id);
+        // 5.0 pro / flash do not get the 5.5 extras.
+        foreach (var other in new[] { "doubao-seedream-5-0-pro-260628", "doubao-seedream-5-0-flash-260915" })
+            Assert.False(ModelFamilies.FindImage(Vendor.Ark, other)!.Rgba || ModelFamilies.FindImage(Vendor.Ark, other)!.LayerOptions);
+        Assert.Contains("doubao-seedream-5-5-261028", ModelFamilies.Recommended(Vendor.Ark));
+        Assert.Equal("Seedream 5.5", ModelFamilies.ShortName("doubao-seedream-5-5-261028"));
+        // Same size mapping as 5.0 pro: the top tier fills the documented pixel ceiling, the lower tiers follow the table.
+        Assert.Equal("2848x1600", ModelFamilies.ImageSize(family, "2K", "16:9"));
+        Assert.Equal("2144x2144", ModelFamilies.ImageSize(family, "2K", "1:1"));
+        Assert.Equal("1424x800", ModelFamilies.ImageSize(family, "1K", "16:9"));
+        Assert.Equal("1.5K", ModelFamilies.ImageSize(family, "1.5K", "auto"));
+        Assert.All(new[] { "1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3", "21:9" }, ratio =>
+        {
+            var parts = ModelFamilies.ImageSize(family, "2K", ratio)!.Split('x').Select(int.Parse).ToArray();
+            Assert.InRange((long)parts[0] * parts[1], 921_600L, 4_624_220L);
+        });
+    }
+
+    [Fact]
+    public void Seedream_55_estimates_follow_the_official_pixel_bands_and_input_prices()
+    {
+        static ImageEstimate? Estimate(string? size, int references = 0, int count = 1, Dictionary<string, string>? options = null)
+        {
+            var node = new CanvasNode { Kind = NodeKind.Config, Size = size, Count = count };
+            foreach (var (key, value) in options ?? []) node.SetOption(key, value);
+            return Prices.EstimateImage(new ModelChannel { Vendor = Vendor.Ark }, "doubao-seedream-5-5-261028", node, references);
+        }
+        // Up to 2.61 MP (every 1K and 1.5K size) ¥0.13 a picture, above it (every 2K size, up to 4.63 MP) ¥0.23; every input picture ¥0.05, once per request.
+        Assert.Equal(0.13m, Estimate("1K")!.Amount);
+        Assert.Equal(0.13m, Estimate("1.5K")!.Amount);
+        Assert.Equal(0.23m, Estimate("2K")!.Amount);
+        Assert.Equal(0.28m, Estimate("1K", references: 3)!.Amount);
+        Assert.Equal(2 * 0.23m + 2 * 0.05m, Estimate("2K", references: 1, count: 2)!.Amount);
+        Assert.Equal("CNY", Estimate("1K")!.Currency);
+        // A layer split is one request of up to max_images pictures (default 30, base included): the base at the chosen size, the layers at the lower band.
+        var split = Estimate("1K", references: 1, options: new() { ["layers"] = "true" })!;
+        Assert.Equal(0.13m + 29 * 0.13m + 0.05m, split.Amount);
+        Assert.Contains("最多", split.Basis);
+        Assert.Equal(0.23m + 9 * 0.13m + 0.05m, Estimate("2K", references: 1, count: 4, options: new() { ["layers"] = "true", ["layerMax"] = "10" })!.Amount);
+        // An out-of-range limit counts as the default.
+        Assert.Equal(split.Amount, Estimate("1K", references: 1, options: new() { ["layers"] = "true", ["layerMax"] = "500" })!.Amount);
+        // 5.0 pro keeps its own prices.
+        Assert.Equal(0.30m, Prices.EstimateImage(new ModelChannel { Vendor = Vendor.Ark }, "doubao-seedream-5-0-pro-260628", new CanvasNode { Size = "1K" }, 1)!.Amount);
+    }
+
+    [Fact]
     public void Image_sizes_follow_each_vendor_table()
     {
         Assert.Equal("2048x1152", ModelFamilies.ImageSize(ModelFamilies.FindImage(Vendor.OpenAI, "gpt-image-2")!, "2K", "16:9"));

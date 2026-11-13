@@ -45,6 +45,10 @@ public sealed class ImageOptions
     public bool LayerDecomposition { get; init; }
     /// <summary>Ark Seedream 5.0 pro / flash: keep the alpha channel of a single transparent input.</summary>
     public bool Transparent { get; init; }
+    /// <summary>Ark Seedream 5.5 layer split: <c>max_images</c> (2–100, base included); null leaves the API default (30).</summary>
+    public int? LayerMax { get; init; }
+    /// <summary>Ark Seedream 5.5 layer split: ask for text recognition on the text layers.</summary>
+    public bool TextRecognition { get; init; }
     /// <summary>DashScope: "direct" or "agent" prompt rewriting (agent is text-to-image only).</summary>
     public string? PromptExtendMode { get; init; }
     /// <summary>DashScope: thinking while rewriting the prompt; null keeps the vendor default.</summary>
@@ -58,8 +62,8 @@ public sealed class ImageOptions
 public sealed record ImageRequest(string Model, string Prompt, IReadOnlyList<MediaInput> References, MediaInput? Mask, int Count, ImageOptions Options, string? EndpointId = null,
     IReadOnlyList<Core.Canvas.ImageSelection>? Selections = null, string? PreviousId = null, MediaInput? Markup = null);
 
-/// <summary>Layer metadata from Ark layer decomposition; Box is [left, top, right, bottom] in 0–1000 of the base image.</summary>
-public sealed record ImageLayer(int ZIndex, string? Name, string? Description, double[]? Box);
+/// <summary>Layer metadata from Ark layer decomposition; Box is [left, top, right, bottom] in 0–1000 of the base image; TextRecognition is the raw <c>text_recognition</c> JSON of a text layer.</summary>
+public sealed record ImageLayer(int ZIndex, string? Name, string? Description, double[]? Box, string? TextRecognition = null);
 
 public sealed record GeneratedImage(byte[] Bytes, string MimeType, ImageLayer? Layer = null);
 
