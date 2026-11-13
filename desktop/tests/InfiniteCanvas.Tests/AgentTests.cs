@@ -857,6 +857,32 @@ public class AgentTests
     }
 
     [Fact]
+    public async Task Wait_stays_open_for_a_succeeded_node_whose_run_still_has_work_and_ends_when_the_run_is_gone()
+    {
+        var host = new FakeHost();
+        // A layer split: the base node succeeds first, the layers and the group come later, and the run leaves the running set only after that.
+        var target = Generating(host);
+        host.Generated.Add(target.Id);
+        await using var session = await Session.StartAsync(host);
+
+        target.Status = NodeStatus.Success;
+        var wait = session.CallAsync("generation_wait", new() { ["nodeIds"] = new[] { target.Id }, ["timeoutSeconds"] = 30 });
+        await Task.Delay(400);
+        Assert.False(wait.IsCompleted, "a succeeded node that is still running must keep the wait open");
+
+        host.StopRunning(target.Id);
+        var result = Parse((await wait.WaitAsync(TimeSpan.FromSeconds(10))).Text);
+        Assert.Equal("done", result.GetProperty("reason").GetString());
+        Assert.Equal("success", result.GetProperty("nodes")[0].GetProperty("node").GetProperty("status").GetString());
+
+        // Failures still end the wait at once, even while the run is registered.
+        var other = Generating(host);
+        host.Generated.Add(other.Id);
+        var (_, text) = await WaitDuring(session, new() { ["nodeIds"] = new[] { other.Id } }, () => Fail(other, "出错了"));
+        Assert.Equal("failed", Parse(text).GetProperty("reason").GetString());
+    }
+
+    [Fact]
     public async Task Wait_with_no_node_ids_watches_what_is_generating_when_it_is_called()
     {
         var host = new FakeHost();

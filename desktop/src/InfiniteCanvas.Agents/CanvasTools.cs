@@ -908,7 +908,9 @@ public static class CanvasTools
     /// <summary>
     /// Wait for node status changes instead of polling: the document is only read through OnUiAsync, and a PropertyChanged or RunningChanged handler
     /// merely wakes the loop, so the state is read after the UI-thread code that changed it (Status, then Error) has finished. A node counts as generating
-    /// while it is Loading (queued included), or Idle but already registered as running (which can end with no Status change, hence RunningChanged).
+    /// while it is Loading (queued included), or still registered as running with any status but Error: Idle before its first status change, or Success while the run still
+    /// has work left (a layer split fills its base node first and places the layers and the group afterwards). A run can end with no Status change, hence RunningChanged,
+    /// which the generator raises only after the run has finished everything. An Error node is reported as failed at once.
     /// </summary>
     private static async Task<string> WaitAsync(ICanvasHost host, List<string>? ids, int? timeoutSeconds, CancellationToken cancel)
     {
@@ -942,7 +944,7 @@ public static class CanvasTools
             var watched = live.SelectMany(n => Stacks.Of(n) is { } stack ? Stacks.Members(canvas, stack).Append(n) : [n]).Distinct().ToList();
             foreach (var node in watched.Where(subscribed.Add)) node.PropertyChanged += OnChanged;
             var failed = watched.Where(n => n.Status == NodeStatus.Error).Select(n => new { NodeId = n.Id, n.Error }).ToList();
-            var running = watched.Any(n => n.Status == NodeStatus.Loading || n.Status == NodeStatus.Idle && host.IsRunning(n.Id));
+            var running = watched.Any(n => n.Status == NodeStatus.Loading || n.Status != NodeStatus.Error && host.IsRunning(n.Id));
             var reason = failed.Count > 0 ? "failed" : !running ? "done" : final ? "timedOut" : null;
             return reason is null ? null : Json(new { Reason = reason, Failed = failed.Count > 0 ? failed : null, Nodes = Report(host, live) });
         }
