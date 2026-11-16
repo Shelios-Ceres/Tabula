@@ -191,7 +191,7 @@ public sealed class CompareSurface : Grid, IDisposable
         double Shown(double zoom) => cells[i].Fit * zoom;
         // The point of the picture (0-1) under the cursor, before and after.
         var (nx, ny) = (_center.X + (cursor.X - cx) / (size.Width * Shown(_zoom)), _center.Y + (cursor.Y - cy) / (size.Height * Shown(_zoom)));
-        var next = Math.Clamp(_zoom * factor, 1, Math.Max(2, 16 / cells.Max(c => c.Fit)));
+        var next = Math.Clamp(_zoom * factor, 1, Math.Max(2, 16 / cells.Min(c => c.Fit)));
         _zoom = next;
         _center = Vector2.Clamp(new((float)(nx - (cursor.X - cx) / (size.Width * Shown(next))), (float)(ny - (cursor.Y - cy) / (size.Height * Shown(next)))), Vector2.Zero, Vector2.One);
         _canvas.Invalidate();

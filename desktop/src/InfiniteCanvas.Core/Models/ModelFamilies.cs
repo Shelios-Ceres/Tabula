@@ -52,7 +52,8 @@ public static class ModelFamilies
     private static readonly string[] TableRatios = ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "16:9", "9:16", "21:9", "9:21"];
     private static readonly string[] ArkRatios = ["auto", "1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3", "21:9"];
     // 5.5 takes any WIDTHxHEIGHT with 921,600 to 4,624,220 pixels and a ratio from 1/16 to 16, so it also offers the ratios GPT Image 2.6 has.
-    private static readonly string[] Seedream55Ratios = [.. ArkRatios, "4:5", "5:4", "9:21", "1:3", "3:1"];
+    private static readonly string[] Seedream55AddedRatios = ["4:5", "5:4", "9:21", "1:3", "3:1"];
+    private static readonly string[] Seedream55Ratios = [.. ArkRatios, .. Seedream55AddedRatios];
     private static readonly string[] MiniMaxRatios = ["auto", .. TableRatios, "1:3", "3:1"];
     private static readonly string[] XaiRatios = ["auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "2:1", "1:2", "19.5:9", "9:19.5", "20:9", "9:20", "21:9", "5:2"];
     // Order matters: more specific patterns first.
@@ -223,7 +224,17 @@ public static class ModelFamilies
             case Vendor.Ark:
                 if (!hasRatio || tier is null) return tier;
                 // The top tier fills the documented pixel ceiling for the ratio; lower tiers follow the official mapping table.
-                if (family.MaxPixels > 0 && tier == family.Tiers[^1]) return MaxAreaSize(AspectOf(ratio), family.MaxPixels);
+                if (family.MaxPixels > 0 && tier == family.Tiers[^1])
+                {
+                    // MaxAreaSize fits the height first, so a tall ratio drifts a little; the ratios 5.5 added take the exact size of their landscape twin turned around.
+                    var aspect = AspectOf(ratio);
+                    if (family.Id == "seedream-5.5" && aspect < 1 && Seedream55AddedRatios.Contains(ratio!))
+                    {
+                        var wide = MaxAreaSize(1 / aspect, family.MaxPixels).Split('x');
+                        return $"{wide[1]}x{wide[0]}";
+                    }
+                    return MaxAreaSize(aspect, family.MaxPixels);
+                }
                 var key = tier == "1K" && family.Id == "seedream-4.0" ? "1K-4.0" : tier == "2K" && family.Id is "seedream-5-pro" or "seedream-5-flash" or "seedream-5.5" ? "2K-5" : tier;
                 var index = Array.IndexOf(ArkTableRatios, ratio);
                 // Ratios the mapping table has no row for (5.5 only) get the table's tier area, snapped to multiples of 16.

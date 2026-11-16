@@ -951,7 +951,7 @@ public class CoreTests
     {
         var family = ModelFamilies.FindImage(Vendor.Ark, "doubao-seedream-5-5-261028")!;
         var sizes = new[] { "4:5", "5:4", "9:21", "1:3", "3:1" }.ToDictionary(r => r, r => new[] { "1K", "1.5K", "2K" }.Select(t => ModelFamilies.ImageSize(family, t, r)!).ToArray());
-        Assert.Equal("4:5: 896x1120, 1344x1680, 1920x2400 | 5:4: 1120x896, 1680x1344, 2400x1920 | 9:21: 672x1568, 1008x2352, 1408x3280 | 1:3: 592x1776, 880x2640, 1232x3712 | 3:1: 1776x592, 2640x880, 3696x1232", string.Join(" | ", sizes.Select(p => $"{p.Key}: {string.Join(", ", p.Value)}")));
+        Assert.Equal("4:5: 896x1120, 1344x1680, 1920x2400 | 5:4: 1120x896, 1680x1344, 2400x1920 | 9:21: 672x1568, 1008x2352, 1392x3248 | 1:3: 592x1776, 880x2640, 1232x3696 | 3:1: 1776x592, 2640x880, 3696x1232", string.Join(" | ", sizes.Select(p => $"{p.Key}: {string.Join(", ", p.Value)}")));
         foreach (var (ratio, row) in sizes)
             for (var i = 0; i < 3; i++)
             {
@@ -962,6 +962,10 @@ public class CoreTests
                 // Within 1.5% of the requested ratio.
                 Assert.InRange(parts[0] / (double)parts[1] / ModelFamilies.AspectOf(ratio), 0.985, 1.015);
             }
+        // At 2K each tall ratio is the exact mirror of its landscape twin (21:9 is 3248x1392), the existing 9:16 is left as it was.
+        Assert.Equal("1392x3248", ModelFamilies.ImageSize(family, "2K", "9:21"));
+        Assert.Equal("3248x1392", ModelFamilies.ImageSize(family, "2K", "21:9"));
+        Assert.Equal("1600x2864", ModelFamilies.ImageSize(family, "2K", "9:16"));
         // The existing ratios and the auto tier are untouched; 5.0 pro / flash and the others never offer the new ratios.
         Assert.Equal("1424x800", ModelFamilies.ImageSize(family, "1K", "16:9"));
         Assert.Equal("1.5K", ModelFamilies.ImageSize(family, "1.5K", "auto"));
