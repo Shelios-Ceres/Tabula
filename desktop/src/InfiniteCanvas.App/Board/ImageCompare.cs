@@ -2,6 +2,7 @@ using System.Numerics;
 using InfiniteCanvas.Core.Canvas;
 using Microsoft.Graphics.Canvas;
 using Microsoft.Graphics.Canvas.Effects;
+using Microsoft.Graphics.Canvas.Text;
 using Microsoft.Graphics.Canvas.UI.Xaml;
 using Microsoft.UI;
 using Microsoft.UI.Xaml;
@@ -15,15 +16,19 @@ using Rect = Windows.Foundation.Rect;
 
 namespace InfiniteCanvas.App.Board;
 
-public enum CompareMode { Slider, Overlay, Difference, Flicker }
+public enum CompareMode { Slider, Overlay, Difference, Flicker, Side }
 
 /// <summary>
 /// The full-screen compare view: two pictures A and B drawn into one Win2D canvas as a slider, an overlay, a difference (with gain and an optional heat map)
 /// or a flicker. B is scaled to A's width and centred; the arrow keys or a drag move B by whole pixels so the two can be lined up (offset only).
+/// "并排" shows two to four pictures in a grid, each with its title and pixel size, and zooms and pans them together: the same zoom factor and the same
+/// point of each picture (as a fraction of its own size) in the middle of its cell.
 /// </summary>
 public sealed class CompareSurface : Grid, IDisposable
 {
     private readonly CanvasBitmap _a, _b;
+    private readonly IReadOnlyList<CanvasBitmap> _bitmaps;
+    private readonly IReadOnlyList<CanvasNode> _nodes;
     private readonly Action _close;
     private readonly CanvasControl _canvas = new() { ClearColor = Colors.Transparent };
     private CompareMode _mode;
@@ -31,15 +36,21 @@ public sealed class CompareSurface : Grid, IDisposable
     private bool _heat, _showB;
     private Vector2 _offset;
     private Point? _last;
+    private double _zoom = 1;
+    private Vector2 _center = new(0.5f, 0.5f);
+    private int _dragCell;
+    private const float CaptionHeight = 26, CellGap = 12, Pad = 16;
+    private readonly Button _reset;
     private readonly Microsoft.UI.Xaml.DispatcherTimer _flicker = new() { Interval = TimeSpan.FromMilliseconds(600) };
     private readonly Dictionary<CompareMode, Button> _modeButtons = [];
     private readonly Slider _amount = new() { Minimum = 0, Maximum = 100, Value = 50, Width = 160, VerticalAlignment = VerticalAlignment.Center };
     private readonly ToggleSwitch _heatSwitch = new() { OnContent = "热力", OffContent = "灰度", VerticalAlignment = VerticalAlignment.Center };
 
-    public CompareSurface(CanvasNode a, CanvasNode b, CanvasBitmap bitmapA, CanvasBitmap bitmapB, double width, double height, Action onClose)
+    /// <summary>The first <see cref="CompareLayout.MaxPictures"/> pictures, left to right; <paramref name="selected"/> is how many were selected, for the notice.</summary>
+    public CompareSurface(IReadOnlyList<CanvasNode> nodes, IReadOnlyList<CanvasBitmap> bitmaps, int selected, double width, double height, Action onClose)
     {
-        _a = bitmapA;
-        _b = bitmapB;
+        (_nodes, _bitmaps) = (nodes, bitmaps);
+        (_a, _b) = (bitmaps[0], bitmaps[1]);
         _close = onClose;
         (Width, Height) = (width, height);
         Background = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["GlassThickBrush"];
@@ -50,9 +61,14 @@ public sealed class CompareSurface : Grid, IDisposable
         AutomationProperties.SetName(this, "图片对比");
 
         string Caption(string name, CanvasNode node, CanvasBitmap bitmap) => $"{name}：{node.Title} · {bitmap.SizeInPixels.Width} × {bitmap.SizeInPixels.Height}";
-        var titles = new TextBlock { Text = $"{Caption("A", a, bitmapA)}    {Caption("B", b, bitmapB)}", VerticalAlignment = VerticalAlignment.Center, Style = (Style)Application.Current.Resources["BodyStrongTextBlockStyle"], TextTrimming = TextTrimming.CharacterEllipsis };
+        var count = nodes.Count;
+        var titleText = count == 2 ? $"{Caption("A", nodes[0], bitmaps[0])}    {Caption("B", nodes[1], bitmaps[1])}"
+            : $"并排 · {count} 张" + (selected > count ? $" · 已选 {selected} 张，只对比从左到右的前 {count} 张" : "");
+        var titles = new TextBlock { Text = titleText, VerticalAlignment = VerticalAlignment.Center, Style = (Style)Application.Current.Resources["BodyStrongTextBlockStyle"], TextTrimming = TextTrimming.CharacterEllipsis };
         var bar = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Padding = new Thickness(20, 12, 12, 0) };
-        foreach (var (mode, label) in new[] { (CompareMode.Slider, "滑块"), (CompareMode.Overlay, "叠加"), (CompareMode.Difference, "差异"), (CompareMode.Flicker, "闪烁") })
+        // Two pictures keep the four ways of comparing a pair; three or four only make sense side by side.
+        var modes = count == 2 ? new[] { (CompareMode.Slider, "滑块"), (CompareMode.Overlay, "叠加"), (CompareMode.Difference, "差异"), (CompareMode.Flicker, "闪烁"), (CompareMode.Side, "并排") } : new[] { (CompareMode.Side, "并排") };
+        foreach (var (mode, label) in modes)
         {
             var button = new Button { Content = label, Style = (Style)Application.Current.Resources["ToolbarButton"] };
             AutomationProperties.SetName(button, label);
@@ -66,11 +82,9 @@ public sealed class CompareSurface : Grid, IDisposable
         _heatSwitch.Toggled += (_, _) => { _heat = _heatSwitch.IsOn; _canvas.Invalidate(); };
         bar.Children.Add(_amount);
         bar.Children.Add(_heatSwitch);
-        var reset = new Button { Style = (Style)Application.Current.Resources["ToolbarButton"], Content = new FontIcon { Glyph = "", FontSize = 14 } };
-        AutomationProperties.SetName(reset, "重置偏移");
-        ToolTipService.SetToolTip(reset, "重置偏移（方向键移动 B，Shift 一次 10 像素）");
-        reset.Click += (_, _) => { _offset = Vector2.Zero; _canvas.Invalidate(); };
-        bar.Children.Add(reset);
+        _reset = new Button { Style = (Style)Application.Current.Resources["ToolbarButton"], Content = new FontIcon { Glyph = "", FontSize = 14 } };
+        _reset.Click += (_, _) => { _offset = Vector2.Zero; (_zoom, _center) = (1, new(0.5f, 0.5f)); _canvas.Invalidate(); };
+        bar.Children.Add(_reset);
         var close = new Button { Style = (Style)Application.Current.Resources["ToolbarButton"], Content = new FontIcon { Glyph = "", FontSize = 14 }, HorizontalAlignment = HorizontalAlignment.Right, AllowFocusOnInteraction = true };
         ToolTipService.SetToolTip(close, "关闭 (Esc)");
         AutomationProperties.SetName(close, "关闭对比");
@@ -91,6 +105,13 @@ public sealed class CompareSurface : Grid, IDisposable
         _canvas.PointerPressed += (_, e) => { _last = e.GetCurrentPoint(_canvas).Position; _canvas.CapturePointer(e.Pointer); MoveBy(e, 0); };
         _canvas.PointerMoved += (_, e) => MoveBy(e, 1);
         _canvas.PointerReleased += (_, e) => { _last = null; _canvas.ReleasePointerCapture(e.Pointer); };
+        _canvas.PointerWheelChanged += (_, e) =>
+        {
+            if (_mode != CompareMode.Side || !e.KeyModifiers.HasFlag(Windows.System.VirtualKeyModifiers.Control)) return;
+            e.Handled = true;
+            ZoomAt(e.GetCurrentPoint(_canvas).Position, Math.Pow(1.1, e.GetCurrentPoint(_canvas).Properties.MouseWheelDelta / 120d));
+        };
+        ActualThemeChanged += (_, _) => _canvas.Invalidate();
         SetRow(_canvas, 1);
         Children.Add(_canvas);
         _flicker.Tick += (_, _) => { _showB = !_showB; _canvas.Invalidate(); };
@@ -103,7 +124,7 @@ public sealed class CompareSurface : Grid, IDisposable
             else if (move is { } by) { _offset += by; e.Handled = true; _canvas.Invalidate(); }
         };
         Loaded += (_, _) => close.Focus(FocusState.Programmatic);
-        SetMode(CompareMode.Slider);
+        SetMode(count == 2 ? CompareMode.Slider : CompareMode.Side);
     }
 
     private void SetMode(CompareMode mode)
@@ -114,6 +135,10 @@ public sealed class CompareSurface : Grid, IDisposable
         foreach (var (key, button) in _modeButtons) button.Style = (Style)Application.Current.Resources[key == mode ? "AccentActionButton" : "ToolbarButton"];
         _amount.Visibility = mode is CompareMode.Overlay or CompareMode.Difference ? Visibility.Visible : Visibility.Collapsed;
         _heatSwitch.Visibility = mode == CompareMode.Difference ? Visibility.Visible : Visibility.Collapsed;
+        var side = mode == CompareMode.Side;
+        AutomationProperties.SetName(_reset, side ? "重置缩放和位置" : "重置偏移");
+        ToolTipService.SetToolTip(_reset, side ? "重置缩放和位置（Ctrl + 滚轮缩放，拖动平移，几张一起动）" : "重置偏移（方向键移动 B，Shift 一次 10 像素）");
+        AutomationProperties.SetName(_canvas, side ? "并排对比：" + string.Join("；", _nodes.Select((n, i) => $"{n.Title} {_bitmaps[i].SizeInPixels.Width} × {_bitmaps[i].SizeInPixels.Height}")) : "对比画面");
         _amount.Value = mode == CompareMode.Overlay ? _opacity * 100 : (_gain - 1) / 7 * 100;
         _canvas.Invalidate();
     }
@@ -134,9 +159,61 @@ public sealed class CompareSurface : Grid, IDisposable
         return (scale, new Rect(_offset.X, (_a.SizeInPixels.Height - height) / 2 + _offset.Y, _a.SizeInPixels.Width, height));
     }
 
+    /// <summary>Where each picture sits in the side-by-side grid: the area its picture is fitted into, and that fit's scale.</summary>
+    private List<(Rect Area, float Fit)> SideCells()
+    {
+        var sizes = _bitmaps.Select(b => ((double)b.SizeInPixels.Width, (double)b.SizeInPixels.Height)).ToList();
+        var (w, h) = (_canvas.ActualWidth - 2 * Pad, _canvas.ActualHeight - 2 * Pad);
+        var (columns, rows) = CompareLayout.Choose(w, h, sizes, CaptionHeight);
+        var (cellW, cellH) = ((w - (columns - 1) * CellGap) / columns, (h - (rows - 1) * CellGap) / rows - CaptionHeight);
+        var cells = new List<(Rect, float)>();
+        for (var i = 0; i < sizes.Count; i++)
+        {
+            int row = i / columns, inRow = Math.Min(columns, sizes.Count - row * columns);
+            var x = Pad + (columns - inRow) * (cellW + CellGap) / 2 + i % columns * (cellW + CellGap);
+            var y = Pad + row * (cellH + CaptionHeight + CellGap);
+            cells.Add((new Rect(x, y, Math.Max(1, cellW), Math.Max(1, cellH)), (float)Math.Max(0.001, Math.Min(cellW / sizes[i].Item1, cellH / sizes[i].Item2))));
+        }
+        return cells;
+    }
+
+    /// <summary>The cell a point is over (picture or caption); the nearest one when it is in a gap.</summary>
+    private static int CellAt(List<(Rect Area, float Fit)> cells, Point point) =>
+        Enumerable.Range(0, cells.Count).MinBy(i => Math.Max(Math.Max(cells[i].Area.Left - point.X, point.X - cells[i].Area.Right), Math.Max(cells[i].Area.Top - point.Y, point.Y - cells[i].Area.Bottom - CaptionHeight)));
+
+    /// <summary>Zoom every picture by <paramref name="factor"/>, keeping the point under the cursor where it is in the cell it is over.</summary>
+    private void ZoomAt(Point cursor, double factor)
+    {
+        var cells = SideCells();
+        var i = CellAt(cells, cursor);
+        var (size, area) = (_bitmaps[i].SizeInPixels, cells[i].Area);
+        var (cx, cy) = (area.X + area.Width / 2, area.Y + area.Height / 2);
+        double Shown(double zoom) => cells[i].Fit * zoom;
+        // The point of the picture (0-1) under the cursor, before and after.
+        var (nx, ny) = (_center.X + (cursor.X - cx) / (size.Width * Shown(_zoom)), _center.Y + (cursor.Y - cy) / (size.Height * Shown(_zoom)));
+        var next = Math.Clamp(_zoom * factor, 1, Math.Max(2, 16 / cells.Max(c => c.Fit)));
+        _zoom = next;
+        _center = Vector2.Clamp(new((float)(nx - (cursor.X - cx) / (size.Width * Shown(next))), (float)(ny - (cursor.Y - cy) / (size.Height * Shown(next)))), Vector2.Zero, Vector2.One);
+        _canvas.Invalidate();
+    }
+
     private void MoveBy(PointerRoutedEventArgs e, int phase)
     {
         var point = e.GetCurrentPoint(_canvas).Position;
+        if (_mode == CompareMode.Side)
+        {
+            if (_last is not { } from || phase == 1 && !e.GetCurrentPoint(_canvas).Properties.IsLeftButtonPressed) return;
+            var cells = SideCells();
+            if (phase == 0) _dragCell = CellAt(cells, point);
+            else
+            {
+                var (size, shown) = (_bitmaps[_dragCell].SizeInPixels, cells[_dragCell].Fit * _zoom);
+                _center = Vector2.Clamp(_center - new Vector2((float)((point.X - from.X) / (size.Width * shown)), (float)((point.Y - from.Y) / (size.Height * shown))), Vector2.Zero, Vector2.One);
+            }
+            _last = point;
+            _canvas.Invalidate();
+            return;
+        }
         var (scale, origin) = View();
         if (_last is not { } last || phase == 1 && !e.GetCurrentPoint(_canvas).Properties.IsLeftButtonPressed) return;
         if (_mode == CompareMode.Slider) _split = Math.Clamp((point.X - origin.X) / (_a.SizeInPixels.Width * scale), 0, 1);
@@ -150,6 +227,7 @@ public sealed class CompareSurface : Grid, IDisposable
     private void Draw(CanvasControl sender, CanvasDrawEventArgs args)
     {
         var ds = args.DrawingSession;
+        if (_mode == CompareMode.Side) { DrawSide(ds); return; }
         var (scale, origin) = View();
         var (aw, ah) = ((float)_a.SizeInPixels.Width, (float)_a.SizeInPixels.Height);
         var (bScale, b) = BPlacement();
@@ -201,12 +279,29 @@ public sealed class CompareSurface : Grid, IDisposable
         }
     }
 
+    private void DrawSide(CanvasDrawingSession ds)
+    {
+        var ink = ActualTheme == ElementTheme.Dark ? Colors.White : Colors.Black;
+        using var format = new CanvasTextFormat { FontSize = 13, WordWrapping = CanvasWordWrapping.NoWrap, TrimmingGranularity = CanvasTextTrimmingGranularity.Character, TrimmingSign = CanvasTrimmingSign.Ellipsis, HorizontalAlignment = CanvasHorizontalAlignment.Center };
+        var cells = SideCells();
+        for (var i = 0; i < cells.Count; i++)
+        {
+            var (area, fit) = cells[i];
+            var bitmap = _bitmaps[i];
+            var (pw, ph, shown) = ((float)bitmap.SizeInPixels.Width, (float)bitmap.SizeInPixels.Height, fit * (float)_zoom);
+            var dest = new Rect(area.X + area.Width / 2 - _center.X * pw * shown, area.Y + area.Height / 2 - _center.Y * ph * shown, pw * shown, ph * shown);
+            using (ds.CreateLayer(1f, area)) ds.DrawImage(bitmap, dest, new Rect(0, 0, pw, ph), 1f, shown >= 3 ? CanvasImageInterpolation.NearestNeighbor : CanvasImageInterpolation.HighQualityCubic);
+            ds.DrawRectangle(area, Color.FromArgb(60, ink.R, ink.G, ink.B), 1);
+            ds.DrawText($"{_nodes[i].Title} · {bitmap.SizeInPixels.Width} × {bitmap.SizeInPixels.Height}", new Rect(area.X, area.Bottom + 4, area.Width, CaptionHeight - 4), ink, format);
+        }
+        if (_zoom > 1) ds.DrawText($"缩放 ×{_zoom:0.0}", 20, 0, Color.FromArgb(220, ink.R, ink.G, ink.B));
+    }
+
     public void Dispose()
     {
         _flicker.Stop();
         _canvas.RemoveFromVisualTree();
-        _a.Dispose();
-        _b.Dispose();
+        foreach (var bitmap in _bitmaps) bitmap.Dispose();
     }
 }
 

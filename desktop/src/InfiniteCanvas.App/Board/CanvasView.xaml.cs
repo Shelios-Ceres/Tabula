@@ -535,7 +535,7 @@ public sealed partial class CanvasView : UserControl
         Add("同宽高", "宽和高都统一为基准节点", () => MatchSize(true, true));
         _compareGroup.Children.Add(new Microsoft.UI.Xaml.Shapes.Rectangle { Style = (Style)Application.Current.Resources["ToolbarDivider"] });
         var compare = new Button { Content = "对比", Style = (Style)Application.Current.Resources["ToolbarButton"] };
-        ToolTipService.SetToolTip(compare, "并排对比选中的两张图片 (C)");
+        ToolTipService.SetToolTip(compare, "对比选中的 2 到 4 张图片 (C)");
         AutomationProperties.SetName(compare, "对比");
         compare.Click += async (_, _) => await TrackLocalAsync(ShowCompareAsync);
         _compareGroup.Children.Add(compare);
@@ -643,7 +643,7 @@ public sealed partial class CanvasView : UserControl
         var nodes = Doc.Nodes.Where(n => _selected.Contains(n.Id)).ToList();
         _selectionCount.Text = $"已选 {nodes.Count} 个";
         var pictures = ComposeInputs().Count;
-        _compareGroup.Visibility = pictures == 2 ? Visibility.Visible : Visibility.Collapsed;
+        _compareGroup.Visibility = pictures >= 2 ? Visibility.Visible : Visibility.Collapsed;
         _composeButton.Visibility = pictures >= 2 ? Visibility.Visible : Visibility.Collapsed;
         var bounds = CanvasGraph.Bounds(nodes);
         var topLeft = ToScreen(bounds.Left, bounds.Top);
@@ -1598,7 +1598,7 @@ public sealed partial class CanvasView : UserControl
             case VirtualKey.Enter when _selected.Count == 1: DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, FocusSelected); break;
             case VirtualKey.F2 when _selected.Count == 1 && Doc.Find(_selected.First()) is { } renamed: _ = RenameAsync(renamed); break;
             case VirtualKey.V when ctrl: e.Handled = true; await PasteAsync(ViewCenterWorld); return;
-            case VirtualKey.C when !ctrl && !shift && ComposeInputs().Count == 2: _ = TrackLocalAsync(ShowCompareAsync); break;
+            case VirtualKey.C when !ctrl && !shift && ComposeInputs().Count >= 2: _ = TrackLocalAsync(ShowCompareAsync); break;
             default: return;
         }
         e.Handled = true;
@@ -1731,12 +1731,14 @@ public sealed partial class CanvasView : UserControl
     }
 
     /// <summary>
-    /// Compare the two selected bitmap pictures (left one is A) in the same full-screen layer as the preview: slider, overlay, difference or flicker, with an
-    /// offset to line them up. Esc or the close button leaves it.
+    /// Compare the selected bitmap pictures in the same full-screen layer as the preview. Two pictures (the left one is A) open as a slider, overlay, difference,
+    /// flicker or side by side; with more selected, the first <see cref="CompareLayout.MaxPictures"/> from left to right open side by side. Esc or the close button leaves it.
     /// </summary>
     private async Task ShowCompareAsync()
     {
-        if (ComposeInputs() is not { Count: 2 } pair) return;
+        var inputs = ComposeInputs();
+        if (inputs.Count < 2) return;
+        var pair = inputs.Take(CompareLayout.MaxPictures).ToList();
         List<CanvasBitmap> bitmaps;
         try { bitmaps = await ImageTools.LoadInputsAsync(this, pair); }
         catch (InvalidOperationException ex)
@@ -1745,7 +1747,7 @@ public sealed partial class CanvasView : UserControl
             return;
         }
         ClosePreview();
-        var surface = new CompareSurface(pair[0], pair[1], bitmaps[0], bitmaps[1], Root.ActualWidth, Root.ActualHeight, ClosePreview);
+        var surface = new CompareSurface(pair, bitmaps, inputs.Count, Root.ActualWidth, Root.ActualHeight, ClosePreview);
         var origin = Root.TransformToVisual(null).TransformPoint(new Point(0, 0));
         _preview = new Popup { XamlRoot = XamlRoot, Child = surface, HorizontalOffset = origin.X, VerticalOffset = origin.Y, IsOpen = true };
         _preview.Closed += (_, _) => surface.Dispose();

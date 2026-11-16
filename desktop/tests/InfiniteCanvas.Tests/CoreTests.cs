@@ -926,6 +926,50 @@ public class CoreTests
     }
 
     [Fact]
+    public void Compare_layout_picks_the_grid_that_shows_the_pictures_largest()
+    {
+        (double, double) Sq = (1000, 1000), Wide = (1600, 900), Tall = (900, 1600);
+        // One picture has no choice to make.
+        Assert.Equal((1, 1), CompareLayout.Choose(1600, 900, [Sq]));
+        // Two squares in a wide window sit side by side, in a tall one they stack.
+        Assert.Equal((2, 1), CompareLayout.Choose(1600, 900, [Sq, Sq]));
+        Assert.Equal((1, 2), CompareLayout.Choose(700, 1400, [Sq, Sq]));
+        // Three landscape pictures stack in a window of their own shape, three tall ones go in a row.
+        Assert.Equal((1, 3), CompareLayout.Choose(1600, 2700, [Wide, Wide, Wide]));
+        Assert.Equal((3, 1), CompareLayout.Choose(2700, 1600, [Tall, Tall, Tall]));
+        // Four squares in a roomy window make 2 x 2, never 3 + 1; four very wide strips in a wide window make a row only when that is largest.
+        Assert.Equal((2, 2), CompareLayout.Choose(1600, 900, [Sq, Sq, Sq, Sq]));
+        Assert.Equal((4, 1), CompareLayout.Choose(3200, 800, [Tall, Tall, Tall, Tall]));
+        Assert.Equal((1, 4), CompareLayout.Choose(600, 3200, [Wide, Wide, Wide, Wide]));
+        // The caption strip is taken off each cell's height before fitting.
+        Assert.Equal((2, 2), CompareLayout.Choose(1600, 900, [Sq, Sq, Sq, Sq], 26));
+        Assert.Equal(4, CompareLayout.MaxPictures);
+    }
+
+    [Fact]
+    public void Seedream_55_also_offers_the_gpt_ratios_it_lacked_sized_inside_the_documented_range()
+    {
+        var family = ModelFamilies.FindImage(Vendor.Ark, "doubao-seedream-5-5-261028")!;
+        var sizes = new[] { "4:5", "5:4", "9:21", "1:3", "3:1" }.ToDictionary(r => r, r => new[] { "1K", "1.5K", "2K" }.Select(t => ModelFamilies.ImageSize(family, t, r)!).ToArray());
+        Assert.Equal("4:5: 896x1120, 1344x1680, 1920x2400 | 5:4: 1120x896, 1680x1344, 2400x1920 | 9:21: 672x1568, 1008x2352, 1408x3280 | 1:3: 592x1776, 880x2640, 1232x3712 | 3:1: 1776x592, 2640x880, 3696x1232", string.Join(" | ", sizes.Select(p => $"{p.Key}: {string.Join(", ", p.Value)}")));
+        foreach (var (ratio, row) in sizes)
+            for (var i = 0; i < 3; i++)
+            {
+                var parts = row[i].Split('x').Select(int.Parse).ToArray();
+                Assert.InRange((long)parts[0] * parts[1], 921_600L, 4_624_220L);
+                Assert.InRange(parts[0] / (double)parts[1], 1 / 16.0, 16);
+                Assert.Equal((0, 0), (parts[0] % 16, parts[1] % 16));
+                // Within 1.5% of the requested ratio.
+                Assert.InRange(parts[0] / (double)parts[1] / ModelFamilies.AspectOf(ratio), 0.985, 1.015);
+            }
+        // The existing ratios and the auto tier are untouched; 5.0 pro / flash and the others never offer the new ratios.
+        Assert.Equal("1424x800", ModelFamilies.ImageSize(family, "1K", "16:9"));
+        Assert.Equal("1.5K", ModelFamilies.ImageSize(family, "1.5K", "auto"));
+        foreach (var other in new[] { "doubao-seedream-5-0-pro-260628", "doubao-seedream-5-0-flash-260915", "doubao-seedream-5-0-260128", "doubao-seedream-4-5-251128", "doubao-seedream-4-0-250828" })
+            Assert.DoesNotContain(ModelFamilies.FindImage(Vendor.Ark, other)!.Ratios, r => r is "4:5" or "5:4" or "9:21" or "1:3" or "3:1");
+    }
+
+    [Fact]
     public void Seedream_55_estimates_follow_the_official_pixel_bands_and_input_prices()
     {
         static ImageEstimate? Estimate(string? size, int references = 0, int count = 1, Dictionary<string, string>? options = null)

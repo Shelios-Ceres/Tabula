@@ -51,6 +51,8 @@ public static class ModelFamilies
     private static readonly string[] StandardRatios = ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"];
     private static readonly string[] TableRatios = ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "16:9", "9:16", "21:9", "9:21"];
     private static readonly string[] ArkRatios = ["auto", "1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3", "21:9"];
+    // 5.5 takes any WIDTHxHEIGHT with 921,600 to 4,624,220 pixels and a ratio from 1/16 to 16, so it also offers the ratios GPT Image 2.6 has.
+    private static readonly string[] Seedream55Ratios = [.. ArkRatios, "4:5", "5:4", "9:21", "1:3", "3:1"];
     private static readonly string[] MiniMaxRatios = ["auto", .. TableRatios, "1:3", "3:1"];
     private static readonly string[] XaiRatios = ["auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "2:1", "1:2", "19.5:9", "9:19.5", "20:9", "9:20", "21:9", "5:2"];
     // Order matters: more specific patterns first.
@@ -68,7 +70,7 @@ public static class ModelFamilies
         new("gemini-2.5-flash-image", Vendor.Google, "^gemini-2\\.5-flash-image") { Tiers = ["1K"], Ratios = StandardRatios, MaxReferences = 14, OutputFormats = ["jpeg"] },
         new("gemini-image", Vendor.Google, "^gemini-.*(image|banana)") { Tiers = ["1K", "2K", "4K"], Ratios = StandardRatios, MaxReferences = 14, OutputFormats = ["jpeg"] },
         // 5.5 takes the same calls as 5.0 pro / flash (interactive edits, layer split) with PNG as the default output, standard prompt optimisation only, and the extras flagged above.
-        new("seedream-5.5", Vendor.Ark, "seedream-5-5$") { Tiers = ["1K", "1.5K", "2K"], MaxPixels = 4_624_220, Ratios = ArkRatios, MaxReferences = 10, OutputFormats = ["png", "jpeg"], Layers = true, Interactive = true, Rgba = true, LayerOptions = true, Background = true },
+        new("seedream-5.5", Vendor.Ark, "seedream-5-5$") { Tiers = ["1K", "1.5K", "2K"], MaxPixels = 4_624_220, Ratios = Seedream55Ratios, MaxReferences = 10, OutputFormats = ["png", "jpeg"], Layers = true, Interactive = true, Rgba = true, LayerOptions = true, Background = true },
         new("seedream-5-pro", Vendor.Ark, "seedream-5-0-pro$") { Tiers = ["1K", "1.5K", "2K"], MaxPixels = 4_624_220, Ratios = ArkRatios, MaxReferences = 10, OutputFormats = ["jpeg", "png"], Layers = true, Interactive = true, FastPrompt = true },
         new("seedream-5-flash", Vendor.Ark, "seedream-5-0-flash$") { Tiers = ["1K", "1.5K", "2K"], MaxPixels = 4_624_220, Ratios = ArkRatios, MaxReferences = 10, OutputFormats = ["jpeg", "png"], Layers = true, Interactive = true },
         new("seedream-5-lite", Vendor.Ark, "seedream-5-0(-lite)?$") { Tiers = ["2K", "3K", "4K"], MaxPixels = 16_777_216, Ratios = ArkRatios, MaxReferences = 14, MaxImages = 15, OutputFormats = ["jpeg", "png"], Stream = true, WebSearch = true, Sequential = true },
@@ -224,10 +226,25 @@ public static class ModelFamilies
                 if (family.MaxPixels > 0 && tier == family.Tiers[^1]) return MaxAreaSize(AspectOf(ratio), family.MaxPixels);
                 var key = tier == "1K" && family.Id == "seedream-4.0" ? "1K-4.0" : tier == "2K" && family.Id is "seedream-5-pro" or "seedream-5-flash" or "seedream-5.5" ? "2K-5" : tier;
                 var index = Array.IndexOf(ArkTableRatios, ratio);
+                // Ratios the mapping table has no row for (5.5 only) get the table's tier area, snapped to multiples of 16.
+                if (index < 0 && family.Ratios.Contains(ratio!) && ArkTierAreas.TryGetValue(tier, out var tierArea)) return NearAreaSize(AspectOf(ratio), tierArea);
                 return ArkTable.TryGetValue(key, out var row) && index >= 0 ? row[index] : tier;
             default:
                 return tier;
         }
+    }
+
+    // Areas the official table's 1K and 1.5K columns are built around (1024 x 1024 and 1536 x 1536).
+    private static readonly Dictionary<string, long> ArkTierAreas = new() { ["1K"] = 1024L * 1024, ["1.5K"] = 1536L * 1536 };
+
+    /// <summary>WIDTHxHEIGHT with both edges multiples of 16 and an area within 10% of the target, taking the one whose aspect is closest to the requested one.</summary>
+    public static string NearAreaSize(double aspect, long area)
+    {
+        var best = Enumerable.Range(1, 800).Select(i => i * 16)
+            .Select(h => (w: (int)Math.Round(h * aspect / 16) * 16, h))
+            .Where(s => s.w > 0 && (long)s.w * s.h is var a && a >= area * 0.9 && a <= area * 1.1)
+            .OrderBy(s => Math.Abs(s.w / (double)s.h / aspect - 1)).ThenBy(s => Math.Abs((long)s.w * s.h - area)).First();
+        return $"{best.w}x{best.h}";
     }
 
     /// <summary>Largest WIDTHxHEIGHT (multiples of 16) with the given aspect whose area stays within the cap.</summary>
