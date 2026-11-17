@@ -65,6 +65,10 @@
                 </ResourceDictionary>
             </ResourceDictionary.ThemeDictionaries>
 
+            <!-- Liquid glass experiment: rounder controls (8) and overlays (16) everywhere, so menus, dialogs and settings match the glass. -->
+            <CornerRadius x:Key="ControlCornerRadius">8</CornerRadius>
+            <CornerRadius x:Key="OverlayCornerRadius">16</CornerRadius>
+
             <!-- Floating toolbars on the canvas: clear acrylic, 8 px corners like Windows 11 command bars. -->
             <Style x:Key="GlassCapsule" TargetType="Border">
                 <!-- Liquid glass experiment: a shader surface replaces the acrylic while GlassSettings.Enabled is on (Board/Glass). -->
@@ -226,8 +230,8 @@
                 <Setter Property="Background" Value="{ThemeResource GlassBrush}" />
                 <Setter Property="BorderBrush" Value="{ThemeResource GlassStrokeBrush}" />
                 <Setter Property="BorderThickness" Value="1" />
-                <Setter Property="CornerRadius" Value="{ThemeResource ControlCornerRadius}" />
-                <Setter Property="Padding" Value="6,4" />
+                <Setter Property="CornerRadius" Value="12" />
+                <Setter Property="Padding" Value="8,4" />
             </Style>
             <!-- Standard Windows 11 buttons with a little more room for an icon and a label. -->
             <Style x:Key="AccentActionButton" TargetType="Button" BasedOn="{StaticResource AccentButtonStyle}">

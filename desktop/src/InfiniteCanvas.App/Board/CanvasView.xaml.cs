@@ -863,7 +863,7 @@ public sealed partial class CanvasView : UserControl
         {
             var color = Color.FromArgb(ActualTheme == ElementTheme.Dark ? (byte)120 : (byte)34, 0, 0, 0);
             foreach (var node in _views.Values.Select(v => v.Node).Where(n => n.Kind != NodeKind.Group))
-                session.FillRoundedRectangle(new Windows.Foundation.Rect(node.X + 2, node.Y + 6, Math.Max(0, node.Width - 4), Math.Max(0, node.Height - 2)), 8, 8, color);
+                session.FillRoundedRectangle(new Windows.Foundation.Rect(node.X + 2, node.Y + 6, Math.Max(0, node.Width - 4), Math.Max(0, node.Height - 2)), 14, 14, color);
         }
         using var blur = new GaussianBlurEffect { Source = shapes, BlurAmount = 12, BorderMode = EffectBorderMode.Soft };
         ds.DrawImage(blur);
@@ -919,9 +919,26 @@ public sealed partial class CanvasView : UserControl
         var theme = (ResourceDictionary)Application.Current.Resources.ThemeDictionaries[ActualTheme == ElementTheme.Dark ? "Dark" : "Light"];
         var background = theme.TryGetValue("CanvasBackgroundBrush", out var brush) && brush is SolidColorBrush solid ? solid.Color : Colors.Gray;
         _fade.ConstantBuffer = new FadeShader(
-            new ComputeSharp.Float4(h * px, (float)settings.FadeBlur * px, (float)settings.FadeWash, (float)settings.FadeOpacity),
-            new ComputeSharp.Float4(background.R / 255f, background.G / 255f, background.B / 255f, 1));
+            new ComputeSharp.Float4(h, (float)settings.FadeBlur, (float)settings.FadeWash, (float)settings.FadeOpacity),
+            new ComputeSharp.Float4(background.R / 255f, background.G / 255f, background.B / 255f, 1),
+            new ComputeSharp.Float4(1 / px, 0, 0, 0));
         args.DrawingSession.DrawImage(_fade);
+    }
+
+    /// <summary>
+    /// What a glass surface needs to run the top fade on its own scene, so glass over the band refracts the faded canvas around it
+    /// rather than the sharp one: whether it is on, how far the band reaches above the canvas area, its height and the canvas colour
+    /// (all window DIPs).
+    /// </summary>
+    public (bool On, double Above, double Height, Color Background) GlassFade
+    {
+        get
+        {
+            var settings = GlassSettings.Current;
+            var theme = (ResourceDictionary)Application.Current.Resources.ThemeDictionaries[ActualTheme == ElementTheme.Dark ? "Dark" : "Light"];
+            var background = theme.TryGetValue("CanvasBackgroundBrush", out var brush) && brush is SolidColorBrush solid ? solid.Color : Colors.Gray;
+            return (settings.Enabled && settings.FadeOn && TopFade.Visibility == Visibility.Visible, -TopFade.Margin.Top, TopFade.Height, background);
+        }
     }
 
     /// <summary>The element the liquid glass measures its surfaces against: the canvas area.</summary>
@@ -961,8 +978,8 @@ public sealed partial class CanvasView : UserControl
         {
             if (hidden.Contains(node) || !visible.Intersects(Rect.Of(node))) continue;
             var bounds = new Windows.Foundation.Rect(node.X, node.Y, node.Width, node.Height);
-            if (node.Kind == NodeKind.Group) { ds.FillRoundedRectangle(bounds, 12, 12, group); continue; }
-            ds.FillRoundedRectangle(bounds, 8, 8, card);
+            if (node.Kind == NodeKind.Group) { ds.FillRoundedRectangle(bounds, 18, 18, group); continue; }
+            ds.FillRoundedRectangle(bounds, 14, 14, card);
             if (node.Kind != NodeKind.Image || !node.HasContent || LiquidGlass.Picture(ProjectStore.AssetPath(Doc.Id, node.Content!)) is not { } picture) continue;
             // As the card shows it: cropped to fill, or whole inside a freely resized card.
             var (pw, ph) = (picture.Size.Width, picture.Size.Height);
@@ -1037,8 +1054,8 @@ public sealed partial class CanvasView : UserControl
             var a = ToScreen(_startWorld.X, _startWorld.Y);
             var b = ToScreen(_currentWorld.X, _currentWorld.Y);
             var rect = new Windows.Foundation.Rect(a, b);
-            ds.FillRoundedRectangle(rect, 4, 4, Alpha(_accent, 28));
-            ds.DrawRoundedRectangle(rect, 4, 4, _accent, 1);
+            ds.FillRoundedRectangle(rect, 8, 8, Alpha(_accent, 28));
+            ds.DrawRoundedRectangle(rect, 8, 8, _accent, 1);
         }
         if (_gesture == Gesture.Connect && _active is not null)
         {

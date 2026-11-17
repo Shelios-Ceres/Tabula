@@ -62,6 +62,8 @@ public sealed class GlassSettings
     public double Threshold { get; set; } = 0.5;
     /// <summary>XMind-style top fade: a band along the canvas top, blurred progressively towards the edge and washed into the canvas colour.</summary>
     public bool FadeOn { get; set; } = true;
+    /// <summary>The top-centre create toolbar shows only while the pointer is over it.</summary>
+    public bool ToolsOnHover { get; set; } = true;
     public double FadeHeight { get; set; } = 110;
     public double FadeBlur { get; set; } = 18;
     public double FadeWash { get; set; } = 0.55;

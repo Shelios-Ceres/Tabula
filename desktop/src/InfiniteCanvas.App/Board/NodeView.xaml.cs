@@ -114,7 +114,7 @@ public sealed partial class NodeView : UserControl
         if (IsMedia) Header.Padding = new(0, 10 / zoom, 10 / zoom, 0);
         SelectionRing.BorderThickness = new(2 / zoom);
         SelectionRing.Margin = new(-3 / zoom);
-        SelectionRing.CornerRadius = new((Node.Kind == NodeKind.Group ? 12 : 8) + 3 / zoom);
+        SelectionRing.CornerRadius = new((Node.Kind == NodeKind.Group ? 18 : 14) + 3 / zoom);
         GroupOutline.StrokeThickness = 1.5 / zoom;
     }
 
@@ -191,7 +191,7 @@ public sealed partial class NodeView : UserControl
                 // Media fills the whole card; only a small glass status chip floats in the corner while busy or failed.
                 Grid.SetRow(Body, 0);
                 Grid.SetRowSpan(Body, 2);
-                Body.CornerRadius = new(7);
+                Body.CornerRadius = new(13);
                 Header.Background = null;
                 Header.VerticalAlignment = VerticalAlignment.Top;
                 Header.HorizontalAlignment = HorizontalAlignment.Right;
@@ -249,7 +249,7 @@ public sealed partial class NodeView : UserControl
                 GroupFill.Visibility = Visibility.Visible;
                 Card.Background = null;
                 Card.BorderThickness = new(0);
-                Card.CornerRadius = new(12);
+                Card.CornerRadius = new(18);
                 GroupOutline.Visibility = Visibility.Visible;
                 // Groups only feed downstream nodes, so they keep just the source handle.
                 TargetHandle.Visibility = Visibility.Collapsed;

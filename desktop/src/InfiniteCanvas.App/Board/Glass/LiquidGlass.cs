@@ -212,6 +212,8 @@ public static class LiquidGlass
         private CanvasRenderTarget? _scene;
         private PixelShaderEffect<GlassShader>? _effect;
         private GaussianBlurEffect? _blur;
+        private BorderEffect? _fadeClamp;
+        private PixelShaderEffect<FadeShader>? _fade;
         private Rect _lastBounds;
         private bool? _lightInk;
         private ThemeShadow? _shadow;
@@ -367,7 +369,22 @@ public static class LiquidGlass
             if (IsPanel) tintA = Math.Min(0.95, Math.Max(tintA, settings.PanelTint));
 
             _blur ??= new GaussianBlurEffect { BorderMode = EffectBorderMode.Hard, Optimization = EffectOptimization.Speed };
-            _blur.Source = _scene;
+            // Over the top fade, the glass refracts the faded canvas, as the band shows around it.
+            var fade = scene.GlassFade;
+            if (fade.On && bounds.Y + fade.Above < fade.Height)
+            {
+                _fadeClamp ??= new BorderEffect { ExtendX = CanvasEdgeBehavior.Clamp, ExtendY = CanvasEdgeBehavior.Clamp };
+                _fadeClamp.Source = _scene;
+                _fade ??= new PixelShaderEffect<FadeShader> { TransformMapper = ComputeSharp.D2D1.Interop.D2D1DrawTransformMapper<FadeShader>.Inflate(200) };
+                _fade.Sources[0] = _fadeClamp;
+                var pxLocal = sender.Dpi / 96f;
+                _fade.ConstantBuffer = new FadeShader(
+                    new float4((float)fade.Height, (float)settings.FadeBlur, (float)settings.FadeWash, (float)settings.FadeOpacity),
+                    new float4(fade.Background.R / 255f, fade.Background.G / 255f, fade.Background.B / 255f, 1),
+                    new float4((float)(k / pxLocal), (float)(bounds.Y + fade.Above), 1, 0));
+                _blur.Source = _fade;
+            }
+            else _blur.Source = _scene;
             _blur.BlurAmount = (float)(Mix(x => x.Blur) + (IsPanel ? settings.PanelBlur : 0));
             _effect ??= new PixelShaderEffect<GlassShader>();
             // The bend reads up to edge × rim × (1 + dispersion) inward; Direct2D must hand each tile that much input around it, or the
@@ -459,19 +476,48 @@ public static class LiquidGlass
         /// </summary>
         private static void AddPanelResources(ResourceDictionary resources)
         {
-            resources["ControlCornerRadius"] = new CornerRadius(12);
-            resources["OverlayCornerRadius"] = new CornerRadius(16);
-            ResourceDictionary Theme(byte rest, byte hover, Color tone)
+            resources["ControlCornerRadius"] = new CornerRadius(16);
+            resources["OverlayCornerRadius"] = new CornerRadius(20);
+            resources.ThemeDictionaries["Light"] = Wells(dark: false);
+            resources.ThemeDictionaries["Dark"] = Wells(dark: true);
+        }
+
+        /// <summary>
+        /// Inputs and buttons as small glass wells: a faint fill of the ink's opposite, brighter while hovered or focused, and a rim
+        /// light (bright along the top, a soft shade along the bottom) instead of Fluent's opaque boxes with a dark underline.
+        /// </summary>
+        private static ResourceDictionary Wells(bool dark)
+        {
+            var dictionary = new ResourceDictionary();
+            Brush Fill(byte alpha) => new SolidColorBrush(dark ? Color.FromArgb(alpha, 255, 255, 255) : Color.FromArgb(alpha, 255, 255, 255));
+            Brush Rim(byte top, byte bottom, Color? tint = null) => new LinearGradientBrush
             {
-                var dictionary = new ResourceDictionary();
-                foreach (var key in new[] { "TextControlBackground", "ComboBoxBackground", "ButtonBackground" })
-                    dictionary[key] = new SolidColorBrush(Color.FromArgb(rest, tone.R, tone.G, tone.B));
-                foreach (var key in new[] { "TextControlBackgroundPointerOver", "ComboBoxBackgroundPointerOver", "ButtonBackgroundPointerOver" })
-                    dictionary[key] = new SolidColorBrush(Color.FromArgb(hover, tone.R, tone.G, tone.B));
-                return dictionary;
+                StartPoint = new Windows.Foundation.Point(0, 0), EndPoint = new Windows.Foundation.Point(0, 1),
+                GradientStops =
+                {
+                    new GradientStop { Color = Color.FromArgb(top, 255, 255, 255), Offset = 0 },
+                    new GradientStop { Color = tint is { } t ? Color.FromArgb(bottom, t.R, t.G, t.B) : Color.FromArgb(bottom, 0, 0, 0), Offset = 1 },
+                },
+            };
+            var accent = Application.Current.Resources.TryGetValue("SystemAccentColor", out var value) && value is Color c ? c : Color.FromArgb(255, 15, 108, 189);
+            var (rest, hover, focus) = dark ? ((byte)22, (byte)34, (byte)44) : ((byte)70, (byte)120, (byte)160);
+            var (rimTop, rimBottom) = dark ? ((byte)70, (byte)60) : ((byte)230, (byte)26);
+            foreach (var prefix in new[] { "TextControl", "ComboBox", "Button", "ToggleButton", "RepeatButton" })
+            {
+                dictionary[prefix + "Background"] = Fill(rest);
+                dictionary[prefix + "BackgroundPointerOver"] = Fill(hover);
+                dictionary[prefix + "BackgroundPressed"] = Fill(rest);
+                dictionary[prefix + "BackgroundFocused"] = Fill(focus);
+                dictionary[prefix + "BorderBrush"] = Rim(rimTop, rimBottom);
+                dictionary[prefix + "BorderBrushPointerOver"] = Rim(rimTop, rimBottom);
+                dictionary[prefix + "BorderBrushPressed"] = Rim(rimTop, rimBottom);
+                dictionary[prefix + "BorderBrushFocused"] = Rim(rimTop, 200, accent);
             }
-            resources.ThemeDictionaries["Light"] = Theme(110, 170, Microsoft.UI.Colors.White);
-            resources.ThemeDictionaries["Dark"] = Theme(30, 48, Microsoft.UI.Colors.White);
+            // The accent button keeps its colour as tinted glass with the same rim light.
+            dictionary["AccentButtonBorderBrush"] = Rim(150, 60);
+            dictionary["AccentButtonBorderBrushPointerOver"] = Rim(170, 60);
+            dictionary["ComboBoxDropDownBackground"] = new SolidColorBrush(dark ? Color.FromArgb(240, 44, 44, 48) : Color.FromArgb(245, 250, 250, 252));
+            return dictionary;
         }
 
         /// <summary>Light ink means dark glass: the content follows through RequestedTheme, so every theme brush inside switches with it.</summary>

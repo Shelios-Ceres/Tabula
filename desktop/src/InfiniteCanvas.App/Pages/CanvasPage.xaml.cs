@@ -56,15 +56,30 @@ public sealed partial class CanvasPage : Page
         accelerator.Invoked += (_, e) => { e.Handled = true; ShowGlassPanel(GlassPanel.Visibility != Visibility.Visible); };
         KeyboardAccelerators.Add(accelerator);
         KeyboardAcceleratorPlacementMode = Microsoft.UI.Xaml.Input.KeyboardAcceleratorPlacementMode.Hidden;
+        // The create toolbar can stay out of the way and appear while the pointer is over its place (it keeps hit testing at opacity 0).
+        ToolHost.OpacityTransition = new ScalarTransition { Duration = TimeSpan.FromMilliseconds(180) };
+        _hideTools = DispatcherQueue.CreateTimer();
+        _hideTools.Interval = TimeSpan.FromMilliseconds(500);
+        _hideTools.IsRepeating = false;
+        _hideTools.Tick += (_, _) => ShowTools(false);
+        ToolHost.PointerEntered += (_, _) => { _hideTools.Stop(); ShowTools(true); };
+        ToolHost.PointerExited += (_, _) => _hideTools.Start();
+        ToolHost.GotFocus += (_, _) => ShowTools(true);
+        ToolHost.LostFocus += (_, _) => _hideTools.Start();
         GlassSettings.Changed += GlassSettings_Changed;
         Unloaded += (_, _) => GlassSettings.Changed -= GlassSettings_Changed;
-        Loaded += (_, _) => ApplyGlassTheme();
+        Loaded += (_, _) => { ApplyGlassTheme(); ShowTools(false); };
         ApplyGlassScale();
     }
+
+    private DispatcherQueueTimer _hideTools = null!;
+
+    private void ShowTools(bool show) => ToolHost.Opacity = show || !GlassSettings.Current.ToolsOnHover ? 1 : 0;
 
     private void GlassSettings_Changed(bool scaleChanged)
     {
         if (scaleChanged) ApplyGlassScale();
+        ShowTools(false);
         ApplyGlassTheme();
     }
 

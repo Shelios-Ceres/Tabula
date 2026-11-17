@@ -84,6 +84,8 @@ public sealed partial class GlassTuningPanel : UserControl
         });
         _body.Children.Add(Note("预设只改折射和材质主体，保留色调颜色、主题和其他设置（与 glasswork 一致）。"));
 
+        Toggle("顶部工具栏悬停时才显示", () => s.ToolsOnHover, v => s.ToolsOnHover = v);
+
         Section("顶部渐隐 Top fade");
         Toggle("顶部渐隐模糊", () => s.FadeOn, v => s.FadeOn = v);
         Slider("高度 height (px)", 40, 260, 1, () => s.FadeHeight, v => s.FadeHeight = v, "0");
