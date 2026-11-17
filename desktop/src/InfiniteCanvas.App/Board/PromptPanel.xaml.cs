@@ -14,7 +14,10 @@ using Windows.System;
 
 namespace InfiniteCanvas.App.Board;
 
-/// <summary>Generation panel under the selected node: prompt, model, per-family parameters and the generate button.</summary>
+/// <summary>
+/// Generation panel next to the selected node: one box with the inputs and status on top, the prompt, then model, parameters, cost and the
+/// generate button. A picture that already has content shows just one line until the user opens it.
+/// </summary>
 public sealed partial class PromptPanel : UserControl
 {
     private static readonly string[] Voices = ["alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse", "marin", "cedar", "fable", "onyx", "nova"];
@@ -25,6 +28,8 @@ public sealed partial class PromptPanel : UserControl
     private Panel _params = null!;
     /// <summary>Set while rebuilding the open flyout, so the 高级 section the user is working in stays expanded.</summary>
     private bool _keepAdvanced;
+    /// <summary>A picture with content starts as one line under it; this says whether the whole panel is open.</summary>
+    private bool _expanded = true;
 
     public PromptPanel(CanvasView host)
     {
@@ -42,6 +47,27 @@ public sealed partial class PromptPanel : UserControl
     }
 
     public CanvasNode? Node => _node;
+
+    /// <summary>Pictures with content collapse to one line; empty pictures, text, audio and config nodes always show the whole panel.</summary>
+    private static bool Collapsible(CanvasNode node) => node.Kind == NodeKind.Image && node.HasContent;
+
+    private void ApplyExpanded()
+    {
+        FullPanel.Visibility = _expanded ? Visibility.Visible : Visibility.Collapsed;
+        CollapsedRow.Visibility = _expanded ? Visibility.Collapsed : Visibility.Visible;
+        Shell.Width = _expanded ? 540 : 440;
+        Shell.Padding = _expanded ? new Thickness(14, 10, 14, 10) : new Thickness(16, 6, 6, 6);
+    }
+
+    /// <summary>Open the whole panel (a click on the line, Enter, or anything that needs the prompt box).</summary>
+    public void Expand()
+    {
+        if (_expanded) return;
+        _expanded = true;
+        ApplyExpanded();
+    }
+
+    private void Collapsed_Click(object sender, RoutedEventArgs e) => FocusPrompt();
 
     /// <summary>Shadow goes on the rounded shell, not the control, so it follows the corners.</summary>
     public void CastShadowOn(UIElement receiver)
@@ -61,10 +87,12 @@ public sealed partial class PromptPanel : UserControl
         {
             ParamsFlyout.Hide();
             _library?.Hide();
+            if (node is not null) _expanded = !Collapsible(node);
         }
         if (_node is not null) _node.PropertyChanged -= Node_PropertyChanged;
         _node = node;
         if (node is null) return;
+        ApplyExpanded();
         node.PropertyChanged += Node_PropertyChanged;
         _loading = true;
         ModeBar.Visibility = node.Kind == NodeKind.Config ? Visibility.Visible : Visibility.Collapsed;
@@ -76,6 +104,7 @@ public sealed partial class PromptPanel : UserControl
             Capability.Text => "输入要让模型完成的任务，Ctrl+Enter 开始生成",
             _ => node.HasContent && node.Kind == NodeKind.Image ? "描述要如何修改这张图片，结果会生成到右侧新节点" : "描述想要生成的内容，Ctrl+Enter 开始生成",
         };
+        ShowCollapsedText();
         _loading = false;
         Refresh();
     }
@@ -100,6 +129,7 @@ public sealed partial class PromptPanel : UserControl
         var length = Math.Min(PromptBox.SelectionLength, text.Length - start);
         PromptBox.Text = text;
         PromptBox.Select(start, length);
+        ShowCollapsedText();
         ShowEstimate();
     }
 
@@ -116,14 +146,16 @@ public sealed partial class PromptPanel : UserControl
         // Same list and order the request numbers 图片N with, so the node's own image counts as 图片1.
         var inputs = CanvasGenerator.InputsOf(_host.Doc, _node);
         ShowInputs(inputs);
-        HeaderRow.Visibility = ModeBar.Visibility == Visibility.Visible || inputs.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         ShowMarks();
         ShowHint();
+        TopLine.Visibility = ModeBar.Visibility == Visibility.Visible || inputs.Count > 0 || MarksRow.Visibility == Visibility.Visible || HintRow.Visibility == Visibility.Visible
+            || InfoButton.Visibility == Visibility.Visible ? Visibility.Visible : Visibility.Collapsed;
         ParamsText.Text = ParamsSummary();
         ShowEstimate();
         var running = _host.Generator.IsRunning(_node.Id);
-        GenerateText.Text = running ? "停止" : "生成";
-        GenerateIcon.Glyph = running ? "" : "";
+        GenerateText.Text = CollapsedGenerateText.Text = running ? "停止" : "生成";
+        GenerateIcon.Glyph = CollapsedIcon.Glyph = running ? "\uE71A" : "\uE768";
+        ShowCollapsedText();
         _loading = false;
     }
 
@@ -157,8 +189,21 @@ public sealed partial class PromptPanel : UserControl
         MarksRow.Visibility = parts.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         MarksText.Text = parts.Count > 0 ? "已标注 · " + string.Join(" · ", parts) : "";
         var notes = new[] { (Label: "模型说明", Text: node.Option(NodeKeys.ModelText)), (Label: "识别文字", Text: NodeKeys.RecognizedText(node)), (Label: "参考图", Text: node.Option(NodeKeys.InputNote)) }.Where(n => n.Text.Length > 0).ToList();
-        ModelText.Text = string.Join("\n", notes.Select(n => $"{n.Label}：{n.Text}"));
-        ModelText.Visibility = notes.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        // Model notes, recognised text and the reference note sit behind the info icon.
+        var info = string.Join("\n", notes.Select(n => $"{n.Label}：{n.Text}"));
+        InfoButton.Visibility = notes.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        ToolTipService.SetToolTip(InfoButton, info.Length > 0 ? info : null);
+        AutomationProperties.SetHelpText(InfoButton, info);
+        InfoButton.Flyout = notes.Count > 0 ? new Flyout { Content = new TextBlock { Text = info, TextWrapping = TextWrapping.Wrap, MaxWidth = 380, IsTextSelectionEnabled = true } } : null;
+    }
+
+    /// <summary>The one-line form: the prompt's first line, or what to write when there is none.</summary>
+    private void ShowCollapsedText()
+    {
+        if (_node is null) return;
+        var first = (_node.Prompt ?? "").Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).FirstOrDefault();
+        CollapsedText.Text = first ?? "描述要怎么改这张图…";
+        CollapsedText.Opacity = first is null ? 0.8 : 1;
     }
 
     /// <summary>A missing model or API key shows up front with a way to settings; the generator's dialogs still cover the menu and Ctrl+Enter.</summary>
@@ -172,7 +217,9 @@ public sealed partial class PromptPanel : UserControl
             : string.IsNullOrEmpty(resolved.Value.Channel.ProtectedKey) ? $"服务商「{Settings.ChannelName(resolved.Value.Channel)}」还没有填写 API Key" : null;
         HintText.Text = hint ?? "";
         HintRow.Visibility = hint is null ? Visibility.Collapsed : Visibility.Visible;
-        GenerateButton.IsEnabled = running || hint is null;
+        ToolTipService.SetToolTip(HintText, hint);
+        GenerateButton.IsEnabled = CollapsedGenerate.IsEnabled = running || hint is null;
+        ToolTipService.SetToolTip(CollapsedGenerate, hint);
     }
 
     /// <summary>Expected cost of the next image run from the model, parameters, prompt and connected pictures; image runs only.</summary>
@@ -184,9 +231,18 @@ public sealed partial class PromptPanel : UserControl
         EstimateText.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
         if (!show) return;
         var references = CanvasGenerator.InputsOf(_host.Doc, node).Count(r => r.Type == NodeKind.Image);
-        EstimateText.Text = Prices.EstimateImage(resolved!.Value.Channel, resolved.Value.Model.Name, node, references) is { } estimate
-            ? $"预计花费 ≈ {estimate.Text}"
-            : "预计花费：这个模型和设置还没有官方单价，生成一次后按实际用量估算";
+        const string Caveat = "按官方价格或上次同样设置的实际用量估算，仅供参考：不含思考 token、免费额度和优惠";
+        // Beside the generate button only the amount fits; the basis and the caveat are in the tooltip.
+        if (Prices.EstimateImage(resolved!.Value.Channel, resolved.Value.Model.Name, node, references) is { } estimate)
+        {
+            EstimateText.Text = $"≈ {Prices.Money(estimate.Amount, estimate.Currency)}";
+            ToolTipService.SetToolTip(EstimateText, $"预计花费 ≈ {estimate.Text}\n{Caveat}");
+        }
+        else
+        {
+            EstimateText.Text = "预计花费 —";
+            ToolTipService.SetToolTip(EstimateText, $"预计花费：这个模型和设置还没有官方单价，生成一次后按实际用量估算\n{Caveat}");
+        }
     }
 
     private async void OpenSettings_Click(object sender, RoutedEventArgs e)
@@ -241,7 +297,19 @@ public sealed partial class PromptPanel : UserControl
 
     private void PromptBox_PreviewKeyDown(object sender, KeyRoutedEventArgs e)
     {
-        if (e.Key == VirtualKey.Escape) { e.Handled = true; _host.FocusCanvas(); return; }
+        // Esc hands the keyboard back to the canvas, and a picture's panel folds into its line again.
+        if (e.Key == VirtualKey.Escape)
+        {
+            e.Handled = true;
+            _host.FocusCanvas();
+            if (_node is not null && Collapsible(_node))
+            {
+                _expanded = false;
+                ApplyExpanded();
+                ShowCollapsedText();
+            }
+            return;
+        }
         var ctrl = Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Control).HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down);
         if (e.Key != VirtualKey.Enter || !ctrl) return;
         e.Handled = true;
@@ -251,6 +319,8 @@ public sealed partial class PromptPanel : UserControl
 
     public void FocusPrompt()
     {
+        Expand();
+        PromptBox.UpdateLayout();
         PromptBox.Focus(FocusState.Keyboard);
         PromptBox.SelectionStart = PromptBox.Text.Length;
     }

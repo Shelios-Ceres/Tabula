@@ -22,7 +22,7 @@
             <FontIcon Glyph="&#xE790;" FontSize="36" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
             <TextBlock Text="开始创作" HorizontalAlignment="Center" FontSize="20" FontWeight="SemiBold" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
             <TextBlock HorizontalAlignment="Center" TextAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                       Text="把图片、视频或音频拖进窗口，或用顶部工具栏新建节点&#x0a;双击空白处也能快速新建" />
+                       Text="把图片、视频或音频拖进窗口，或点顶部的「文本」「图片」等按钮新建节点&#x0a;双击空白处也能快速新建" />
         </StackPanel>
         <Canvas x:Name="ScreenLayer" />
     </Grid>

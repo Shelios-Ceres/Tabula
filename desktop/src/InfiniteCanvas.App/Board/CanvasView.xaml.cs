@@ -58,9 +58,6 @@ public sealed partial class CanvasView : UserControl
     private readonly HashSet<CanvasNode> _tracked = [];
     private readonly HashSet<string> _selected = [];
     private readonly PromptPanel _panel;
-    private readonly Border _selectionBar;
-    /// <summary>Image tools above a single selected picture.</summary>
-    private readonly Border _imageBar;
     private readonly List<string> _order = [];
     private Thickness _safe = new(0, 68, 0, 72);
     private string? _selectedConnection;
@@ -95,14 +92,8 @@ public sealed partial class CanvasView : UserControl
         GlassScale.Wrap(_panel);
         ScreenLayer.Children.Add(_panel);
         _panel.CastShadowOn(Backdrop);
-        _selectionBar = BuildSelectionBar();
-        ScreenLayer.Children.Add(_selectionBar);
-        _imageBar = BuildImageBar();
-        ScreenLayer.Children.Add(_imageBar);
-        _panel.SizeChanged += (_, _) => PositionPanel();
+        _panel.SizeChanged += (_, _) => PositionPanel(true);
         Motion.ShowHide(_panel, 0.5f, 0);
-        Motion.ShowHide(_selectionBar, 0.5f, 1);
-        Motion.ShowHide(_imageBar, 0.5f, 1);
         Motion.ShowHide(EmptyHint);
         // Text boxes and media controls inside nodes swallow pointer presses; still select the node they belong to.
         Root.AddHandler(PointerPressedEvent, new PointerEventHandler((_, e) =>
@@ -134,7 +125,7 @@ public sealed partial class CanvasView : UserControl
         History = new CanvasHistory(doc);
         Generator = new CanvasGenerator(doc, DispatcherQueue, () => History.Record(), RaiseChanged);
         Generator.TargetsPrepared += targets => EnsureVisible(CanvasGraph.Bounds(targets));
-        Generator.RunningChanged += () => _panel.Refresh();
+        Generator.RunningChanged += () => { _panel.Refresh(); QueueCommands(); };
         // Anything that was mid-generation when the app closed is interrupted, except resumable vendor tasks.
         foreach (var node in doc.Nodes.Where(n => n.Status == NodeStatus.Loading && n.TaskId is null))
         {
@@ -241,7 +232,22 @@ public sealed partial class CanvasView : UserControl
             foreach (var view in _views.Values.Where(v => v.Node.Kind == NodeKind.Config)) view.SyncConfig();
         // Opening, closing or forming a stack changes which cards exist; a member's status shows on its lead.
         if (e.PropertyName is nameof(CanvasNode.Options) or nameof(CanvasNode.Status) && sender is CanvasNode changed && Stacks.Of(changed) is not null) Realize();
+        // The command bar follows the selected node's state (title, content, running, group, batch…), never its position.
+        if (e.PropertyName is not (nameof(CanvasNode.X) or nameof(CanvasNode.Y) or nameof(CanvasNode.Width) or nameof(CanvasNode.Height) or nameof(CanvasNode.Preview))
+            && sender is CanvasNode node && _selected.Contains(node.Id)) QueueCommands();
         if (e.PropertyName != nameof(CanvasNode.Preview)) RaiseChanged();
+    }
+
+    /// <summary>The selection or something it depends on changed: the command bar re-reads it once, after the current burst of changes.</summary>
+    public event Action? CommandsChanged;
+
+    private bool _commandsQueued;
+
+    private void QueueCommands()
+    {
+        if (_commandsQueued) return;
+        _commandsQueued = true;
+        DispatcherQueue.TryEnqueue(() => { _commandsQueued = false; CommandsChanged?.Invoke(); });
     }
 
     // ---------- Viewport ----------
@@ -522,99 +528,64 @@ public sealed partial class CanvasView : UserControl
         CanvasGraph.MatchSize(anchor, targets, width, height);
     }
 
-    /// <summary>The single selected image that has a picture, or null.</summary>
-    private CanvasNode? ImageBarNode() => _selected.Count > 0 && Subject() is { Kind: NodeKind.Image, HasContent: true } node ? node : null;
-
-    /// <summary>
-    /// A floating glass capsule over the canvas: the show / hide animation goes on the outer wrapper and the shadow's Z translation on
-    /// the inner capsule, like the prompt panel. With both on one element its hit-test bounds no longer matched where it was drawn,
-    /// so clicks on its buttons fell through to the canvas and cleared the selection.
-    /// </summary>
-    private Border FloatingBar(UIElement content, Action reposition)
-    {
-        var capsule = new Border { Style = (Style)Application.Current.Resources["GlassCapsule"], Child = content };
-        var shadow = new ThemeShadow();
-        shadow.Receivers.Add(Backdrop);
-        capsule.Shadow = shadow;
-        capsule.Translation = new Vector3(0, 0, 24);
-        var bar = new Border { Child = new GlassScale { Child = capsule }, Visibility = Visibility.Collapsed };
-        // Clicks on the bar must not start canvas gestures underneath.
-        bar.PointerPressed += (_, e) => e.Handled = true;
-        bar.DoubleTapped += (_, e) => e.Handled = true;
-        bar.RightTapped += (_, e) => e.Handled = true;
-        bar.SizeChanged += (_, _) => reposition();
-        return bar;
-    }
-
-    private void PositionImageBar()
-    {
-        var node = _gesture is Gesture.None or Gesture.Pan ? ImageBarNode() : null;
-        _imageBar.Visibility = node is null ? Visibility.Collapsed : Visibility.Visible;
-        if (node is null) return;
-        ApplyBar(_imageItems, Context());
-        var topLeft = ToScreen(node.X, node.Y);
-        var right = ToScreen(node.Right, node.Y).X;
-        var (width, height) = (Math.Max(_imageBar.ActualWidth, 300), Math.Max(_imageBar.ActualHeight, 44));
-        var minLeft = _safe.Left + 8;
-        var left = Math.Clamp((topLeft.X + right) / 2 - width / 2, minLeft, Math.Max(minLeft, Root.ActualWidth - width - 8));
-        // Above the node's floating title; the prompt panel sits below the node.
-        var top = Math.Max(_safe.Top, topLeft.Y - height - 34);
-        Canvas.SetLeft(_imageBar, left);
-        Canvas.SetTop(_imageBar, Math.Min(top, Math.Max(_safe.Top, Root.ActualHeight - height - 8)));
-    }
-
-    private void PositionSelectionBar()
-    {
-        PositionImageBar();
-        // Decide visibility first: while dragging, the bar is hidden and every node move must stay cheap.
-        var show = _gesture is Gesture.None or Gesture.Pan && AnchorNode() is not null;
-        _selectionBar.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
-        if (!show) return;
-        var nodes = Doc.Nodes.Where(n => _selected.Contains(n.Id)).ToList();
-        var context = Context();
-        _selectionCount.Text = $"已选 {context.Count} 个";
-        ApplyBar(_selectionItems, context);
-        var bounds = CanvasGraph.Bounds(nodes);
-        var topLeft = ToScreen(bounds.Left, bounds.Top);
-        var bottom = ToScreen(bounds.Right, bounds.Bottom);
-        var (width, height) = (Math.Max(_selectionBar.ActualWidth, 260), Math.Max(_selectionBar.ActualHeight, 44));
-        var minLeft = _safe.Left + 8;
-        var left = Math.Clamp((topLeft.X + bottom.X) / 2 - width / 2, minLeft, Math.Max(minLeft, Root.ActualWidth - width - 8));
-        // Above the selection, or below it when the top toolbar would cover it.
-        var top = topLeft.Y - height - 34 < _safe.Top ? bottom.Y + 14 : topLeft.Y - height - 34;
-        Canvas.SetLeft(_selectionBar, left);
-        Canvas.SetTop(_selectionBar, Math.Clamp(top, _safe.Top, Math.Max(_safe.Top, Root.ActualHeight - height - 8)));
-    }
-
     private void UpdatePanel()
     {
+        QueueCommands();
         var node = _selected.Count == 1 && _gesture != Gesture.Box ? Doc.Find(_selected.First()) : null;
         if (node is null || !CanvasGenerator.CanGenerate(node))
         {
             _panel.Visibility = Visibility.Collapsed;
             _panel.Bind(null);
-            PositionSelectionBar();
             return;
         }
         if (_panel.Node != node) _panel.Bind(node);
         else _panel.Refresh();
         _panel.Visibility = Visibility.Visible;
-        PositionPanel();
+        PositionPanel(true);
     }
 
-    private void PositionPanel()
+    /// <summary>
+    /// Put the prompt panel where it never covers its own node: below it, else above it, else beside it, else (<paramref name="makeRoom"/>:
+    /// on selecting, or when the panel opens or closes, never while the user pans or zooms) glide the canvas so it fits below. A window too
+    /// small even for that leaves the panel below, clamped into the window.
+    /// </summary>
+    private void PositionPanel(bool makeRoom = false)
     {
-        PositionSelectionBar();
         if (_panel.Node is not { } node || _panel.Visibility != Visibility.Visible) return;
-        var anchor = ToScreen(node.X + node.Width / 2, node.Bottom);
-        var width = _panel.ActualWidth > 0 ? _panel.ActualWidth : 480;
-        var height = _panel.ActualHeight > 0 ? _panel.ActualHeight : 180;
-        var minLeft = _safe.Left + 8;
-        var left = Math.Clamp(anchor.X - width / 2, minLeft, Math.Max(minLeft, Root.ActualWidth - width - 8));
-        var top = anchor.Y + 14;
-        if (top + height > Root.ActualHeight - _safe.Bottom - 16) top = ToScreen(0, node.Y).Y - height - 14;
-        Canvas.SetLeft(_panel, left);
-        Canvas.SetTop(_panel, Math.Clamp(top, _safe.Top, Math.Max(_safe.Top, Root.ActualHeight - height - 8)));
+        var (width, height) = (_panel.ActualWidth > 0 ? _panel.ActualWidth : 520, _panel.ActualHeight > 0 ? _panel.ActualHeight : 180);
+        var (topLeft, bottomRight) = (ToScreen(node.X, node.Y), ToScreen(node.Right, node.Bottom));
+        const double gap = 14;
+        // Media cards carry a floating title above them.
+        var above = gap + (node.Kind is NodeKind.Image or NodeKind.Video ? 26 : 0);
+        var (minLeft, maxRight, minTop, maxBottom) = (_safe.Left + 8, Root.ActualWidth - _safe.Right - 8, _safe.Top, Root.ActualHeight - _safe.Bottom - 16);
+        var centered = Math.Clamp((topLeft.X + bottomRight.X) / 2 - width / 2, minLeft, Math.Max(minLeft, maxRight - width));
+        var beside = Math.Clamp(topLeft.Y, minTop, Math.Max(minTop, maxBottom - height));
+        Point at;
+        if (bottomRight.Y + gap + height <= maxBottom) at = new(centered, bottomRight.Y + gap);
+        else if (topLeft.Y - above - height >= minTop) at = new(centered, topLeft.Y - above - height);
+        else if (bottomRight.X + gap + width <= maxRight) at = new(bottomRight.X + gap, beside);
+        else if (topLeft.X - gap - width >= minLeft) at = new(topLeft.X - gap - width, beside);
+        else
+        {
+            if (makeRoom && _glide is null && MakeRoomForPanel(node, height, above, gap, minTop, maxBottom)) return;
+            at = new(centered, Math.Clamp(bottomRight.Y + gap, minTop, Math.Max(minTop, Root.ActualHeight - height - 8)));
+        }
+        Canvas.SetLeft(_panel, at.X);
+        Canvas.SetTop(_panel, at.Y);
+    }
+
+    /// <summary>Glide the canvas (and zoom out when the node is too tall) so the node and the panel under it both fit; false when even the smallest zoom cannot.</summary>
+    private bool MakeRoomForPanel(CanvasNode node, double panelHeight, double above, double gap, double minTop, double maxBottom)
+    {
+        var free = maxBottom - minTop - above - gap - panelHeight;
+        var zoom = Math.Min(V.K, free / Math.Max(1, node.Height));
+        if (zoom < MinZoom) return false;
+        // The node's top edge goes as near its title's place as the free height allows, keeping its horizontal centre.
+        var top = Math.Clamp(ToScreen(0, node.Y).Y, minTop + above, minTop + above + free - node.Height * zoom);
+        var target = new Viewport(ToScreen(node.X + node.Width / 2, 0).X - (node.X + node.Width / 2) * zoom, top - node.Y * zoom, zoom);
+        if (Math.Abs(target.Y - V.Y) < 1 && Math.Abs(target.X - V.X) < 1 && Math.Abs(zoom - V.K) < 1e-6) return false;
+        Glide(target);
+        return true;
     }
 
     // ---------- Hit testing ----------

@@ -57,30 +57,17 @@ public sealed partial class CanvasPage : Page
         accelerator.Invoked += (_, e) => { e.Handled = true; ShowGlassPanel(GlassPanel.Visibility != Visibility.Visible); };
         KeyboardAccelerators.Add(accelerator);
         KeyboardAcceleratorPlacementMode = Microsoft.UI.Xaml.Input.KeyboardAcceleratorPlacementMode.Hidden;
-        // The create toolbar can stay out of the way and appear while the pointer is over its place (it keeps hit testing at opacity 0).
-        ToolHost.OpacityTransition = new ScalarTransition { Duration = TimeSpan.FromMilliseconds(180) };
-        _hideTools = DispatcherQueue.CreateTimer();
-        _hideTools.Interval = TimeSpan.FromMilliseconds(500);
-        _hideTools.IsRepeating = false;
-        _hideTools.Tick += (_, _) => ShowTools(false);
-        ToolHost.PointerEntered += (_, _) => { _hideTools.Stop(); ShowTools(true); };
-        ToolHost.PointerExited += (_, _) => _hideTools.Start();
-        ToolHost.GotFocus += (_, _) => ShowTools(true);
-        ToolHost.LostFocus += (_, _) => _hideTools.Start();
+        Commands.Attach(Board);
+        Commands.Rebuilt += KeepToolsClear;
         GlassSettings.Changed += GlassSettings_Changed;
         Unloaded += (_, _) => GlassSettings.Changed -= GlassSettings_Changed;
-        Loaded += (_, _) => { ApplyGlassTheme(); ShowTools(false); };
+        Loaded += (_, _) => ApplyGlassTheme();
         ApplyGlassScale();
     }
-
-    private DispatcherQueueTimer _hideTools = null!;
-
-    private void ShowTools(bool show) => ToolHost.Opacity = show || !GlassSettings.Current.ToolsOnHover ? 1 : 0;
 
     private void GlassSettings_Changed(bool scaleChanged)
     {
         if (scaleChanged) ApplyGlassScale();
-        ShowTools(false);
         ApplyGlassTheme();
     }
 
@@ -151,20 +138,34 @@ public sealed partial class CanvasPage : Page
         Board.SafeArea = new Thickness(library, 12 + 56 * s, Agent.Visibility == Visibility.Visible ? Agent.Margin.Right + Agent.Width + 12 : 0, 16 + 56 * s);
     }
 
-    private void Page_SizeChanged(object sender, SizeChangedEventArgs? e)
-    {
-        // Narrow windows collapse the toolbars to icons; every button keeps its tooltip and automation name.
-        // The labelled toolbars need about 1250 DIPs at scale 1 (the old 1440 left slack); they grow with the glass UI scale.
-        var compact = ActualWidth < 1250 * GlassSettings.Current.UiScale;
-        foreach (var label in new[] { TextLabel, ImageLabel, VideoLabel, AudioLabel, ConfigLabel, LibraryLabel, AgentLabel, QuotaLabel }) label.Visibility = compact ? Visibility.Collapsed : Visibility.Visible;
-        TitleText.MaxWidth = compact ? 160 : 200;
-        KeepToolsClear();
-    }
+    private void Page_SizeChanged(object sender, SizeChangedEventArgs? e) => KeepToolsClear();
 
-    /// <summary>The tool capsule stays centred but slides right instead of covering the title capsule when the window is narrow or the title is long.</summary>
+    /// <summary>
+    /// The command bar stays centred but slides right instead of covering the title capsule. Labels give way in this order, so the bar keeps
+    /// its text as long as it can: the title capsule's labels first (narrow windows, or when the bar needs the room), then the bar's own.
+    /// Every button keeps its tooltip and automation name.
+    /// </summary>
     private void KeepToolsClear()
     {
-        var overlap = TitleHost.Margin.Left + TitleHost.ActualWidth + 12 - (ActualWidth - ToolHost.ActualWidth) / 2;
+        var scale = GlassSettings.Current.UiScale;
+        double TitleWidth(bool compact)
+        {
+            foreach (var label in new[] { LibraryLabel, AgentLabel, QuotaLabel }) label.Visibility = compact ? Visibility.Collapsed : Visibility.Visible;
+            TitleHost.Measure(new Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity));
+            return TitleHost.DesiredSize.Width;
+        }
+        double Free(double title) => ActualWidth - (TitleHost.Margin.Left + title + 12) - 16;
+        var titleCompact = ActualWidth < 1250 * scale;
+        var barCompact = Commands.FullWidth * scale > Free(TitleWidth(titleCompact));
+        if (barCompact && !titleCompact)
+        {
+            titleCompact = true;
+            barCompact = Commands.FullWidth * scale > Free(TitleWidth(true));
+        }
+        TitleWidth(titleCompact);
+        TitleText.MaxWidth = titleCompact ? 160 : 200;
+        Commands.Compact = barCompact;
+        var overlap = TitleHost.Margin.Left + TitleHost.DesiredSize.Width + 12 - (ActualWidth - ToolHost.ActualWidth) / 2;
         ToolHost.Margin = new Thickness(Math.Max(0, overlap) * 2, 12, 0, 0);
     }
 
@@ -187,7 +188,7 @@ public sealed partial class CanvasPage : Page
         TitleText.Text = _doc.Title;
         App.Window.SetCaption(_doc.Title);
         SaveState.Text = "已保存";
-        UpdateUndo();
+        Commands.UpdateUndo();
         UpdateZoomText();
     }
 
@@ -270,7 +271,6 @@ public sealed partial class CanvasPage : Page
         SaveState.Text = "未保存";
         _saveTimer?.Stop();
         if (!Board.IsClosing) _saveTimer?.Start();
-        UpdateUndo();
     }
 
     private bool SaveNow()
@@ -289,12 +289,6 @@ public sealed partial class CanvasPage : Page
             SaveState.Text = "保存失败";
             return false;
         }
-    }
-
-    private void UpdateUndo()
-    {
-        UndoButton.IsEnabled = Board.History?.CanUndo == true;
-        RedoButton.IsEnabled = Board.History?.CanRedo == true;
     }
 
     private void UpdateZoomText() => ZoomText.Text = $"{Math.Round(Board.Zoom * 100)}%";
@@ -320,11 +314,6 @@ public sealed partial class CanvasPage : Page
         Board_Changed();
     }
 
-    private void AddText_Click(object sender, RoutedEventArgs e) => Board.AddNodeAtCenter(NodeKind.Text);
-    private void AddImage_Click(object sender, RoutedEventArgs e) => Board.AddNodeAtCenter(NodeKind.Image);
-    private void AddVideo_Click(object sender, RoutedEventArgs e) => Board.AddNodeAtCenter(NodeKind.Video);
-    private void AddAudio_Click(object sender, RoutedEventArgs e) => Board.AddNodeAtCenter(NodeKind.Audio);
-    private void AddConfig_Click(object sender, RoutedEventArgs e) => Board.AddNodeAtCenter(NodeKind.Config);
     /// <summary>The help flyout: gestures, then every shortcut of the command table, so it cannot drift from the menus.</summary>
     private void BuildHelp()
     {
@@ -352,9 +341,6 @@ public sealed partial class CanvasPage : Page
         Section("快捷键", CanvasCommands.Shortcuts());
     }
 
-    private async void Import_Click(object sender, RoutedEventArgs e) => await Board.ImportWithPickerAsync();
-    private void Undo_Click(object sender, RoutedEventArgs e) { Board.Undo(); UpdateUndo(); }
-    private void Redo_Click(object sender, RoutedEventArgs e) { Board.Redo(); UpdateUndo(); }
     private void ZoomIn_Click(object sender, RoutedEventArgs e) => Board.ZoomBy(1.2);
     private void ZoomOut_Click(object sender, RoutedEventArgs e) => Board.ZoomBy(1 / 1.2);
     private void ZoomReset_Click(object sender, RoutedEventArgs e) => Board.ResetZoom();

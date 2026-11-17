@@ -78,7 +78,7 @@ public class CommandTests
     public void Text_copies_its_words_and_config_only_has_the_basics()
     {
         var text = new CanvasNode { Kind = NodeKind.Text, Content = "你好" };
-        Assert.Equal(["generate", "copy", "duplicate", "rename", "delete"], Menu(Doc(text), false, false, text));
+        Assert.Equal(["generate", "edit", "copy", "duplicate", "rename", "delete"], Menu(Doc(text), false, false, text));
         var config = new CanvasNode { Kind = NodeKind.Config };
         Assert.Equal(["generate", "duplicate", "rename", "delete"], Menu(Doc(config), false, false, config));
     }
@@ -199,6 +199,107 @@ public class CommandTests
             Assert.NotNull(command.Detail);
         }
         Assert.DoesNotContain(CanvasCommands.Shortcuts(), s => s.Text.Contains("双击") || s.Text.Contains("拖动"));
+    }
+
+    private static CommandContext Selection(CanvasDocument doc, bool canMark = true, params CanvasNode[] selected) =>
+        CommandContext.From(doc, selected.Select(n => n.Id).ToList(), _ => canMark, n => n.Kind is not (NodeKind.Group or NodeKind.Video), _ => true, _ => false);
+
+    private static List<string> Bar(CommandContext context) => CanvasCommands.BarItems(context).Select(i => i.Spec is null ? "|" : i.Spec.Id + (i.Text ? "+" : "")).ToList();
+
+    [Fact]
+    public void Nothing_selected_the_bar_creates_and_imports()
+    {
+        Assert.Equal(["new-text+", "new-image+", "new-video+", "new-audio+", "new-config+", "|", "import"], Bar(Selection(Doc())));
+        Assert.Empty(CanvasCommands.More(Selection(Doc())));
+    }
+
+    [Fact]
+    public void One_bitmap_picture_shows_view_the_picture_tools_and_the_library_with_text_on_the_first_four()
+    {
+        var picture = Picture();
+        var context = Selection(Doc(picture), true, picture);
+        Assert.Equal(["view+", "|", "mark+", "crop+", "split+", "angle", "upscale", "reverse", "|", "library"], Bar(context));
+        // The rest of the node menu is under 更多, in menu order; nothing is on both.
+        Assert.Equal(["generate", "promote", "save-as", "open", "reveal", "copy", "duplicate", "rename", "free-resize", "delete"], CanvasCommands.More(context).Select(c => c.Id));
+        // Without model support the local edit is dropped, not shown disabled.
+        Assert.DoesNotContain("mark+", Bar(Selection(Doc(picture), false, picture)));
+    }
+
+    [Fact]
+    public void An_svg_has_no_pixel_tools_and_no_leading_divider()
+    {
+        var svg = Picture("图片-002.svg");
+        Assert.Equal(["view+", "|", "library+", "open+"], Bar(Selection(Doc(svg), true, svg)));
+    }
+
+    [Fact]
+    public void An_empty_picture_shows_stop_while_running_and_retry_after_a_failure()
+    {
+        var empty = new CanvasNode { Kind = NodeKind.Image };
+        Assert.Empty(Bar(Selection(Doc(empty), true, empty)));
+        var running = CommandContext.From(Doc(empty), [empty.Id], _ => true, _ => true, _ => true, _ => true);
+        Assert.Equal(["stop+"], Bar(running));
+        var failed = new CanvasNode { Kind = NodeKind.Image, Status = NodeStatus.Error };
+        Assert.Equal(["retry+"], Bar(Selection(Doc(failed), true, failed)));
+    }
+
+    [Fact]
+    public void Video_audio_text_config_and_group_each_get_their_own_short_bar()
+    {
+        var video = new CanvasNode { Kind = NodeKind.Video, Content = "视频-001.mp4" };
+        Assert.Equal(["open+", "library+", "reveal+"], Bar(Selection(Doc(video), true, video)));
+        var audio = new CanvasNode { Kind = NodeKind.Audio, Content = "音频-001.mp3" };
+        Assert.Equal(["open+", "library+", "reveal+"], Bar(Selection(Doc(audio), true, audio)));
+        var text = new CanvasNode { Kind = NodeKind.Text, Content = "你好" };
+        Assert.Equal(["edit+", "copy+"], Bar(Selection(Doc(text), true, text)));
+        var config = new CanvasNode { Kind = NodeKind.Config };
+        Assert.Equal(["duplicate+", "rename+"], Bar(Selection(Doc(config), true, config)));
+        var group = new CanvasNode { Kind = NodeKind.Group, Title = "分组" };
+        var member = Picture();
+        member.GroupId = group.Id;
+        Assert.Equal(["ungroup+", "rename+"], Bar(Selection(Doc(group, member), true, group)));
+    }
+
+    [Fact]
+    public void A_collapsed_batch_leads_with_expand_and_keep_one_and_an_opened_one_with_collapse()
+    {
+        var (cover, second) = (Picture("图片-001.png"), Picture("图片-002.png"));
+        var doc = Doc(cover, second);
+        Stacks.Form([cover, second]);
+        Assert.Equal(["expand+", "keep-one+", "|", "view", "mark", "crop", "split", "angle", "upscale", "reverse", "|", "library"], Bar(Selection(doc, true, cover)));
+        cover.SetOption(NodeKeys.StackOpen, "true");
+        Assert.Equal("collapse+", Bar(Selection(doc, true, cover))[0]);
+    }
+
+    [Fact]
+    public void Several_nodes_show_compare_compose_matching_and_grouping()
+    {
+        var (a, b) = (Picture("图片-001.png"), Picture("图片-002.png"));
+        Assert.Equal(["compare+", "compose+", "|", "match-width", "match-height", "match-both", "|", "group+"], Bar(Selection(Doc(a, b), true, a, b)));
+        var text = new CanvasNode { Kind = NodeKind.Text, Content = "你好" };
+        // Only one picture: no compare or compose, matching and grouping stay.
+        Assert.Equal(["match-width", "match-height", "match-both", "|", "group+"], Bar(Selection(Doc(a, text), true, a, text)));
+    }
+
+    [Fact]
+    public void The_bar_is_a_subset_of_the_table_shows_at_most_four_labels_and_never_repeats_the_menu()
+    {
+        var (a, b) = (Picture("图片-001.png"), Picture("图片-002.png"));
+        var empty = new CanvasNode { Kind = NodeKind.Image };
+        var svg = Picture("图片-003.svg");
+        var contexts = new[] { Selection(Doc()), Selection(Doc(a), true, a), Selection(Doc(svg), true, svg), Selection(Doc(a, b), true, a, b), Selection(Doc(empty), true, empty) };
+        foreach (var context in contexts)
+        {
+            var items = CanvasCommands.BarItems(context);
+            Assert.True(items.Count(i => i.Spec is not null && i.Text) <= 5);
+            Assert.DoesNotContain(items, i => i.Spec is not null && !i.Spec.Visible(context));
+            // Dividers only between commands.
+            Assert.NotEqual("|", Bar(context).FirstOrDefault());
+            Assert.NotEqual("|", Bar(context).LastOrDefault());
+            var onBar = items.Where(i => i.Spec is not null).Select(i => i.Spec!.Id).ToHashSet();
+            Assert.DoesNotContain(CanvasCommands.More(context), c => onBar.Contains(c.Id));
+        }
+        foreach (var id in CanvasCommands.All.Where(c => c.Id.StartsWith("new-")).Select(c => c.Id)) Assert.NotNull(CanvasCommands.Find(id).Label);
     }
 
     [Fact]
