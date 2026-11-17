@@ -117,7 +117,7 @@ public sealed partial class CanvasView : UserControl
                 Select((e.KeyModifiers & (VirtualKeyModifiers.Control | VirtualKeyModifiers.Shift)) != 0 ? [.. _selected, view.Node.Id] : [view.Node.Id]);
         }), true);
         ActualThemeChanged += (_, _) => UpdateColors();
-        Loaded += (_, _) => { LiquidGlass.Scene = this; UpdateColors(); ApplyViewport(); FocusCanvas(); };
+        Loaded += (_, _) => { LiquidGlass.Scene = this; GlassTrace.Start(); UpdateColors(); ApplyViewport(); FocusCanvas(); };
         Unloaded += (_, _) =>
         {
             // A window-level popup would otherwise stay over the next page.
@@ -337,6 +337,7 @@ public sealed partial class CanvasView : UserControl
 
     private void ApplyViewport()
     {
+        GlassTrace.Write($"V x={V.X:0.0} y={V.Y:0.0} k={V.K:0.000}");
         WorldTransform.ScaleX = WorldTransform.ScaleY = V.K;
         WorldTransform.TranslateX = V.X;
         WorldTransform.TranslateY = V.Y;
@@ -808,6 +809,7 @@ public sealed partial class CanvasView : UserControl
     private void Backdrop_Draw(CanvasControl sender, CanvasDrawEventArgs args)
     {
         // Whatever made the canvas redraw also changed what the liquid glass shows.
+        GlassTrace.Write($"B x={V.X:0.0}");
         LiquidGlass.Invalidate();
         var ds = args.DrawingSession;
         var spacing = 24 * V.K;
@@ -844,6 +846,7 @@ public sealed partial class CanvasView : UserControl
                 ds.DrawGeometry(geometry, brush, stroke);
             }
         }
+        GlassTrace.Write("b");
     }
 
     /// <summary>
@@ -881,13 +884,15 @@ public sealed partial class CanvasView : UserControl
 
         var spacing = 24 * V.K;
         while (spacing < 18) spacing *= 2;
-        var dot = Alpha(_ink, 30);
         var (ox, oy) = (((V.X % spacing) + spacing) % spacing, ((V.Y % spacing) + spacing) % spacing);
-        for (var x = ox + Math.Floor((area.Left - ox) / spacing) * spacing; x < area.Right + spacing; x += spacing)
-        for (var y = oy + Math.Floor((area.Top - oy) / spacing) * spacing; y < area.Bottom + spacing; y += spacing)
-            ds.FillCircle((float)x, (float)y, 1.1f, dot);
-
         var screen = ds.Transform;
+        // The dot grid as one cached geometry per spacing and size, moved into place: drawing each dot cost most of the frame.
+        var (cols, rows) = ((int)Math.Ceiling(area.Width / spacing) + 2, (int)Math.Ceiling(area.Height / spacing) + 2);
+        var dots = GlassDots(ds.Device, cols, rows);
+        // Built once at a middle spacing and scaled, so zooming does not rebuild it every frame (dots vary ±40 % in size, under the blur).
+        ds.Transform = Matrix3x2.CreateScale((float)(spacing / DotBase)) * Matrix3x2.CreateTranslation((float)(ox + Math.Floor((area.Left - ox) / spacing) * spacing), (float)(oy + Math.Floor((area.Top - oy) / spacing) * spacing)) * screen;
+        ds.DrawCachedGeometry(dots, Alpha(_ink, 30));
+
         ds.Transform = Matrix3x2.CreateScale((float)V.K) * Matrix3x2.CreateTranslation((float)V.X, (float)V.Y) * screen;
         var (topLeft, bottomRight) = (ToWorld(new Point(area.Left, area.Top)), ToWorld(new Point(area.Right, area.Bottom)));
         var visible = new Rect(topLeft.X, topLeft.Y, bottomRight.X, bottomRight.Y);
@@ -914,6 +919,56 @@ public sealed partial class CanvasView : UserControl
             else ds.DrawImage(picture, dest, new Windows.Foundation.Rect(0, 0, pw, ph));
         }
         ds.Transform = screen;
+    }
+
+    /// <summary>
+    /// The colour the liquid glass scene has at a canvas-area point, for the adaptive tint: the topmost card (a picture's thumbnail
+    /// colour where it shows one), a group's tint or the canvas colour. CPU only, so sampling never waits on the GPU.
+    /// </summary>
+    private (long At, HashSet<CanvasNode> Set) _glassHidden = (0, []);
+    private readonly Dictionary<(int Cols, int Rows), CanvasCachedGeometry> _glassDots = [];
+    private const double DotBase = 25.5;
+
+    private CanvasCachedGeometry GlassDots(CanvasDevice device, int cols, int rows)
+    {
+        var (key, spacing) = ((cols, rows), DotBase);
+        if (_glassDots.TryGetValue(key, out var cached)) return cached;
+        if (_glassDots.Count > 24) { foreach (var old in _glassDots.Values) old.Dispose(); _glassDots.Clear(); }
+        var circles = new CanvasGeometry[cols * rows];
+        for (var i = 0; i < circles.Length; i++) circles[i] = CanvasGeometry.CreateCircle(device, (float)(i % cols * spacing), (float)(i / cols * spacing), 1.1f);
+        using var group = CanvasGeometry.CreateGroup(device, circles);
+        foreach (var circle in circles) circle.Dispose();
+        return _glassDots[key] = CanvasCachedGeometry.CreateFill(group);
+    }
+
+    public Color GlassColor(Point screen)
+    {
+        var theme = (ResourceDictionary)Application.Current.Resources.ThemeDictionaries[ActualTheme == ElementTheme.Dark ? "Dark" : "Light"];
+        Color Brush(string name) => theme.TryGetValue(name, out var brush) && brush is SolidColorBrush solid ? solid.Color : Colors.Gray;
+        var background = Brush("CanvasBackgroundBrush");
+        var world = ToWorld(screen);
+        // Every surface samples 15 points per frame; the collapsed stacks are worked out once per few milliseconds.
+        if (Stopwatch.GetElapsedTime(_glassHidden.At).TotalMilliseconds > 8) _glassHidden = (Stopwatch.GetTimestamp(), Stacks.Hidden(Doc));
+        var hidden = _glassHidden.Set;
+        var node = Doc.Nodes.Reverse().Where(n => !hidden.Contains(n) && Rect.Of(n).Contains(world.X, world.Y)).OrderBy(n => n.Kind == NodeKind.Group ? 1 : 0).FirstOrDefault();
+        if (node is null) return Color.FromArgb(255, background.R, background.G, background.B);
+        if (node.Kind == NodeKind.Group)
+        {
+            var g = Palette.Kind(NodeKind.Group, ActualTheme);
+            static byte Over(byte a, byte b) => (byte)(b + (a - b) * 20 / 255);
+            return Color.FromArgb(255, Over(g.R, background.R), Over(g.G, background.G), Over(g.B, background.B));
+        }
+        var card = Brush("CardBrush");
+        if (node.Kind != NodeKind.Image || !node.HasContent) return card;
+        var path = ProjectStore.AssetPath(Doc.Id, node.Content!);
+        if (LiquidGlass.Thumb(path) is not { } thumb || LiquidGlass.Picture(path) is not { } picture) return card;
+        var (pw, ph) = (picture.Size.Width, picture.Size.Height);
+        var fill = node.FreeResize ? Math.Min(node.Width / pw, node.Height / ph) : Math.Max(node.Width / pw, node.Height / ph);
+        var u = (world.X - node.X - (node.Width - pw * fill) / 2) / (pw * fill);
+        var v = (world.Y - node.Y - (node.Height - ph * fill) / 2) / (ph * fill);
+        if (u is < 0 or >= 1 || v is < 0 or >= 1) return card;
+        var side = LiquidGlass.ThumbSide;
+        return thumb[(int)(v * side) * side + (int)(u * side)];
     }
 
     private void Overlay_Draw(CanvasControl sender, CanvasDrawEventArgs args)

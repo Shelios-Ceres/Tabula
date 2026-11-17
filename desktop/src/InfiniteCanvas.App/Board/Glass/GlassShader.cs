@@ -68,6 +68,23 @@ public readonly partial struct GlassShader(float4 box, float4 lens, float4 tone,
         float dark = extra.Z;
         float d = Box(p, half, r, n);
         float cover = Hlsl.Clamp(0.5f - d, 0, 1);
+        float rim = Hlsl.Max(lens.Z, 1);
+
+        // FXC rejects early returns around the input samples here ("potentially uninitialized"), so there is one exit.
+        float4 result = new float4(0, 0, 0, 0);
+
+        // Deep inside: no bend, no rim light, no bevel and no shadow reach here, so skip the distance field work (most of a big panel).
+        if (d < -Hlsl.Max(rim, 20 * u))
+        {
+            float3 inner = Sample(new float2(0, 0));
+            inner = Saturate(inner, tone.X);
+            inner = (inner - 0.5f) * tone.Y + 0.5f;
+            inner *= tone.Z;
+            inner = Hlsl.Clamp(Saturate(inner, tone.W), 0, 1);
+            result = new float4(Hlsl.Lerp(inner, tint.RGB, tint.A), 1);
+        }
+        else
+        {
 
         // Outer shadows (glass.css): a 0.5u hairline and a soft drop 4u down, only outside the pane.
         float hairline = Hlsl.Clamp(0.5f * u + 0.5f - d, 0, 1) * Hlsl.Lerp(0.12f, 0.28f, dark);
@@ -75,7 +92,9 @@ public readonly partial struct GlassShader(float4 box, float4 lens, float4 tone,
         float drop = (1 - Hlsl.SmoothStep(-2 * sigma, 2 * sigma, Box(p - new float2(0, 4 * u), half, r, n))) * Hlsl.Lerp(0.1f, 0.22f, dark);
         float shade = (1 - (1 - hairline) * (1 - drop)) * light.Z;
         float4 shadow = new float4(0, 0, 0, Hlsl.Clamp(shade, 0, 1) * (1 - cover));
-        if (cover <= 0) return shadow;
+        result = shadow;
+        if (cover > 0)
+        {
 
         // The rim lens: the scene bends inward along the contour normal, most at the outline and not at all past the rim.
         float e = 0.5f;
@@ -83,11 +102,10 @@ public readonly partial struct GlassShader(float4 box, float4 lens, float4 tone,
             Box(p + new float2(e, 0), half, r, n) - Box(p - new float2(e, 0), half, r, n),
             Box(p + new float2(0, e), half, r, n) - Box(p - new float2(0, e), half, r, n));
         float2 inward = -gradient / Hlsl.Max(Hlsl.Length(gradient), 0.00001f);
-        float rim = Hlsl.Max(lens.Z, 1);
         float depth = Hlsl.Clamp(-d / rim, 0, 1);
         float amount = lens.W * rim * Hlsl.Pow(1 - depth, extra.X);
         float split = extra.Y;
-        float3 c;
+        float3 c = new float3(0, 0, 0);
         if (split > 0 && amount > 0.01f)
         {
             c = new float3(
@@ -123,6 +141,9 @@ public readonly partial struct GlassShader(float4 box, float4 lens, float4 tone,
         c = Hlsl.Lerp(c, 1, Inset(p, half, r, n, new float2(step, step), soft, -soft) * Hlsl.Lerp(1, 0.46f, dark) * catchLight);
 
         c = Hlsl.Clamp(c, 0, 1);
-        return new float4(c * cover, cover) + shadow;
+        result = new float4(c * cover, cover) + shadow;
+        }
+        }
+        return result;
     }
 }

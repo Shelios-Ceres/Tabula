@@ -89,14 +89,22 @@ public static class LiquidGlass
 
     // ---------- Pictures: decoded once, downscaled ----------
 
-    private const int PictureSize = 384;
+    private const int PictureSize = 384, ThumbSize = 16;
     private static readonly Dictionary<string, CanvasBitmap?> Pictures = [];
+    private static readonly Dictionary<string, Color[]> Thumbs = [];
+
+    /// <summary>
+    /// A 16 × 16 colour grid of the picture (stretched), read back once when it loads, so the adaptive tint samples pictures on the CPU
+    /// instead of reading the GPU every few frames.
+    /// </summary>
+    public static Color[]? Thumb(string path) => Thumbs.GetValueOrDefault(path);
+    public const int ThumbSide = ThumbSize;
 
     /// <summary>A small copy of the picture at <paramref name="path"/>, or null while it loads (the glass redraws once it has).</summary>
     public static CanvasBitmap? Picture(string path)
     {
         if (Pictures.TryGetValue(path, out var bitmap)) return bitmap;
-        if (Pictures.Count > 160) Pictures.Clear();
+        if (Pictures.Count > 160) { Pictures.Clear(); Thumbs.Clear(); }
         Pictures[path] = null;
         _ = LoadPictureAsync(path);
         return null;
@@ -114,6 +122,11 @@ public static class LiquidGlass
             var scale = Math.Min(1, PictureSize / (double)Math.Max(size.Width, size.Height));
             var small = new CanvasRenderTarget(device, (float)Math.Max(1, size.Width * scale), (float)Math.Max(1, size.Height * scale), 96);
             using (var ds = small.CreateDrawingSession()) ds.DrawImage(source, new Rect(0, 0, small.Size.Width, small.Size.Height));
+            using (var thumb = new CanvasRenderTarget(device, ThumbSize, ThumbSize, 96))
+            {
+                using (var ds = thumb.CreateDrawingSession()) ds.DrawImage(small, new Rect(0, 0, ThumbSize, ThumbSize), new Rect(0, 0, small.Size.Width, small.Size.Height));
+                Thumbs[path] = thumb.GetPixelColors();
+            }
             Pictures[path] = small;
             Invalidate();
         }
@@ -134,10 +147,9 @@ public static class LiquidGlass
     private record struct Patch(double Luminance, double Texture, double R, double G, double B);
 
     /// <summary>15 points under the pane, dropping the two darkest and two brightest.</summary>
-    private static Patch Sample(Color[] pixels, int width, int height)
+    private static Patch Sample(IEnumerable<Color> points)
     {
-        var grid = Ys.SelectMany(fy => Xs.Select(fx => pixels[Math.Clamp((int)(fy * height), 0, height - 1) * width + Math.Clamp((int)(fx * width), 0, width - 1)]))
-            .OrderBy(Luma).ToList();
+        var grid = points.OrderBy(Luma).ToList();
         var texture = Luma(grid[^1]) - Luma(grid[0]);
         var kept = grid.Skip(2).Take(grid.Count - 4).ToList();
         return new(kept.Average(Luma), texture, kept.Average(c => (double)c.R), kept.Average(c => (double)c.G), kept.Average(c => (double)c.B));
@@ -196,18 +208,25 @@ public static class LiquidGlass
         private const double ShadowMargin = 28;
         private readonly Border _border;
         private CanvasControl? _control;
-        private CanvasRenderTarget? _scene, _probe;
+        private CanvasRenderTarget? _scene;
         private PixelShaderEffect<GlassShader>? _effect;
         private GaussianBlurEffect? _blur;
         private Rect _lastBounds;
         private bool? _lightInk;
         private ThemeShadow? _shadow;
         private ContentPresenter? _ink;
-        private long _lastAdapt;
-        private DispatcherQueueTimer? _adaptTimer;
-        private (double Density, double Keep, double Floor) _adapted = (0.35, 1, 0);
+        private long _lastEase;
+        private DispatcherQueueTimer? _easeTimer;
+        /// <summary>Eased values: tint density, saturation kept, legibility floor, and how dark the material is (0 light, 1 dark).</summary>
+        private (double Density, double Keep, double Floor, double Dark) _adapted = (0.35, 1, 0, 0);
+        private double? _luma;
         public long LastDraw;
         public double LastMs;
+        private static int _count;
+        private readonly int _id = ++_count;
+        private int _draws;
+        private double _adaptMs;
+        private CanvasRenderTarget? _gpuProbe;
 
         public Pane(Border border)
         {
@@ -263,7 +282,11 @@ public static class LiquidGlass
             }
         }
 
-        public void Redraw() => _control?.Invalidate();
+        public void Redraw()
+        {
+            GlassTrace.Write($"I p{_id}");
+            _control?.Invalidate();
+        }
 
         private void CheckBounds()
         {
@@ -283,6 +306,7 @@ public static class LiquidGlass
             var settings = GlassSettings.Current;
             if (!settings.Enabled || Scene is not { SceneRoot: { } root } scene) return;
             var start = Stopwatch.GetTimestamp();
+            GlassTrace.Write($"d p{_id}");
             var (w, h) = ((float)sender.ActualWidth, (float)sender.ActualHeight);
             if (w <= 2 * ShadowMargin || h <= 2 * ShadowMargin) return;
             Rect bounds;
@@ -297,19 +321,28 @@ public static class LiquidGlass
                 _scene?.Dispose();
                 _scene = new CanvasRenderTarget(sender, w, h);
             }
+            var tScene = Stopwatch.GetTimestamp();
             using (var ds = _scene.CreateDrawingSession())
             {
                 ds.Transform = Matrix3x2.CreateTranslation((float)-bounds.X, (float)-bounds.Y) * Matrix3x2.CreateScale((float)(1 / k));
                 scene.DrawGlassScene(ds, bounds);
             }
 
+            var sceneMs = Stopwatch.GetElapsedTime(tScene).TotalMilliseconds;
             var m = (float)ShadowMargin;
             var (bw, bh) = (w - 2 * m, h - 2 * m);
-            var dark = Material(settings, scene, bw, bh, m);
-            var material = dark ? settings.Dark : settings.Light;
-            var veil = Math.Min(1, material.Opacity);
-            var tintA = Math.Min(0.95, Math.Max(_adapted.Floor, (material.Thin + (material.Dense - material.Thin) * (settings.AutoDensity ? _adapted.Density : settings.Density)) * material.Opacity));
-            var tint = ParseColor(material.Tint, dark ? Color.FromArgb(255, 30, 30, 34) : Microsoft.UI.Colors.White);
+            var inset = ShadowMargin * k;
+            Material(settings, scene, new Rect(bounds.X + inset, bounds.Y + inset, Math.Max(1, bounds.Width - 2 * inset), Math.Max(1, bounds.Height - 2 * inset)));
+            // Between the two materials while the ink changes, as glass.css glides them.
+            var mix = _adapted.Dark;
+            var dark = mix > 0.5;
+            var (lm, dm) = (settings.Light, settings.Dark);
+            double Mix(Func<GlassMaterial, double> pick) => pick(lm) + (pick(dm) - pick(lm)) * mix;
+            var opacity = Mix(x => x.Opacity);
+            var veil = Math.Min(1, opacity);
+            var tintA = Math.Min(0.95, Math.Max(_adapted.Floor, (Mix(x => x.Thin) + (Mix(x => x.Dense) - Mix(x => x.Thin)) * _adapted.Density) * opacity));
+            var (lt, dt) = (ParseColor(lm.Tint, Microsoft.UI.Colors.White), ParseColor(dm.Tint, Color.FromArgb(255, 30, 30, 34)));
+            var tint = (R: lt.R + (dt.R - lt.R) * mix, G: lt.G + (dt.G - lt.G) * mix, B: lt.B + (dt.B - lt.B) * mix);
 
             // glasswork lens.js: the rim narrows to 1/3.5 of the short side, and surfaces under 32 px get no lens.
             var px = sender.Dpi / 96f;
@@ -320,71 +353,85 @@ public static class LiquidGlass
 
             _blur ??= new GaussianBlurEffect { BorderMode = EffectBorderMode.Hard, Optimization = EffectOptimization.Speed };
             _blur.Source = _scene;
-            _blur.BlurAmount = (float)material.Blur;
+            _blur.BlurAmount = (float)Mix(x => x.Blur);
             _effect ??= new PixelShaderEffect<GlassShader>();
             _effect.Sources[0] = _blur;
             _effect.ConstantBuffer = new GlassShader(
                 new float4(m * px, m * px, bw * px, bh * px),
                 new float4(radius * px, corner, rim * px, lens ? (float)settings.Edge : 0),
-                new float4((float)material.Saturation, (float)(1 + (material.Contrast - 1) * veil), (float)(1 + (material.Brightness - 1) * veil), (float)_adapted.Keep),
-                new float4(tint.R / 255f, tint.G / 255f, tint.B / 255f, (float)tintA),
-                new float4((float)material.RimLight, (float)(material.Bevel * veil), (float)material.Shadow, px),
-                new float4((float)settings.Power, lens ? (float)settings.Dispersion : 0, dark ? 1 : 0, 0));
+                new float4((float)Mix(x => x.Saturation), (float)(1 + (Mix(x => x.Contrast) - 1) * veil), (float)(1 + (Mix(x => x.Brightness) - 1) * veil), (float)_adapted.Keep),
+                new float4((float)(tint.R / 255), (float)(tint.G / 255), (float)(tint.B / 255), (float)tintA),
+                new float4((float)Mix(x => x.RimLight), (float)(Mix(x => x.Bevel) * veil), (float)Mix(x => x.Shadow), px),
+                new float4((float)settings.Power, lens ? (float)settings.Dispersion : 0, (float)mix, 0));
+            var tDraw = Stopwatch.GetTimestamp();
             args.DrawingSession.DrawImage(_effect);
+            var drawMs = Stopwatch.GetElapsedTime(tDraw).TotalMilliseconds;
 
             LastMs = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+            if (GlassTrace.On)
+            {
+                GlassTrace.Write($"D p{_id} vx={scene.Viewport.X:0.0} bx={bounds.X:0.0} cpu={LastMs:0.00} scene={sceneMs:0.00} fx={drawMs:0.00} adapt={_adaptMs:0.00} tint={tintA:0.000} dens={_adapted.Density:0.000} floor={_adapted.Floor:0.000} dark={dark} size={w:0}x{h:0}");
+                _adaptMs = 0;
+                // Every 15th draw: the GPU cost of this pane, timed by rendering the same graph offscreen and reading one pixel back.
+                if (++_draws % 15 == 0 && Environment.GetEnvironmentVariable("INFINITE_CANVAS_GLASS_TRACE_GPU") is not null)
+                {
+                    var gpu = Stopwatch.GetTimestamp();
+                    if (_gpuProbe is null || _gpuProbe.Size != _scene.Size || _gpuProbe.Dpi != _scene.Dpi) { _gpuProbe?.Dispose(); _gpuProbe = new CanvasRenderTarget(sender, w, h); }
+                    using (var probe = _gpuProbe.CreateDrawingSession()) probe.DrawImage(_effect);
+                    _gpuProbe.GetPixelColors(0, 0, 1, 1);
+                    GlassTrace.Write($"G p{_id} gpu={Stopwatch.GetElapsedTime(gpu).TotalMilliseconds:0.00}");
+                }
+            }
             LastDraw = Stopwatch.GetTimestamp();
             Record(LastMs);
         }
 
         /// <summary>
-        /// Reads the scene under the pane (at most every 100 ms, with a catch-up redraw), picks the ink and the material and adapts the
-        /// tint density, the saturation kept and the legibility floor. Returns true for the dark material.
+        /// glasswork adapt.js on every draw: 15 points under the pane (<paramref name="box"/>, canvas-area DIPs) read on the CPU from the
+        /// document and the picture thumbnails, then the ink, tint density, saturation kept and legibility floor. The numbers and the
+        /// light / dark material ease towards their targets (time constant 0.2 s, as glass.css transitions them) instead of jumping,
+        /// which made the tint flicker whenever a picture crossed the pane.
         /// </summary>
-        private bool Material(GlassSettings settings, CanvasView scene, float bw, float bh, float m)
+        private void Material(GlassSettings settings, CanvasView scene, Rect box)
         {
+            var start = Stopwatch.GetTimestamp();
             var themeDark = scene.ActualTheme == ElementTheme.Dark;
-            var needsPatch = settings.Ink == "auto" || settings.AutoDensity || settings.Legible;
-            if (needsPatch && _scene is not null)
+            var first = _lastEase == 0;
+            var step = first ? 1 : 1 - Math.Exp(-(start - _lastEase) / (double)Stopwatch.Frequency / 0.2);
+            _lastEase = start;
+            bool light;
+            (double Density, double Keep, double Floor) target;
+            if (settings.Ink == "auto" || settings.AutoDensity || settings.Legible)
             {
-                var now = Stopwatch.GetTimestamp();
-                if (now - _lastAdapt >= Stopwatch.Frequency / 10)
-                {
-                    _lastAdapt = now;
-                    _probe ??= new CanvasRenderTarget(CanvasDevice.GetSharedDevice(), 20, 12, 96);
-                    using (var ds = _probe.CreateDrawingSession()) ds.DrawImage(_scene, new Rect(0, 0, 20, 12), new Rect(m, m, bw, bh));
-                    var patch = Sample(_probe.GetPixelColors(), 20, 12);
-                    var light = settings.Ink switch
-                    {
-                        "auto" => LightInk(patch.Luminance, _lightInk, settings.Threshold),
-                        "light" => true,
-                        "dark" => false,
-                        _ => themeDark,
-                    };
-                    var (density, keep) = settings.AutoDensity ? Adapt(patch, light) : (settings.Density, 1);
-                    var material = light ? settings.Dark : settings.Light;
-                    var floor = settings.Legible ? TintFloor(patch, light, Luma(ParseColor(material.Tint, Microsoft.UI.Colors.White))) : 0;
-                    _adapted = (density, keep, floor);
-                    SetInk(light, settings);
-                }
-                else
-                {
-                    if (_adaptTimer is null)
-                    {
-                        _adaptTimer = _border.DispatcherQueue.CreateTimer();
-                        _adaptTimer.Interval = TimeSpan.FromMilliseconds(120);
-                        _adaptTimer.IsRepeating = false;
-                        _adaptTimer.Tick += (_, _) => Redraw();
-                    }
-                    if (!_adaptTimer.IsRunning) _adaptTimer.Start();
-                }
+                var patch = Sample(Ys.SelectMany(fy => Xs.Select(fx => scene.GlassColor(new Windows.Foundation.Point(box.X + box.Width * fx, box.Y + box.Height * fy)))));
+                _luma = _luma is { } luma && !first ? luma + (patch.Luminance - luma) * step : patch.Luminance;
+                light = settings.Ink switch { "auto" => LightInk(_luma.Value, _lightInk, settings.Threshold), "light" => true, "dark" => false, _ => themeDark };
+                var (density, keep) = settings.AutoDensity ? Adapt(patch, light) : (settings.Density, 1);
+                var floor = settings.Legible ? TintFloor(patch, light, Luma(ParseColor((light ? settings.Dark : settings.Light).Tint, Microsoft.UI.Colors.White))) : 0;
+                target = (density, keep, floor);
             }
             else
             {
-                _adapted = (settings.Density, 1, 0);
-                SetInk(settings.Ink switch { "light" => true, "dark" => false, _ => themeDark }, settings);
+                light = settings.Ink switch { "light" => true, "dark" => false, _ => themeDark };
+                target = (settings.Density, 1, 0);
             }
-            return _lightInk ?? themeDark;
+            var dark = light ? 1.0 : 0.0;
+            double Ease(double from, double to) => first ? to : from + (to - from) * step;
+            var next = (Ease(_adapted.Density, target.Density), Ease(_adapted.Keep, target.Keep), Ease(_adapted.Floor, target.Floor), Ease(_adapted.Dark, dark));
+            var moving = Math.Abs(next.Item1 - target.Density) + Math.Abs(next.Item2 - target.Keep) + Math.Abs(next.Item3 - target.Floor) + Math.Abs(next.Item4 - dark) > 0.004;
+            _adapted = moving ? next : (target.Density, target.Keep, target.Floor, dark);
+            SetInk(light, settings);
+            _adaptMs = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+            if (!moving) return;
+            // Keep easing after the canvas stops: one more frame shortly.
+            if (_easeTimer is null)
+            {
+                _easeTimer = _border.DispatcherQueue.CreateTimer();
+                _easeTimer.Interval = TimeSpan.FromMilliseconds(16);
+                _easeTimer.IsRepeating = false;
+                _easeTimer.Tick += (_, _) => Redraw();
+            }
+            if (!_easeTimer.IsRunning) _easeTimer.Start();
         }
 
         /// <summary>Light ink means dark glass: the content follows through RequestedTheme, so every theme brush inside switches with it.</summary>
