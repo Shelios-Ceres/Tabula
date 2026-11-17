@@ -207,9 +207,10 @@ public class CommandTests
     private static List<string> Bar(CommandContext context) => CanvasCommands.BarItems(context).Select(i => i.Spec is null ? "|" : i.Spec.Id + (i.Text ? "+" : "")).ToList();
 
     [Fact]
-    public void Nothing_selected_the_bar_creates_and_imports()
+    public void Nothing_selected_shows_no_bar()
     {
-        Assert.Equal(["new-text+", "new-image+", "new-video+", "new-audio+", "new-config+", "|", "import"], Bar(Selection(Doc())));
+        // No bar at all: nodes are created and files imported from the canvas menu.
+        Assert.Empty(Bar(Selection(Doc())));
         Assert.Empty(CanvasCommands.More(Selection(Doc())));
     }
 
@@ -299,7 +300,6 @@ public class CommandTests
             var onBar = items.Where(i => i.Spec is not null).Select(i => i.Spec!.Id).ToHashSet();
             Assert.DoesNotContain(CanvasCommands.More(context), c => onBar.Contains(c.Id));
         }
-        foreach (var id in CanvasCommands.All.Where(c => c.Id.StartsWith("new-")).Select(c => c.Id)) Assert.NotNull(CanvasCommands.Find(id).Label);
     }
 
     [Fact]

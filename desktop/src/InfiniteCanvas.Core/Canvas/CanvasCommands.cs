@@ -177,7 +177,8 @@ public static class CanvasCommands
     /// </summary>
     public static IReadOnlyList<string> Bar(CommandContext c)
     {
-        if (c.Count == 0) return ["new-text+", "new-image+", "new-video+", "new-audio+", "new-config+", "|", "import"];
+        // Nothing selected, nothing shown: nodes are created and files imported from the canvas menu (right-click, double-click).
+        if (c.Count == 0) return [];
         if (c.Count > 1) return ["compare+", "compose+", "|", "match-width", "match-height", "match-both", "|", "group+", "ungroup+"];
         return c.Kind switch
         {

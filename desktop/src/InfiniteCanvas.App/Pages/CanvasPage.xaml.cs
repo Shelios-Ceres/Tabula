@@ -24,7 +24,7 @@ public sealed partial class CanvasPage : Page
         // Glass capsules float above the canvas with a soft system shadow cast onto it.
         var shadow = new ThemeShadow();
         shadow.Receivers.Add(Board);
-        foreach (var capsule in new UIElement[] { TitleCapsule, ToolCapsule, ZoomCapsule })
+        foreach (var capsule in new UIElement[] { TitleCapsule, ZoomCapsule })
         {
             capsule.Shadow = shadow;
             capsule.Translation = new Vector3(0, 0, 24);
@@ -46,8 +46,6 @@ public sealed partial class CanvasPage : Page
         Motion.ShowHide(Map, 0, 1, 0.94f);
         QuotaButton.Flyout = new QuotaFlyout();
         BuildHelp();
-        TitleHost.SizeChanged += (_, _) => KeepToolsClear();
-        ToolHost.SizeChanged += (_, _) => KeepToolsClear();
         // Liquid glass experiment: scaled glass panels, the tuning panel and its shortcut.
         GlassScale.Wrap(Library);
         GlassScale.Wrap(Agent);
@@ -57,8 +55,7 @@ public sealed partial class CanvasPage : Page
         accelerator.Invoked += (_, e) => { e.Handled = true; ShowGlassPanel(GlassPanel.Visibility != Visibility.Visible); };
         KeyboardAccelerators.Add(accelerator);
         KeyboardAcceleratorPlacementMode = Microsoft.UI.Xaml.Input.KeyboardAcceleratorPlacementMode.Hidden;
-        Commands.Attach(Board);
-        Commands.Rebuilt += KeepToolsClear;
+        Board.Changed += UpdateUndo;
         GlassSettings.Changed += GlassSettings_Changed;
         Unloaded += (_, _) => GlassSettings.Changed -= GlassSettings_Changed;
         Loaded += (_, _) => ApplyGlassTheme();
@@ -138,36 +135,22 @@ public sealed partial class CanvasPage : Page
         Board.SafeArea = new Thickness(library, 12 + 56 * s, Agent.Visibility == Visibility.Visible ? Agent.Margin.Right + Agent.Width + 12 : 0, 16 + 56 * s);
     }
 
-    private void Page_SizeChanged(object sender, SizeChangedEventArgs? e) => KeepToolsClear();
-
-    /// <summary>
-    /// The command bar stays centred but slides right instead of covering the title capsule. Labels give way in this order, so the bar keeps
-    /// its text as long as it can: the title capsule's labels first (narrow windows, or when the bar needs the room), then the bar's own.
-    /// Every button keeps its tooltip and automation name.
-    /// </summary>
-    private void KeepToolsClear()
+    /// <summary>Narrow windows collapse the title capsule's labels to icons; every button keeps its tooltip and automation name. The labelled capsule needs about 1250 DIPs at scale 1 and grows with the glass UI scale.</summary>
+    private void Page_SizeChanged(object sender, SizeChangedEventArgs? e)
     {
-        var scale = GlassSettings.Current.UiScale;
-        double TitleWidth(bool compact)
-        {
-            foreach (var label in new[] { LibraryLabel, AgentLabel, QuotaLabel }) label.Visibility = compact ? Visibility.Collapsed : Visibility.Visible;
-            TitleHost.Measure(new Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity));
-            return TitleHost.DesiredSize.Width;
-        }
-        double Free(double title) => ActualWidth - (TitleHost.Margin.Left + title + 12) - 16;
-        var titleCompact = ActualWidth < 1250 * scale;
-        var barCompact = Commands.FullWidth * scale > Free(TitleWidth(titleCompact));
-        if (barCompact && !titleCompact)
-        {
-            titleCompact = true;
-            barCompact = Commands.FullWidth * scale > Free(TitleWidth(true));
-        }
-        TitleWidth(titleCompact);
-        TitleText.MaxWidth = titleCompact ? 160 : 200;
-        Commands.Compact = barCompact;
-        var overlap = TitleHost.Margin.Left + TitleHost.DesiredSize.Width + 12 - (ActualWidth - ToolHost.ActualWidth) / 2;
-        ToolHost.Margin = new Thickness(Math.Max(0, overlap) * 2, 12, 0, 0);
+        var compact = ActualWidth < 1250 * GlassSettings.Current.UiScale;
+        foreach (var label in new[] { LibraryLabel, AgentLabel, QuotaLabel }) label.Visibility = compact ? Visibility.Collapsed : Visibility.Visible;
+        TitleText.MaxWidth = compact ? 160 : 200;
     }
+
+    private void UpdateUndo()
+    {
+        UndoButton.IsEnabled = Board.History?.CanUndo == true;
+        RedoButton.IsEnabled = Board.History?.CanRedo == true;
+    }
+
+    private void Undo_Click(object sender, RoutedEventArgs e) { Board.Undo(); UpdateUndo(); }
+    private void Redo_Click(object sender, RoutedEventArgs e) { Board.Redo(); UpdateUndo(); }
 
     protected override void OnNavigatedTo(NavigationEventArgs e)
     {
@@ -188,7 +171,7 @@ public sealed partial class CanvasPage : Page
         TitleText.Text = _doc.Title;
         App.Window.SetCaption(_doc.Title);
         SaveState.Text = "已保存";
-        Commands.UpdateUndo();
+        UpdateUndo();
         UpdateZoomText();
     }
 
