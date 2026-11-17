@@ -92,7 +92,10 @@ public sealed partial class CanvasView : UserControl
         GlassScale.Wrap(_panel);
         ScreenLayer.Children.Add(_panel);
         _panel.CastShadowOn(Backdrop);
-        _panel.SizeChanged += (_, _) => PositionPanel(true);
+        // The panel makes room (glides the canvas) only after it was bound to another node or opened / folded, once its new size is laid out;
+        // any other size change (typing, the estimate, 生成 ↔ 停止) only repositions it.
+        _panel.SizeChanged += (_, _) => { PositionPanel(_roomPending); _roomPending = false; };
+        _panel.ExpandedChanged += AskForRoom;
         Motion.ShowHide(_panel, 0.5f, 0);
         Motion.ShowHide(EmptyHint);
         // Text boxes and media controls inside nodes swallow pointer presses; still select the node they belong to.
@@ -538,15 +541,26 @@ public sealed partial class CanvasView : UserControl
             _panel.Bind(null);
             return;
         }
-        if (_panel.Node != node) _panel.Bind(node);
+        var another = _panel.Node != node;
+        if (another) _panel.Bind(node);
         else _panel.Refresh();
         _panel.Visibility = Visibility.Visible;
-        PositionPanel(true);
+        if (another) AskForRoom();
+        PositionPanel(another);
+    }
+
+    private bool _roomPending;
+
+    /// <summary>The next layout of the panel may glide the canvas to make room; a pending request that no layout used is dropped once the UI is idle.</summary>
+    private void AskForRoom()
+    {
+        _roomPending = true;
+        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () => _roomPending = false);
     }
 
     /// <summary>
     /// Put the prompt panel where it never covers its own node: below it, else above it, else beside it, else (<paramref name="makeRoom"/>:
-    /// on selecting, or when the panel opens or closes, never while the user pans or zooms) glide the canvas so it fits below. A window too
+    /// only when the panel was bound to another node or opened / folded, never while the user pans, zooms or edits) glide the canvas so it fits below. A window too
     /// small even for that leaves the panel below, clamped into the window.
     /// </summary>
     private void PositionPanel(bool makeRoom = false)

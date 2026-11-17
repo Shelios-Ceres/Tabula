@@ -51,8 +51,14 @@ public sealed partial class PromptPanel : UserControl
     /// <summary>Pictures with content collapse to one line; empty pictures, text, audio and config nodes always show the whole panel.</summary>
     private static bool Collapsible(CanvasNode node) => node.Kind == NodeKind.Image && node.HasContent;
 
+    /// <summary>Raised when the panel opens or folds (including when another node is bound), so the canvas can make room for its new size.</summary>
+    public event Action? ExpandedChanged;
+
+    private bool _shown = true;
+
     private void ApplyExpanded()
     {
+        if (_shown != _expanded) { _shown = _expanded; ExpandedChanged?.Invoke(); }
         FullPanel.Visibility = _expanded ? Visibility.Visible : Visibility.Collapsed;
         CollapsedRow.Visibility = _expanded ? Visibility.Collapsed : Visibility.Visible;
         Shell.Width = _expanded ? 540 : 440;
