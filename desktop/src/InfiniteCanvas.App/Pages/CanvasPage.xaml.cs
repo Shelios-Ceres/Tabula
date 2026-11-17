@@ -87,7 +87,8 @@ public sealed partial class CanvasPage : Page
     private static void ApplyGlassTheme()
     {
         if (App.Window.Content is not FrameworkElement root) return;
-        var theme = GlassSettings.Current.Theme switch { "light" => ElementTheme.Light, "dark" => ElementTheme.Dark, _ => ElementTheme.Default };
+        // The theme switch belongs to the glass comparison: with the acrylic path the window follows the system again.
+        var theme = !GlassSettings.Current.Enabled ? ElementTheme.Default : GlassSettings.Current.Theme switch { "light" => ElementTheme.Light, "dark" => ElementTheme.Dark, _ => ElementTheme.Default };
         if (root.RequestedTheme != theme) root.RequestedTheme = theme;
     }
 

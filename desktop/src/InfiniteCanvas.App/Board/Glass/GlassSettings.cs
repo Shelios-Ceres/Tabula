@@ -27,6 +27,24 @@ public sealed class GlassMaterial
     public static GlassMaterial LightDefaults() => new();
     public static GlassMaterial DarkDefaults() => new() { Tint = "#1E1E22", Thin = 0.16, Dense = 0.38, Saturation = 1.6, Brightness = 0.8 };
     public GlassMaterial Clone() => (GlassMaterial)MemberwiseClone();
+
+    /// <summary>Holds every number to the range of its slider (a non-finite one goes back to <paramref name="d"/>'s) and a missing or invalid tint to the default.</summary>
+    public void Sanitize(GlassMaterial d)
+    {
+        static double Fit(double value, double min, double max, double fallback) => double.IsFinite(value) ? Math.Clamp(value, min, max) : fallback;
+        var hex = Tint?.TrimStart('#');
+        if (hex is not { Length: 6 } || !uint.TryParse(hex, System.Globalization.NumberStyles.HexNumber, null, out _)) Tint = d.Tint;
+        Opacity = Fit(Opacity, 0, 1.5, d.Opacity);
+        Thin = Fit(Thin, 0, 0.8, d.Thin);
+        Dense = Fit(Dense, 0, 0.95, d.Dense);
+        Blur = Fit(Blur, 0, 40, d.Blur);
+        Saturation = Fit(Saturation, 0, 3, d.Saturation);
+        Brightness = Fit(Brightness, 0.4, 1.6, d.Brightness);
+        Contrast = Fit(Contrast, 0.4, 1.6, d.Contrast);
+        RimLight = Fit(RimLight, 0, 2, d.RimLight);
+        Bevel = Fit(Bevel, 0, 2.5, d.Bevel);
+        Shadow = Fit(Shadow, 0, 3, d.Shadow);
+    }
 }
 
 /// <summary>
@@ -127,12 +145,39 @@ public sealed class GlassSettings
     {
         var settings = JsonSerializer.Deserialize<GlassSettings>(json, Json);
         if (settings is null) return null;
-        settings.Light ??= GlassMaterial.LightDefaults();
-        settings.Dark ??= GlassMaterial.DarkDefaults();
-        settings.UiScale = Math.Clamp(settings.UiScale, 0.75, 2);
-        if (!InkModes.Contains(settings.Ink)) settings.Ink = "theme";
-        if (settings.Theme is not ("light" or "dark")) settings.Theme = "system";
+        settings.Sanitize();
         return settings;
+    }
+
+    private static double Fit(double value, double min, double max, double fallback) => double.IsFinite(value) ? Math.Clamp(value, min, max) : fallback;
+
+    /// <summary>
+    /// A hand-edited or pasted file must not be able to break every canvas open: each number is held to the range of its slider in the
+    /// tuning panel (a non-finite one goes back to the default), a missing or invalid tint and an unknown name go back to the defaults.
+    /// </summary>
+    private void Sanitize()
+    {
+        var d = new GlassSettings();
+        UiScale = Fit(UiScale, 0.75, 2, d.UiScale);
+        Rim = Fit(Rim, 4, 96, d.Rim);
+        Edge = Fit(Edge, 0, 2.5, d.Edge);
+        Power = Fit(Power, 1, 6, d.Power);
+        Dispersion = Fit(Dispersion, 0, 0.4, d.Dispersion);
+        Radius = Fit(Radius, 0, 60, d.Radius);
+        Smoothing = Fit(Smoothing, 0.5, 3, d.Smoothing);
+        PanelBlur = Fit(PanelBlur, 0, 30, d.PanelBlur);
+        PanelTint = Fit(PanelTint, 0, 0.9, d.PanelTint);
+        Threshold = Fit(Threshold, 0.2, 0.8, d.Threshold);
+        Density = Fit(Density, 0, 1, d.Density);
+        FadeHeight = Fit(FadeHeight, 40, 260, d.FadeHeight);
+        FadeBlur = Fit(FadeBlur, 0, 40, d.FadeBlur);
+        FadeWash = Fit(FadeWash, 0, 1, d.FadeWash);
+        FadeOpacity = Fit(FadeOpacity, 0, 1, d.FadeOpacity);
+        if (!Presets.Contains(Preset)) Preset = d.Preset;
+        if (!InkModes.Contains(Ink)) Ink = "theme";
+        if (Theme is not ("light" or "dark")) Theme = "system";
+        (Light ??= GlassMaterial.LightDefaults()).Sanitize(GlassMaterial.LightDefaults());
+        (Dark ??= GlassMaterial.DarkDefaults()).Sanitize(GlassMaterial.DarkDefaults());
     }
 
     public string ToJson() => JsonSerializer.Serialize(this, Json);

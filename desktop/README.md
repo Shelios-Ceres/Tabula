@@ -15,7 +15,7 @@ dotnet build desktop/InfiniteCanvas.sln
 ```
 
 ```bash
-desktop/src/InfiniteCanvas.App/bin/x64/Debug/net10.0-windows10.0.19041.0/win-x64/InfiniteCanvas.exe
+desktop/src/InfiniteCanvas.App/bin/x64/Debug/net10.0-windows10.0.22621.0/win-x64/InfiniteCanvas.exe
 ```
 
 程序为非打包自包含形式，不需要安装 Windows App SDK 运行时。也可以用支持 .NET 10 的 Visual Studio 2026 打开 `desktop/InfiniteCanvas.sln`，选择 x64 直接运行。

@@ -102,16 +102,33 @@ public static class LiquidGlass
     public const int ThumbSide = ThumbSize;
 
     /// <summary>A small copy of the picture at <paramref name="path"/>, or null while it loads (the glass redraws once it has).</summary>
-    public static CanvasBitmap? Picture(string path)
+    public static CanvasBitmap? Picture(string path, CanvasDevice? drawingDevice = null)
     {
-        if (Pictures.TryGetValue(path, out var bitmap)) return bitmap;
-        if (Pictures.Count > 160) { Pictures.Clear(); Thumbs.Clear(); }
+        if (Pictures.TryGetValue(path, out var bitmap))
+        {
+            // A bitmap made on a device that has since been lost cannot be drawn with the new one: drop it and load again.
+            if (bitmap is null || drawingDevice is null || bitmap.Device == drawingDevice) return bitmap;
+            bitmap.Dispose();
+            Pictures.Remove(path);
+        }
+        if (Pictures.Count > 160) Trim();
         Pictures[path] = null;
-        _ = LoadPictureAsync(path);
+        _ = LoadPictureAsync(path, _epoch);
         return null;
     }
 
-    private static async Task LoadPictureAsync(string path)
+    private static int _epoch;
+
+    /// <summary>Disposes every cached picture (when the cache is full and when the canvas closes); loads still in flight are discarded.</summary>
+    public static void Trim()
+    {
+        _epoch++;
+        foreach (var bitmap in Pictures.Values) bitmap?.Dispose();
+        Pictures.Clear();
+        Thumbs.Clear();
+    }
+
+    private static async Task LoadPictureAsync(string path, int epoch)
     {
         try
         {
@@ -126,8 +143,9 @@ public static class LiquidGlass
             using (var thumb = new CanvasRenderTarget(device, ThumbSize, ThumbSize, 96))
             {
                 using (var ds = thumb.CreateDrawingSession()) ds.DrawImage(small, new Rect(0, 0, ThumbSize, ThumbSize), new Rect(0, 0, small.Size.Width, small.Size.Height));
-                Thumbs[path] = thumb.GetPixelColors();
+                if (epoch == _epoch) Thumbs[path] = thumb.GetPixelColors();
             }
+            if (epoch != _epoch) { small.Dispose(); return; }
             Pictures[path] = small;
             Invalidate();
         }
@@ -196,7 +214,7 @@ public static class LiquidGlass
 
     public static Color ParseColor(string hex, Color fallback)
     {
-        var h = hex.TrimStart('#');
+        var h = (hex ?? "").TrimStart('#');
         return h.Length == 6 && uint.TryParse(h, System.Globalization.NumberStyles.HexNumber, null, out var v)
             ? Color.FromArgb(255, (byte)(v >> 16), (byte)(v >> 8), (byte)v) : fallback;
     }
@@ -231,12 +249,39 @@ public static class LiquidGlass
         private int _reach = -1;
         private double _adaptMs;
         private CanvasRenderTarget? _gpuProbe;
+        private Grid? _grid;
+        private bool _panelResources;
 
         public Pane(Border border)
         {
             _border = border;
             border.Loaded += (_, _) => { Install(); Apply(); };
+            border.Unloaded += (_, _) => Teardown();
             border.LayoutUpdated += (_, _) => CheckBounds();
+        }
+
+        /// <summary>
+        /// The border left the tree (its page closed): Win2D needs the control removed from the visual tree, and the render targets
+        /// and effects are GPU memory that would otherwise live as long as the border. The next Loaded builds a control again.
+        /// </summary>
+        private void Teardown()
+        {
+            _easeTimer?.Stop();
+            if (_control is { } control)
+            {
+                control.Draw -= Draw;
+                control.RemoveFromVisualTree();
+                _grid?.Children.Remove(control);
+                _control = null;
+            }
+            _scene?.Dispose();
+            _gpuProbe?.Dispose();
+            _effect?.Dispose();
+            _blur?.Dispose();
+            _fadeClamp?.Dispose();
+            _fade?.Dispose();
+            (_scene, _gpuProbe, _effect, _blur, _fadeClamp, _fade) = (null, null, null, null, null, null);
+            (_reach, _lastBounds, _lastEase, _luma) = (-1, default, 0, null);
         }
 
         /// <summary>Moves the border's content into a grid with the glass control underneath it.</summary>
@@ -247,9 +292,10 @@ public static class LiquidGlass
         private void Install()
         {
             if (_control is not null) return;
-            if (IsPanel) AddPanelResources(_border.Resources);
+            PanelResources(GlassSettings.Current.Enabled);
             _control = new CanvasControl { IsHitTestVisible = false, ClearColor = Microsoft.UI.Colors.Transparent };
             _control.Draw += Draw;
+            if (_grid is not null) { _grid.Children.Insert(0, _control); return; }
             var content = _border.Child;
             _border.Child = null;
             var grid = new Grid();
@@ -258,12 +304,27 @@ public static class LiquidGlass
             // The presenter carries the ink to plain text, which otherwise takes its colour from the nearest control outside the glass.
             _ink = new ContentPresenter { Content = grid };
             _border.Child = _ink;
+            _grid = grid;
+        }
+
+        /// <summary>Panels carry resources that turn their inputs into glass wells; they only belong to the glass, so the acrylic path has none.</summary>
+        private void PanelResources(bool on)
+        {
+            if (!IsPanel || _panelResources == on) return;
+            _panelResources = on;
+            var resources = _border.Resources;
+            if (on) { AddPanelResources(resources); return; }
+            resources.Remove("ControlCornerRadius");
+            resources.Remove("OverlayCornerRadius");
+            resources.ThemeDictionaries.Remove("Light");
+            resources.ThemeDictionaries.Remove("Dark");
         }
 
         public void Apply()
         {
             if (_control is null) return;
             var on = GlassSettings.Current.Enabled;
+            PanelResources(on);
             if (on)
             {
                 // Panels: the content moves in as far as the rounded corner cuts in at 45 degrees, so nothing sits in the curve.
@@ -331,7 +392,7 @@ public static class LiquidGlass
             var k = bounds.Width / w;
 
             // What lies under the pane, in the control's own DIPs (scaled panes see the scene shrunk back to their unscaled units).
-            if (_scene is null || _scene.Size.Width != w || _scene.Size.Height != h || _scene.Dpi != sender.Dpi)
+            if (_scene is null || _scene.Device != sender.Device || _scene.Size.Width != w || _scene.Size.Height != h || _scene.Dpi != sender.Dpi)
             {
                 _scene?.Dispose();
                 _scene = new CanvasRenderTarget(sender, w, h);
@@ -412,7 +473,7 @@ public static class LiquidGlass
                 if (++_draws % 15 == 0 && Environment.GetEnvironmentVariable("INFINITE_CANVAS_GLASS_TRACE_GPU") is not null)
                 {
                     var gpu = Stopwatch.GetTimestamp();
-                    if (_gpuProbe is null || _gpuProbe.Size != _scene.Size || _gpuProbe.Dpi != _scene.Dpi) { _gpuProbe?.Dispose(); _gpuProbe = new CanvasRenderTarget(sender, w, h); }
+                    if (_gpuProbe is null || _gpuProbe.Device != sender.Device || _gpuProbe.Size != _scene.Size || _gpuProbe.Dpi != _scene.Dpi) { _gpuProbe?.Dispose(); _gpuProbe = new CanvasRenderTarget(sender, w, h); }
                     using (var probe = _gpuProbe.CreateDrawingSession()) probe.DrawImage(_effect);
                     _gpuProbe.GetPixelColors(0, 0, 1, 1);
                     GlassTrace.Write($"G p{_id} gpu={Stopwatch.GetElapsedTime(gpu).TotalMilliseconds:0.00}");

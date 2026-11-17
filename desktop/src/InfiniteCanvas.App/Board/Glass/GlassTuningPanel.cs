@@ -47,10 +47,16 @@ public sealed partial class GlassTuningPanel : UserControl
         root.Children.Add(scroll);
         Content = new Border { Style = (Style)Application.Current.Resources["FloatingPanel"], Padding = new Thickness(22, 16, 10, 18), Child = root };
 
-        LiquidGlass.Measured += ShowCost;
-        GlassSettings.Changed += _ => { if (!_building) ShowCost(); };
+        // The static events would keep every panel, its glass pane and their render targets alive for the whole session.
+        Loaded += (_, _) => { LiquidGlass.Measured += ShowCost; GlassSettings.Changed += OnSettingsChanged; ShowCost(); };
+        Unloaded += (_, _) => { LiquidGlass.Measured -= ShowCost; GlassSettings.Changed -= OnSettingsChanged; };
         Build();
         ShowCost();
+    }
+
+    private void OnSettingsChanged(bool scaleChanged)
+    {
+        if (!_building) ShowCost();
     }
 
     private void ShowCost()

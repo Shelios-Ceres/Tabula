@@ -126,6 +126,7 @@ public sealed partial class CanvasView : UserControl
             if (LiquidGlass.Scene == this) LiquidGlass.Scene = null;
             GlassSettings.Changed -= ApplyTopFade;
             TopFade.RemoveFromVisualTree();
+            DisposeGlass();
             Backdrop.RemoveFromVisualTree();
             Overlay.RemoveFromVisualTree();
         };
@@ -871,6 +872,24 @@ public sealed partial class CanvasView : UserControl
 
     private CanvasRenderTarget? _fadeScene;
     private BorderEffect? _fadeClamp;
+
+    /// <summary>Releases the GPU resources of the glass scene, the top fade and the shared picture cache when the canvas closes.</summary>
+    private void DisposeGlass()
+    {
+        _fadeScene?.Dispose();
+        _fade?.Dispose();
+        _fadeClamp?.Dispose();
+        (_fadeScene, _fade, _fadeClamp) = (null, null, null);
+        DisposeGlassDots();
+        LiquidGlass.Trim();
+    }
+
+    private void DisposeGlassDots()
+    {
+        foreach (var dots in _glassDots.Values) dots.Dispose();
+        _glassDots.Clear();
+        _dotsDevice = null;
+    }
     private ComputeSharp.D2D1.WinUI.PixelShaderEffect<FadeShader>? _fade;
 
     /// <summary>Called with every liquid glass redraw (viewport, nodes, a picture finishing loading).</summary>
@@ -899,7 +918,7 @@ public sealed partial class CanvasView : UserControl
         var settings = GlassSettings.Current;
         var (w, h) = ((float)sender.ActualWidth, (float)sender.ActualHeight);
         if (!settings.Enabled || !settings.FadeOn || w < 1 || h < 1) return;
-        if (_fadeScene is null || _fadeScene.Size.Width != w || _fadeScene.Size.Height != h || _fadeScene.Dpi != sender.Dpi)
+        if (_fadeScene is null || _fadeScene.Device != sender.Device || _fadeScene.Size.Width != w || _fadeScene.Size.Height != h || _fadeScene.Dpi != sender.Dpi)
         {
             _fadeScene?.Dispose();
             _fadeScene = new CanvasRenderTarget(sender, w, h);
@@ -973,14 +992,14 @@ public sealed partial class CanvasView : UserControl
         var visible = new Rect(topLeft.X, topLeft.Y, bottomRight.X, bottomRight.Y);
         var card = Brush("CardBrush");
         var group = Alpha(Palette.Kind(NodeKind.Group, ActualTheme), 20);
-        var hidden = Stacks.Hidden(Doc);
+        var hidden = GlassHidden();
         foreach (var node in Doc.Nodes.OrderBy(n => n.Kind == NodeKind.Group ? 0 : 1))
         {
             if (hidden.Contains(node) || !visible.Intersects(Rect.Of(node))) continue;
             var bounds = new Windows.Foundation.Rect(node.X, node.Y, node.Width, node.Height);
             if (node.Kind == NodeKind.Group) { ds.FillRoundedRectangle(bounds, 18, 18, group); continue; }
             ds.FillRoundedRectangle(bounds, 14, 14, card);
-            if (node.Kind != NodeKind.Image || !node.HasContent || LiquidGlass.Picture(ProjectStore.AssetPath(Doc.Id, node.Content!)) is not { } picture) continue;
+            if (node.Kind != NodeKind.Image || !node.HasContent || LiquidGlass.Picture(ProjectStore.AssetPath(Doc.Id, node.Content!), ds.Device) is not { } picture) continue;
             // As the card shows it: cropped to fill, or whole inside a freely resized card.
             var (pw, ph) = (picture.Size.Width, picture.Size.Height);
             var fill = node.FreeResize ? Math.Min(node.Width / pw, node.Height / ph) : Math.Max(node.Width / pw, node.Height / ph);
@@ -1002,13 +1021,23 @@ public sealed partial class CanvasView : UserControl
     /// </summary>
     private (long At, HashSet<CanvasNode> Set) _glassHidden = (0, []);
     private readonly Dictionary<(int Cols, int Rows), CanvasCachedGeometry> _glassDots = [];
+    private CanvasDevice? _dotsDevice;
     private const double DotBase = 25.5;
+
+    /// <summary>The collapsed stacks, worked out once per few milliseconds however many surfaces and samples ask in a frame.</summary>
+    private HashSet<CanvasNode> GlassHidden()
+    {
+        if (Stopwatch.GetElapsedTime(_glassHidden.At).TotalMilliseconds > 8) _glassHidden = (Stopwatch.GetTimestamp(), Stacks.Hidden(Doc));
+        return _glassHidden.Set;
+    }
 
     private CanvasCachedGeometry GlassDots(CanvasDevice device, int cols, int rows)
     {
         var (key, spacing) = ((cols, rows), DotBase);
+        // Geometry made on a device that has since been lost cannot be drawn with the new one.
+        if (_dotsDevice != device) { DisposeGlassDots(); _dotsDevice = device; }
         if (_glassDots.TryGetValue(key, out var cached)) return cached;
-        if (_glassDots.Count > 24) { foreach (var old in _glassDots.Values) old.Dispose(); _glassDots.Clear(); }
+        if (_glassDots.Count > 24) { DisposeGlassDots(); _dotsDevice = device; }
         var circles = new CanvasGeometry[cols * rows];
         for (var i = 0; i < circles.Length; i++) circles[i] = CanvasGeometry.CreateCircle(device, (float)(i % cols * spacing), (float)(i / cols * spacing), 1.1f);
         using var group = CanvasGeometry.CreateGroup(device, circles);
@@ -1022,9 +1051,8 @@ public sealed partial class CanvasView : UserControl
         Color Brush(string name) => theme.TryGetValue(name, out var brush) && brush is SolidColorBrush solid ? solid.Color : Colors.Gray;
         var background = Brush("CanvasBackgroundBrush");
         var world = ToWorld(screen);
-        // Every surface samples 15 points per frame; the collapsed stacks are worked out once per few milliseconds.
-        if (Stopwatch.GetElapsedTime(_glassHidden.At).TotalMilliseconds > 8) _glassHidden = (Stopwatch.GetTimestamp(), Stacks.Hidden(Doc));
-        var hidden = _glassHidden.Set;
+        // Every surface samples 15 points per frame.
+        var hidden = GlassHidden();
         var node = Doc.Nodes.Reverse().Where(n => !hidden.Contains(n) && Rect.Of(n).Contains(world.X, world.Y)).OrderBy(n => n.Kind == NodeKind.Group ? 1 : 0).FirstOrDefault();
         if (node is null) return Color.FromArgb(255, background.R, background.G, background.B);
         if (node.Kind == NodeKind.Group)
