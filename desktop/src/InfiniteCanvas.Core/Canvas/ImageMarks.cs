@@ -70,6 +70,9 @@ public static class NodeKeys
             .Concat(to.Options.Where(o => o.Key is SourceId or Stack or StackOpen))
             .ToDictionary(o => o.Key, o => o.Value);
 
+    /// <summary>Whether the picture carries a repaint mask, a markup layer or marked positions.</summary>
+    public static bool HasMarks(CanvasNode node) => node.Option(Mask).Length > 0 || node.Option(Markup).Length > 0 || SelectionsOf(node).Count > 0;
+
     public static List<ImageSelection> SelectionsOf(CanvasNode node) =>
         node.Option(Selections) is { Length: > 0 } json ? Json.Deserialize<List<ImageSelection>>(json) ?? [] : [];
 

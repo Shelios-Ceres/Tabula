@@ -143,23 +143,19 @@ public sealed partial class PromptPanel : UserControl
         InputsText.Text = inputs.Count == 0 ? "" : others > 0 ? $"+{others} 个输入" : $"{inputs.Count} 个输入";
     }
 
-    /// <summary>Local-edit entry for image nodes whose current model supports a mask or point / box editing, plus any text the model returned.</summary>
+    /// <summary>The marks left by local editing (shown only while there are some, with the way to clear them), plus any text the model returned.</summary>
     private void ShowMarks()
     {
         var node = _node!;
-        var (mask, points, markup) = _host.MarkSupport(node);
-        var show = node.Kind == NodeKind.Image && node.HasContent && (mask || points || markup);
-        MarksRow.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
-        if (show)
+        var parts = new List<string>();
+        if (node.Kind == NodeKind.Image && node.HasContent)
         {
-            var parts = new List<string>();
-            if (mask && node.Option(NodeKeys.Mask).Length > 0) parts.Add("已涂抹重绘区域");
-            if (markup && node.Option(NodeKeys.Markup).Length > 0) parts.Add("已画标注");
-            if (points && NodeKeys.SelectionsOf(node).Count is > 0 and var count) parts.Add($"已标记 {count} 处位置");
-            MarksText.Text = parts.Count > 0 ? string.Join(" · ", parts)
-                : mask && markup ? "涂抹要重绘的区域，或画圈标注要改的地方" : mask ? "涂抹要重绘的区域，其余保持不变" : "点选或框选要修改的位置";
-            ClearMarksButton.Visibility = parts.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+            if (node.Option(NodeKeys.Mask).Length > 0) parts.Add("涂抹重绘区域");
+            if (node.Option(NodeKeys.Markup).Length > 0) parts.Add("画圈标注");
+            if (NodeKeys.SelectionsOf(node).Count is > 0 and var count) parts.Add($"{count} 处位置");
         }
+        MarksRow.Visibility = parts.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        MarksText.Text = parts.Count > 0 ? "已标注 · " + string.Join(" · ", parts) : "";
         var notes = new[] { (Label: "模型说明", Text: node.Option(NodeKeys.ModelText)), (Label: "识别文字", Text: NodeKeys.RecognizedText(node)), (Label: "参考图", Text: node.Option(NodeKeys.InputNote)) }.Where(n => n.Text.Length > 0).ToList();
         ModelText.Text = string.Join("\n", notes.Select(n => $"{n.Label}：{n.Text}"));
         ModelText.Visibility = notes.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -217,13 +213,6 @@ public sealed partial class PromptPanel : UserControl
             }
         }
         return parts.Count > 0 ? string.Join(" · ", parts) : "参数";
-    }
-
-    private async void EditMarks_Click(object sender, RoutedEventArgs e)
-    {
-        if (_node is null) return;
-        await _host.EditMarksAsync(_node);
-        Refresh();
     }
 
     private void ClearMarks_Click(object sender, RoutedEventArgs e)

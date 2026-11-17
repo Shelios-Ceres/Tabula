@@ -39,21 +39,14 @@
                 <TextBlock x:Name="HintText" Grid.Column="1" VerticalAlignment="Center" TextWrapping="Wrap" Style="{StaticResource SecondaryCaption}" />
                 <HyperlinkButton Grid.Column="2" Content="去设置" Padding="6,2" Click="OpenSettings_Click" />
             </Grid>
-            <!-- Model-specific editing on an existing image: mask (GPT Image) or points / boxes (Seedream 5.0 pro / flash). -->
+            <!-- Marks left on this picture by 局部编辑 (opened from the command bar or the menu); only shown while there are some. -->
             <Grid x:Name="MarksRow" ColumnSpacing="6" Visibility="Collapsed">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <TextBlock x:Name="MarksText" VerticalAlignment="Center" Style="{StaticResource SecondaryCaption}" />
-                <Button Grid.Column="1" Style="{StaticResource ToolbarButton}" Padding="10,4" MinHeight="28" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" Click="EditMarks_Click">
-                    <StackPanel Orientation="Horizontal" Spacing="6">
-                        <FontIcon Glyph="&#xE70F;" FontSize="12" />
-                        <TextBlock Text="局部编辑" />
-                    </StackPanel>
-                </Button>
-                <Button x:Name="ClearMarksButton" Grid.Column="2" Style="{StaticResource ToolbarButton}" Padding="10,4" MinHeight="28" Content="清除" Click="ClearMarks_Click" />
+                <Button Grid.Column="1" Style="{StaticResource ToolbarButton}" Padding="10,4" MinHeight="28" Content="清除标注" Click="ClearMarks_Click" />
             </Grid>
             <TextBlock x:Name="ModelText" Visibility="Collapsed" TextWrapping="Wrap" MaxLines="3" TextTrimming="CharacterEllipsis" IsTextSelectionEnabled="True"
                        Style="{StaticResource SecondaryCaption}" />

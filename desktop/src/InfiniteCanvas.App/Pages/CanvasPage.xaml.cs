@@ -45,6 +45,7 @@ public sealed partial class CanvasPage : Page
         Motion.ShowHide(Agent, 1, 0.5f, 0.97f);
         Motion.ShowHide(Map, 0, 1, 0.94f);
         QuotaButton.Flyout = new QuotaFlyout();
+        BuildHelp();
         TitleHost.SizeChanged += (_, _) => KeepToolsClear();
         ToolHost.SizeChanged += (_, _) => KeepToolsClear();
         // Liquid glass experiment: scaled glass panels, the tuning panel and its shortcut.
@@ -324,6 +325,33 @@ public sealed partial class CanvasPage : Page
     private void AddVideo_Click(object sender, RoutedEventArgs e) => Board.AddNodeAtCenter(NodeKind.Video);
     private void AddAudio_Click(object sender, RoutedEventArgs e) => Board.AddNodeAtCenter(NodeKind.Audio);
     private void AddConfig_Click(object sender, RoutedEventArgs e) => Board.AddNodeAtCenter(NodeKind.Config);
+    /// <summary>The help flyout: gestures, then every shortcut of the command table, so it cannot drift from the menus.</summary>
+    private void BuildHelp()
+    {
+        void Section(string heading, IEnumerable<(string Title, string Text)> rows)
+        {
+            HelpGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            var title = new TextBlock { Text = heading, Style = (Style)Application.Current.Resources["BodyStrongTextBlockStyle"], Margin = new Thickness(0, HelpGrid.RowDefinitions.Count > 1 ? 8 : 0, 0, 0) };
+            Grid.SetRow(title, HelpGrid.RowDefinitions.Count - 1);
+            Grid.SetColumnSpan(title, 2);
+            HelpGrid.Children.Add(title);
+            foreach (var (name, text) in rows)
+            {
+                HelpGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+                var row = HelpGrid.RowDefinitions.Count - 1;
+                var left = new TextBlock { Text = name, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap };
+                var right = new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap, Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"] };
+                Grid.SetRow(left, row);
+                Grid.SetRow(right, row);
+                Grid.SetColumn(right, 1);
+                HelpGrid.Children.Add(left);
+                HelpGrid.Children.Add(right);
+            }
+        }
+        Section("手势", CanvasCommands.Gestures);
+        Section("快捷键", CanvasCommands.Shortcuts());
+    }
+
     private async void Import_Click(object sender, RoutedEventArgs e) => await Board.ImportWithPickerAsync();
     private void Undo_Click(object sender, RoutedEventArgs e) { Board.Undo(); UpdateUndo(); }
     private void Redo_Click(object sender, RoutedEventArgs e) { Board.Redo(); UpdateUndo(); }

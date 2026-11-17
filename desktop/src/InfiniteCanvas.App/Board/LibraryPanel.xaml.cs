@@ -234,6 +234,7 @@ public sealed partial class LibraryPanel : UserControl
         if (entries.Count == 0 || Target is not { } canvas) return;
         if (!entries[0].CanvasFile)
         {
+            if (!await Dialogs.ConfirmAsync($"从资料库删除 {entries.Count} 个文件？", "文件会移到回收站，需要时可以从系统回收站还原。", "删除", destructive: true)) return;
             foreach (var entry in entries) LibraryStore.Remove(entry.Path);
             return;
         }

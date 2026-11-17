@@ -61,12 +61,6 @@ public sealed partial class CanvasView : UserControl
     private readonly Border _selectionBar;
     /// <summary>Image tools above a single selected picture.</summary>
     private readonly Border _imageBar;
-    private Button? _imageMarkButton;
-    private Button[] _pixelTools = [];
-    /// <summary>The 对比 button of the selection bar and its divider, shown when exactly two bitmap pictures are selected.</summary>
-    private readonly Button _composeButton = new() { Content = "拼版…", Style = (Style)Application.Current.Resources["ToolbarButton"], Visibility = Visibility.Collapsed };
-    private readonly StackPanel _compareGroup = new() { Orientation = Orientation.Horizontal, Spacing = 2, Visibility = Visibility.Collapsed };
-    private readonly TextBlock _selectionCount = new() { Style = (Style)Application.Current.Resources["SecondaryCaption"], VerticalAlignment = VerticalAlignment.Center, Margin = new(10, 0, 6, 0) };
     private readonly List<string> _order = [];
     private Thickness _safe = new(0, 68, 0, 72);
     private string? _selectedConnection;
@@ -528,81 +522,8 @@ public sealed partial class CanvasView : UserControl
         CanvasGraph.MatchSize(anchor, targets, width, height);
     }
 
-    private Border BuildSelectionBar()
-    {
-        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2 };
-        Button Add(string text, string tip, Action action)
-        {
-            var button = new Button { Content = text, Style = (Style)Application.Current.Resources["ToolbarButton"] };
-            ToolTipService.SetToolTip(button, tip);
-            button.Click += (_, _) => action();
-            row.Children.Add(button);
-            return button;
-        }
-        void Divider() => row.Children.Add(new Microsoft.UI.Xaml.Shapes.Rectangle { Style = (Style)Application.Current.Resources["ToolbarDivider"] });
-        row.Children.Add(_selectionCount);
-        Divider();
-        Add("同宽", "宽度统一为基准节点（图片、视频保持比例）", () => MatchSize(true, false));
-        Add("同高", "高度统一为基准节点（图片、视频保持比例）", () => MatchSize(false, true));
-        Add("同宽高", "宽和高都统一为基准节点", () => MatchSize(true, true));
-        _compareGroup.Children.Add(new Microsoft.UI.Xaml.Shapes.Rectangle { Style = (Style)Application.Current.Resources["ToolbarDivider"] });
-        var compare = new Button { Content = "对比", Style = (Style)Application.Current.Resources["ToolbarButton"] };
-        ToolTipService.SetToolTip(compare, "对比选中的 2 到 4 张图片 (C)");
-        AutomationProperties.SetName(compare, "对比");
-        compare.Click += async (_, _) => await TrackLocalAsync(ShowCompareAsync);
-        _compareGroup.Children.Add(compare);
-        row.Children.Add(_compareGroup);
-        ToolTipService.SetToolTip(_composeButton, "把选中的图片拼成一张");
-        AutomationProperties.SetName(_composeButton, "拼版");
-        _composeButton.Click += async (_, _) => { if (ComposeInputs() is { Count: >= 2 } inputs) await TrackLocalAsync(() => ImageTools.ComposeAsync(this, inputs)); };
-        row.Children.Add(_composeButton);
-        Divider();
-        Add("编组", "把选中节点放进一个分组 (Ctrl+G)", Group);
-        return FloatingBar(row, PositionSelectionBar);
-    }
-
     /// <summary>The single selected image that has a picture, or null.</summary>
-    private CanvasNode? ImageBarNode() => _selected.Count == 1 && Doc.Find(_selected.First()) is { Kind: NodeKind.Image, HasContent: true } node ? node : null;
-
-    private Border BuildImageBar()
-    {
-        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2 };
-        Button Add(string glyph, string tip, Func<CanvasNode, Task> action)
-        {
-            var button = new Button { Style = (Style)Application.Current.Resources["ToolbarButton"], Padding = new Thickness(10, 7, 10, 7), Content = new FontIcon { Glyph = glyph, FontSize = 15 } };
-            ToolTipService.SetToolTip(button, tip);
-            AutomationProperties.SetName(button, tip);
-            button.Click += async (_, _) =>
-            {
-                if (ImageBarNode() is not { } node) return;
-                try { if (!IsClosing) await TrackLocalAsync(() => action(node)); }
-                catch (Exception ex)
-                {
-                    App.Log(ex);
-                    await Dialogs.MessageAsync(tip, ex.Message);
-                }
-            };
-            row.Children.Add(button);
-            return button;
-        }
-        _imageMarkButton = Add("", "局部编辑", EditMarksCoreAsync);
-        _pixelTools =
-        [
-            Add("", "裁剪", node => ImageTools.CropAsync(this, node)),
-            Add("", "拆分", node => ImageTools.SplitAsync(this, node)),
-            Add("", "多角度", node => ImageTools.AngleAsync(this, node)),
-            Add("", "本地放大", UpscaleAsync),
-            Add("", "反推提示词", node => ImageTools.ReversePromptAsync(this, node)),
-        ];
-        row.Children.Add(new Microsoft.UI.Xaml.Shapes.Rectangle { Style = (Style)Application.Current.Resources["ToolbarDivider"] });
-        Add("", "加入资料库", AddToLibraryAsync);
-        Add("", "用默认应用打开", node =>
-        {
-            Process.Start(new ProcessStartInfo(ProjectStore.AssetPath(Doc.Id, node.Content!)) { UseShellExecute = true });
-            return Task.CompletedTask;
-        });
-        return FloatingBar(row, PositionImageBar);
-    }
+    private CanvasNode? ImageBarNode() => _selected.Count > 0 && Subject() is { Kind: NodeKind.Image, HasContent: true } node ? node : null;
 
     /// <summary>
     /// A floating glass capsule over the canvas: the show / hide animation goes on the outer wrapper and the shadow's Z translation on
@@ -630,10 +551,7 @@ public sealed partial class CanvasView : UserControl
         var node = _gesture is Gesture.None or Gesture.Pan ? ImageBarNode() : null;
         _imageBar.Visibility = node is null ? Visibility.Collapsed : Visibility.Visible;
         if (node is null) return;
-        if (_imageMarkButton is not null)
-            _imageMarkButton.Visibility = MarkSupport(node) is var (mask, points, markup) && (mask || points || markup) ? Visibility.Visible : Visibility.Collapsed;
-        // SVG has no pixels for the bitmap tools.
-        foreach (var tool in _pixelTools) tool.Visibility = Media.IsSvg(node.Content) ? Visibility.Collapsed : Visibility.Visible;
+        ApplyBar(_imageItems, Context());
         var topLeft = ToScreen(node.X, node.Y);
         var right = ToScreen(node.Right, node.Y).X;
         var (width, height) = (Math.Max(_imageBar.ActualWidth, 300), Math.Max(_imageBar.ActualHeight, 44));
@@ -653,10 +571,9 @@ public sealed partial class CanvasView : UserControl
         _selectionBar.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
         if (!show) return;
         var nodes = Doc.Nodes.Where(n => _selected.Contains(n.Id)).ToList();
-        _selectionCount.Text = $"已选 {nodes.Count} 个";
-        var pictures = ComposeInputs().Count;
-        _compareGroup.Visibility = pictures >= 2 ? Visibility.Visible : Visibility.Collapsed;
-        _composeButton.Visibility = pictures >= 2 ? Visibility.Visible : Visibility.Collapsed;
+        var context = Context();
+        _selectionCount.Text = $"已选 {context.Count} 个";
+        ApplyBar(_selectionItems, context);
         var bounds = CanvasGraph.Bounds(nodes);
         var topLeft = ToScreen(bounds.Left, bounds.Top);
         var bottom = ToScreen(bounds.Right, bounds.Bottom);
@@ -1565,20 +1482,20 @@ public sealed partial class CanvasView : UserControl
         return item;
     }
 
-    private static readonly (NodeKind Kind, string Label)[] CreatableKinds =
-        [(NodeKind.Text, "文本"), (NodeKind.Image, "图片"), (NodeKind.Video, "视频"), (NodeKind.Audio, "音频"), (NodeKind.Config, "生成配置")];
+    private static readonly (NodeKind Kind, string Id)[] CreatableKinds =
+        [(NodeKind.Text, "new-text"), (NodeKind.Image, "new-image"), (NodeKind.Video, "new-video"), (NodeKind.Audio, "new-audio"), (NodeKind.Config, "new-config")];
 
     private void ShowCreateMenu(Point screen, (CanvasNode Node, bool FromSource)? link)
     {
         var menu = new MenuFlyout();
         var world = ToWorld(screen);
-        foreach (var (kind, label) in CreatableKinds) menu.Items.Add(Item($"新建{label}节点", NodeView.Glyph(kind), () => AddNode(kind, world, link)));
+        foreach (var (kind, id) in CreatableKinds) menu.Items.Add(Item(id, () => { AddNode(kind, world, link); return Task.CompletedTask; }));
         if (link is null)
         {
             menu.Items.Add(new MenuFlyoutSeparator());
-            menu.Items.Add(Item("导入文件…", "", () => ImportWithPickerAsync(world)));
-            menu.Items.Add(Item("粘贴", "", () => PasteAsync(world), "Ctrl+V"));
-            menu.Items.Add(Item("显示全部内容", "", FitToContent, "Ctrl+1"));
+            menu.Items.Add(Item("import", () => ImportWithPickerAsync(world)));
+            menu.Items.Add(Item("paste", () => PasteAsync(world)));
+            menu.Items.Add(Item("fit", () => { FitToContent(); return Task.CompletedTask; }));
         }
         menu.ShowAt(Root, new FlyoutShowOptions { Position = screen });
     }
@@ -1612,58 +1529,7 @@ public sealed partial class CanvasView : UserControl
             return;
         }
         if (!_selected.Contains(node.Id)) Select([node.Id]);
-        var menu = new MenuFlyout();
-        if (CanvasGenerator.CanGenerate(node))
-            menu.Items.Add(Generator.IsRunning(node.Id) ? Item("停止生成", "", () => Generator.Cancel(node.Id)) : Item(node.Status == NodeStatus.Error && !node.HasContent ? "重试" : "生成", "", () => Generator.GenerateAsync(node)));
-        if (Stacks.Of(node) is { } stack && Stacks.Members(Doc, stack).Count > 1)
-        {
-            menu.Items.Add(Item(Stacks.IsOpen(node) ? "收起这一批" : "展开这一批", Stacks.IsOpen(node) ? "\uE73F" : "\uE740", () => ToggleStack(node)));
-            menu.Items.Add(Item("留这张，删掉这一摞的其他", "", () => TrackLocalAsync(() => KeepOneAsync(node))));
-        }
-        menu.Items.Add(Item("重命名", "", () => RenameAsync(node)));
-        menu.Items.Add(Item("复制节点", "", Duplicate, "Ctrl+D"));
-        if (ComposeInputs() is { Count: >= 2 } composable) menu.Items.Add(Item("拼版…", "", () => TrackLocalAsync(() => ImageTools.ComposeAsync(this, composable))));
-        if (node.Kind == NodeKind.Image && node.Option(NodeKeys.Compose).Length > 0) menu.Items.Add(Item("按上次设置重新拼", "", () => TrackLocalAsync(() => ImageTools.RecomposeAsync(this, node))));
-        if (_selected.Count > 1) menu.Items.Add(Item("编组", "", Group, "Ctrl+G"));
-        if (node.Kind == NodeKind.Group || node.GroupId is not null) menu.Items.Add(Item("取消编组", "", Ungroup, "Ctrl+Shift+G"));
-        if (node.Kind is NodeKind.Image or NodeKind.Video)
-        {
-            var free = new ToggleMenuFlyoutItem { Text = "自由缩放（不锁定比例）", IsChecked = node.FreeResize };
-            free.Click += (_, _) =>
-            {
-                History.Record();
-                node.FreeResize = free.IsChecked;
-                // Locking the ratio again snaps the node back to the media's own aspect.
-                if (!node.FreeResize && node.NaturalWidth > 0) node.Height = Math.Round(node.Width * node.NaturalHeight / node.NaturalWidth);
-            };
-            menu.Items.Add(free);
-        }
-        if (node.HasContent && node.Kind is NodeKind.Image or NodeKind.Video or NodeKind.Audio)
-        {
-            var path = ProjectStore.AssetPath(Doc.Id, node.Content!);
-            menu.Items.Add(new MenuFlyoutSeparator());
-            menu.Items.Add(Item("用默认应用打开", "", () => Process.Start(new ProcessStartInfo(path) { UseShellExecute = true })));
-            menu.Items.Add(Item("在资源管理器中显示", "", () => Process.Start("explorer.exe", $"/select,\"{path}\"")));
-            if (node.Kind == NodeKind.Image && MarkSupport(node) is var (mask, points, markup) && (mask || points || markup))
-                menu.Items.Insert(0, Item(mask && markup ? "局部编辑（涂抹 / 标注）…" : mask ? "局部重绘（涂抹蒙版）…" : "局部编辑（点选 / 框选）…", "", () => EditMarksAsync(node)));
-            var bitmap = node.Kind == NodeKind.Image && !Media.IsSvg(node.Content);
-            if (bitmap) menu.Items.Add(Item("本地放大…", "", () => TrackLocalAsync(() => UpscaleAsync(node))));
-            if (bitmap)
-            {
-                menu.Items.Add(Item("裁剪…", "\uE7A8", () => TrackLocalAsync(() => ImageTools.CropAsync(this, node))));
-                menu.Items.Add(Item("拆分…", "\uF0E2", () => TrackLocalAsync(() => ImageTools.SplitAsync(this, node))));
-                menu.Items.Add(Item("多角度…", "\uE89E", () => TrackLocalAsync(() => ImageTools.AngleAsync(this, node))));
-                menu.Items.Add(Item("反推提示词", "\uE8FD", () => TrackLocalAsync(() => ImageTools.ReversePromptAsync(this, node))));
-            }
-            menu.Items.Add(Item("另存为…", "", () => SaveAsAsync(node, path)));
-            menu.Items.Add(Item("加入资料库", "", () => AddToLibraryAsync(node)));
-            if (node.Kind == NodeKind.Image) menu.Items.Add(Item("设为定稿…", "", () => TrackLocalAsync(() => PromoteAsync(node))));
-        }
-        if (node.Kind == NodeKind.Text && node.HasContent)
-            menu.Items.Add(Item("复制文本", "", () => { var data = new DataPackage(); data.SetText(node.Content); Clipboard.SetContent(data); }));
-        menu.Items.Add(new MenuFlyoutSeparator());
-        menu.Items.Add(Item("删除", "", DeleteSelection, "Delete"));
-        menu.ShowAt(Root, new FlyoutShowOptions { Position = position });
+        BuildNodeMenu().ShowAt(Root, new FlyoutShowOptions { Position = position });
     }
 
     /// <summary>Keep this card of a batch and remove the others from the canvas (their files stay), after the usual confirmation. One undo step.</summary>
@@ -1671,7 +1537,7 @@ public sealed partial class CanvasView : UserControl
     {
         if (Stacks.Of(node) is not { } stack || Stacks.Members(Doc, stack).Count < 2) return;
         var others = Stacks.Members(Doc, stack).Count - 1;
-        if (!await Dialogs.ConfirmAsync("留这张，删掉其余？", $"将从画布移除这一批的另外 {others} 个节点，它们的文件不会被删除，仍能在资料库的「画布文件」里找到。可以撤销。", "删掉其余", destructive: true)) return;
+        if (!await Dialogs.ConfirmAsync("只留这张？", $"将从画布移除这一批的另外 {others} 个节点，它们的文件不会被删除，仍能在资料库的「画布文件」里找到。可以撤销。", "删掉其余", destructive: true)) return;
         // The canvas may have changed while the dialog was open.
         if (Doc.Find(node.Id) != node || Stacks.Of(node) is null) return;
         History.Record();
@@ -1809,7 +1675,7 @@ public sealed partial class CanvasView : UserControl
             case VirtualKey.Number1 when ctrl: FitToContent(); break;
             case VirtualKey.Escape when _preview is not null: ClosePreview(); break;
             case VirtualKey.Escape: _selectedConnection = null; Select([]); break;
-            case VirtualKey.C when ctrl: CopySelection(); break;
+            case VirtualKey.C when ctrl: _ = RunAsync("copy"); break;
             // Ctrl + = / Ctrl + - (main keyboard or keypad) zoom like the toolbar buttons.
             case (VirtualKey)187 or VirtualKey.Add when ctrl: ZoomBy(1.2); break;
             case (VirtualKey)189 or VirtualKey.Subtract when ctrl: ZoomBy(1 / 1.2); break;
@@ -1818,7 +1684,7 @@ public sealed partial class CanvasView : UserControl
             case VirtualKey.Enter when _selected.Count == 1: DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, FocusSelected); break;
             case VirtualKey.F2 when _selected.Count == 1 && Doc.Find(_selected.First()) is { } renamed: _ = RenameAsync(renamed); break;
             case VirtualKey.V when ctrl: e.Handled = true; await PasteAsync(ViewCenterWorld); return;
-            case VirtualKey.C when !ctrl && !shift && ComposeInputs().Count >= 2: _ = TrackLocalAsync(ShowCompareAsync); break;
+            case VirtualKey.C when !ctrl && !shift && ComposeInputs().Count >= 2: _ = RunAsync("compare"); break;
             default: return;
         }
         e.Handled = true;
@@ -1842,32 +1708,24 @@ public sealed partial class CanvasView : UserControl
     }
 
     /// <summary>Ctrl+C: the selection's media files (plus the picture itself when it is a single image) and the text of text nodes, for other apps or pasting back.</summary>
-    private async void CopySelection()
+    private async Task CopySelectionAsync()
     {
         var nodes = Doc.Nodes.Where(n => _selected.Contains(n.Id)).ToList();
         var files = nodes.Where(n => n.HasContent && n.Kind is NodeKind.Image or NodeKind.Video or NodeKind.Audio)
             .Select(n => ProjectStore.AssetPath(Doc.Id, n.Content!)).Where(File.Exists).ToList();
         var texts = nodes.Where(n => n.Kind == NodeKind.Text && n.HasContent).Select(n => n.Content!).ToList();
         if (files.Count == 0 && texts.Count == 0) return;
-        try
+        var data = new DataPackage { RequestedOperation = DataPackageOperation.Copy };
+        if (files.Count > 0)
         {
-            var data = new DataPackage { RequestedOperation = DataPackageOperation.Copy };
-            if (files.Count > 0)
-            {
-                var items = new List<IStorageItem>();
-                foreach (var file in files) items.Add(await StorageFile.GetFileFromPathAsync(file));
-                data.SetStorageItems(items);
-                if (files.Count == 1 && Media.KindOf(files[0]) == NodeKind.Image && !Media.IsSvg(files[0])) data.SetBitmap(RandomAccessStreamReference.CreateFromFile((StorageFile)items[0]));
-            }
-            if (texts.Count > 0) data.SetText(string.Join("\n\n", texts));
-            Clipboard.SetContent(data);
+            var items = new List<IStorageItem>();
+            foreach (var file in files) items.Add(await StorageFile.GetFileFromPathAsync(file));
+            data.SetStorageItems(items);
+            if (files.Count == 1 && Media.KindOf(files[0]) == NodeKind.Image && !Media.IsSvg(files[0])) data.SetBitmap(RandomAccessStreamReference.CreateFromFile((StorageFile)items[0]));
         }
-        catch (Exception ex)
-        {
-            // The clipboard can be held by another app.
-            App.Log(ex);
-            await Dialogs.MessageAsync("复制失败", ex.Message);
-        }
+        if (texts.Count > 0) data.SetText(string.Join("\n\n", texts));
+        // The clipboard can be held by another app: the failure surfaces under the command's name.
+        Clipboard.SetContent(data);
     }
 
     /// <summary>
@@ -2248,8 +2106,6 @@ public sealed partial class CanvasView : UserControl
         var openAI = resolved.Channel.Vendor == Vendor.OpenAI;
         return (openAI && family?.Mask == true, family?.Interactive == true, openAI && family?.Markup == true);
     }
-
-    public Task EditMarksAsync(CanvasNode node) => IsClosing ? Task.CompletedTask : TrackLocalAsync(() => EditMarksCoreAsync(node));
 
     private async Task EditMarksCoreAsync(CanvasNode node)
     {
