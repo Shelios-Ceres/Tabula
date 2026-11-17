@@ -564,6 +564,12 @@ public sealed partial class CanvasView : UserControl
     /// Place the command bar centred above the selection (clear of the node titles), or below it when there is no room above, or beside it;
     /// hidden while dragging, resizing, box selecting or connecting, kept while panning. Returns where it ended up so the prompt panel can keep clear.
     /// </summary>
+    /// <summary>
+    /// The gap above a selection that its floating things keep clear: a single node's gap, plus the floating title of media cards;
+    /// several nodes keep room for the titles of all of them. The bar and the prompt panel (and the glide that makes room for both) share it.
+    /// </summary>
+    private static double GapAbove(IReadOnlyList<CanvasNode> nodes) => nodes.Count == 1 ? 14 + (nodes[0].Kind is NodeKind.Image or NodeKind.Video ? 26 : 0) : 34;
+
     private (double Top, double Bottom, bool Below)? PositionBar()
     {
         var hidden = Stacks.Hidden(Doc);
@@ -577,13 +583,14 @@ public sealed partial class CanvasView : UserControl
         var (width, height) = (Math.Max(_bar.ActualWidth, 200), Math.Max(_bar.ActualHeight, 44));
         var (minLeft, maxRight, maxBottom) = (_safe.Left + 8, Root.ActualWidth - _safe.Right - 8, Root.ActualHeight - 8);
         var centered = Math.Clamp((topLeft.X + bottomRight.X) / 2 - width / 2, minLeft, Math.Max(minLeft, maxRight - width));
+        var gap = GapAbove(nodes);
         bool below = false;
         Point at;
-        if (topLeft.Y - height - 34 >= _safe.Top) at = new(centered, topLeft.Y - height - 34);
+        if (topLeft.Y - height - gap >= _safe.Top) at = new(centered, topLeft.Y - height - gap);
         else if (bottomRight.Y + 14 + height <= maxBottom) { at = new(centered, bottomRight.Y + 14); below = true; }
         else if (bottomRight.X + 14 + width <= maxRight) at = new(bottomRight.X + 14, Math.Clamp(topLeft.Y, _safe.Top, Math.Max(_safe.Top, maxBottom - height)));
         else if (topLeft.X - 14 - width >= minLeft) at = new(topLeft.X - 14 - width, Math.Clamp(topLeft.Y, _safe.Top, Math.Max(_safe.Top, maxBottom - height)));
-        else at = new(centered, Math.Max(_safe.Top, topLeft.Y - height - 34));
+        else at = new(centered, Math.Max(_safe.Top, topLeft.Y - height - gap));
         Canvas.SetLeft(_bar, at.X);
         Canvas.SetTop(_bar, at.Y);
         return (at.Y, at.Y + height, below);
@@ -630,8 +637,8 @@ public sealed partial class CanvasView : UserControl
         var (width, height) = (_panel.ActualWidth > 0 ? _panel.ActualWidth : 520, _panel.ActualHeight > 0 ? _panel.ActualHeight : 180);
         var (topLeft, bottomRight) = (ToScreen(node.X, node.Y), ToScreen(node.Right, node.Bottom));
         const double gap = 14;
-        // Media cards carry a floating title above them.
-        var above = gap + (node.Kind is NodeKind.Image or NodeKind.Video ? 26 : 0);
+        // Media cards carry a floating title above them; the bar keeps the same distance from the node.
+        var above = GapAbove([node]);
         var (minLeft, maxRight, minTop, maxBottom) = (_safe.Left + 8, Root.ActualWidth - _safe.Right - 8, _safe.Top, Root.ActualHeight - _safe.Bottom - 16);
         var centered = Math.Clamp((topLeft.X + bottomRight.X) / 2 - width / 2, minLeft, Math.Max(minLeft, maxRight - width));
         var beside = Math.Clamp(topLeft.Y, minTop, Math.Max(minTop, maxBottom - height));
@@ -1136,6 +1143,9 @@ public sealed partial class CanvasView : UserControl
             Select([]);
         }
         if (_gesture == Gesture.Pan) ProtectedCursor = InputSystemCursor.Create(InputSystemCursorShape.SizeAll);
+        // Dragging and resizing hide the bar with the first node move; a connection or a box moves nothing, so hide it now.
+        // (A plain click starts a drag too, so that one must not flash the bar off and on.) The release shows it again.
+        if (_gesture is Gesture.Connect or Gesture.Box) PositionPanel();
         Root.CapturePointer(e.Pointer);
         e.Handled = true;
     }
