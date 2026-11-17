@@ -190,6 +190,18 @@ public class CommandTests
     }
 
     [Fact]
+    public void Gestures_are_tooltips_not_shortcuts()
+    {
+        foreach (var id in new[] { "view", "free-resize" })
+        {
+            var command = CanvasCommands.Find(id);
+            Assert.Null(command.Shortcut);
+            Assert.NotNull(command.Detail);
+        }
+        Assert.DoesNotContain(CanvasCommands.Shortcuts(), s => s.Text.Contains("双击") || s.Text.Contains("拖动"));
+    }
+
+    [Fact]
     public void Ids_are_unique()
     {
         Assert.Equal(CanvasCommands.All.Count, CanvasCommands.All.Select(c => c.Id).Distinct().Count());

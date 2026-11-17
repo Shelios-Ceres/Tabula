@@ -1680,6 +1680,10 @@ public sealed partial class CanvasView : UserControl
             case (VirtualKey)187 or VirtualKey.Add when ctrl: ZoomBy(1.2); break;
             case (VirtualKey)189 or VirtualKey.Subtract when ctrl: ZoomBy(1 / 1.2); break;
             case VirtualKey.Left or VirtualKey.Right or VirtualKey.Up or VirtualKey.Down when _selected.Count > 0: Nudge(e.Key, shift ? 10 : 1); break;
+            // Ctrl+Enter generates or stops the selected node, like in its prompt box.
+            case VirtualKey.Enter when ctrl:
+                if (!e.KeyStatus.WasKeyDown && Subject() is not null && new[] { "generate", "retry", "stop" }.FirstOrDefault(id => CanvasCommands.Find(id).Visible(Context())) is { } generation) _ = RunAsync(generation);
+                break;
             // Deferred so this Enter is consumed before the editor gets focus and cannot type a line break.
             case VirtualKey.Enter when _selected.Count == 1: DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, FocusSelected); break;
             case VirtualKey.F2 when _selected.Count == 1 && Doc.Find(_selected.First()) is { } renamed: _ = RenameAsync(renamed); break;

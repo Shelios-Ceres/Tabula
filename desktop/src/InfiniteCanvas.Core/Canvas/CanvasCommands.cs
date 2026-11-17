@@ -128,7 +128,7 @@ public static class CanvasCommands
         C("retry", "重试", "\uE72C", "Ctrl+Enter", CommandGroup.Generate, CommandScope.Single, c => c.Single && c.CanGenerate && !c.Running && c.Failed),
         C("stop", "停止", "\uE71A", "Ctrl+Enter", CommandGroup.Generate, CommandScope.Single, c => c.Single && c.Running),
 
-        C("view", "查看大图", "\uE8A1", "双击", CommandGroup.View, CommandScope.Single, c => c.Single && c.Kind == NodeKind.Image && c.HasContent),
+        C("view", "查看大图", "\uE8A1", null, CommandGroup.View, CommandScope.Single, c => c.Single && c.Kind == NodeKind.Image && c.HasContent, true, "双击图片也能打开"),
 
         C("mark", "局部编辑…", "\uE70F", null, CommandGroup.Picture, CommandScope.Single, c => c.Bitmap && c.CanMark),
         C("crop", "裁剪…", "\uE7A8", null, CommandGroup.Picture, CommandScope.Single, c => c.Bitmap),
@@ -155,7 +155,7 @@ public static class CanvasCommands
         C("copy", "复制", "\uE8C8", "Ctrl+C", CommandGroup.Edit, CommandScope.Selection, c => c.Copyable),
         C("duplicate", "创建副本", "\uE8C8", "Ctrl+D", CommandGroup.Edit, CommandScope.Selection, c => c.Duplicable > 0),
         C("rename", "重命名…", "\uE8AC", "F2", CommandGroup.Edit, CommandScope.Single, c => c.Single),
-        C("free-resize", "自由缩放", "\uE9A6", "Shift+拖动", CommandGroup.Edit, CommandScope.Selection, c => c.Resizable > 0),
+        C("free-resize", "自由缩放", "\uE9A6", null, CommandGroup.Edit, CommandScope.Selection, c => c.Resizable > 0, true, "按住 Shift 拖动时临时不锁比例"),
         C("clear-marks", "清除标注", "\uE894", null, CommandGroup.Edit, CommandScope.Single, c => c.Single && c.HasMarks),
 
         C("delete", "删除", "\uE74D", "Delete", CommandGroup.Delete, CommandScope.Selection, c => c.Count > 0),
