@@ -42,7 +42,7 @@ dotnet build desktop/InfiniteCanvas.sln
 ```
 
 ```bash
-desktop/src/InfiniteCanvas.App/bin/x64/Debug/net10.0-windows10.0.19041.0/win-x64/InfiniteCanvas.exe
+desktop/src/InfiniteCanvas.App/bin/x64/Debug/net10.0-windows10.0.22621.0/win-x64/InfiniteCanvas.exe
 ```
 
 首次打开后进入设置，在「服务商」里添加服务商并填入 API Key。更多说明见 [快速开始](docs/content/docs/overview/quick-start.mdx) 和 [桌面客户端说明](desktop/README.md)。

@@ -98,6 +98,7 @@ public sealed partial class CanvasView : UserControl
     {
         InitializeComponent();
         _panel = new PromptPanel(this) { Visibility = Visibility.Collapsed };
+        GlassScale.Wrap(_panel);
         ScreenLayer.Children.Add(_panel);
         _panel.CastShadowOn(Backdrop);
         _selectionBar = BuildSelectionBar();
@@ -116,12 +117,13 @@ public sealed partial class CanvasView : UserControl
                 Select((e.KeyModifiers & (VirtualKeyModifiers.Control | VirtualKeyModifiers.Shift)) != 0 ? [.. _selected, view.Node.Id] : [view.Node.Id]);
         }), true);
         ActualThemeChanged += (_, _) => UpdateColors();
-        Loaded += (_, _) => { UpdateColors(); ApplyViewport(); FocusCanvas(); };
+        Loaded += (_, _) => { LiquidGlass.Scene = this; UpdateColors(); ApplyViewport(); FocusCanvas(); };
         Unloaded += (_, _) =>
         {
             // A window-level popup would otherwise stay over the next page.
             ClosePreview();
             foreach (var view in _views.Values) view.Detach();
+            if (LiquidGlass.Scene == this) LiquidGlass.Scene = null;
             Backdrop.RemoveFromVisualTree();
             Overlay.RemoveFromVisualTree();
         };
@@ -179,7 +181,11 @@ public sealed partial class CanvasView : UserControl
 
     private Task TrackLocalAsync(Func<Task> action) => TrackLocalAsync(async () => { await action(); return true; });
 
-    private void RaiseChanged() => Changed?.Invoke();
+    private void RaiseChanged()
+    {
+        Changed?.Invoke();
+        LiquidGlass.Invalidate();
+    }
 
     private void UpdateColors()
     {
@@ -187,6 +193,7 @@ public sealed partial class CanvasView : UserControl
         if (Application.Current.Resources.TryGetValue("SystemAccentColor", out var accent) && accent is Color color) _accent = color;
         Backdrop.Invalidate();
         Overlay.Invalidate();
+        LiquidGlass.Invalidate();
     }
 
     private static Color Alpha(Color color, byte alpha) => Color.FromArgb(alpha, color.R, color.G, color.B);
@@ -604,7 +611,7 @@ public sealed partial class CanvasView : UserControl
         shadow.Receivers.Add(Backdrop);
         capsule.Shadow = shadow;
         capsule.Translation = new Vector3(0, 0, 24);
-        var bar = new Border { Child = capsule, Visibility = Visibility.Collapsed };
+        var bar = new Border { Child = new GlassScale { Child = capsule }, Visibility = Visibility.Collapsed };
         // Clicks on the bar must not start canvas gestures underneath.
         bar.PointerPressed += (_, e) => e.Handled = true;
         bar.DoubleTapped += (_, e) => e.Handled = true;
@@ -800,6 +807,8 @@ public sealed partial class CanvasView : UserControl
 
     private void Backdrop_Draw(CanvasControl sender, CanvasDrawEventArgs args)
     {
+        // Whatever made the canvas redraw also changed what the liquid glass shows.
+        LiquidGlass.Invalidate();
         var ds = args.DrawingSession;
         var spacing = 24 * V.K;
         while (spacing < 18) spacing *= 2;
@@ -852,6 +861,59 @@ public sealed partial class CanvasView : UserControl
         }
         using var blur = new GaussianBlurEffect { Source = shapes, BlurAmount = 12, BorderMode = EffectBorderMode.Soft };
         ds.DrawImage(blur);
+    }
+
+    /// <summary>The element the liquid glass measures its surfaces against: the canvas area.</summary>
+    public UIElement SceneRoot => Root;
+
+    /// <summary>
+    /// Draws what lies under a liquid glass surface (<paramref name="area"/>, in canvas-area DIPs; the session's transform maps that
+    /// space to the surface's own): the canvas colour made opaque, the dot grid, card fills and pictures. Card text, buttons and links
+    /// are left out.
+    /// </summary>
+    public void DrawGlassScene(CanvasDrawingSession ds, Windows.Foundation.Rect area)
+    {
+        var key = ActualTheme == ElementTheme.Dark ? "Dark" : "Light";
+        var theme = (ResourceDictionary)Application.Current.Resources.ThemeDictionaries[key];
+        Color Brush(string name) => theme.TryGetValue(name, out var brush) && brush is SolidColorBrush solid ? solid.Color : Colors.Gray;
+        var background = Brush("CanvasBackgroundBrush");
+        ds.FillRectangle(area, Color.FromArgb(255, background.R, background.G, background.B));
+
+        var spacing = 24 * V.K;
+        while (spacing < 18) spacing *= 2;
+        var dot = Alpha(_ink, 30);
+        var (ox, oy) = (((V.X % spacing) + spacing) % spacing, ((V.Y % spacing) + spacing) % spacing);
+        for (var x = ox + Math.Floor((area.Left - ox) / spacing) * spacing; x < area.Right + spacing; x += spacing)
+        for (var y = oy + Math.Floor((area.Top - oy) / spacing) * spacing; y < area.Bottom + spacing; y += spacing)
+            ds.FillCircle((float)x, (float)y, 1.1f, dot);
+
+        var screen = ds.Transform;
+        ds.Transform = Matrix3x2.CreateScale((float)V.K) * Matrix3x2.CreateTranslation((float)V.X, (float)V.Y) * screen;
+        var (topLeft, bottomRight) = (ToWorld(new Point(area.Left, area.Top)), ToWorld(new Point(area.Right, area.Bottom)));
+        var visible = new Rect(topLeft.X, topLeft.Y, bottomRight.X, bottomRight.Y);
+        var card = Brush("CardBrush");
+        var group = Alpha(Palette.Kind(NodeKind.Group, ActualTheme), 20);
+        var hidden = Stacks.Hidden(Doc);
+        foreach (var node in Doc.Nodes.OrderBy(n => n.Kind == NodeKind.Group ? 0 : 1))
+        {
+            if (hidden.Contains(node) || !visible.Intersects(Rect.Of(node))) continue;
+            var bounds = new Windows.Foundation.Rect(node.X, node.Y, node.Width, node.Height);
+            if (node.Kind == NodeKind.Group) { ds.FillRoundedRectangle(bounds, 12, 12, group); continue; }
+            ds.FillRoundedRectangle(bounds, 8, 8, card);
+            if (node.Kind != NodeKind.Image || !node.HasContent || LiquidGlass.Picture(ProjectStore.AssetPath(Doc.Id, node.Content!)) is not { } picture) continue;
+            // As the card shows it: cropped to fill, or whole inside a freely resized card.
+            var (pw, ph) = (picture.Size.Width, picture.Size.Height);
+            var fill = node.FreeResize ? Math.Min(node.Width / pw, node.Height / ph) : Math.Max(node.Width / pw, node.Height / ph);
+            var (dw, dh) = (pw * fill, ph * fill);
+            var dest = new Windows.Foundation.Rect(node.X + (node.Width - dw) / 2, node.Y + (node.Height - dh) / 2, dw, dh);
+            if (!node.FreeResize)
+            {
+                var source = new Windows.Foundation.Rect((dw - node.Width) / 2 / fill, (dh - node.Height) / 2 / fill, node.Width / fill, node.Height / fill);
+                ds.DrawImage(picture, bounds, source);
+            }
+            else ds.DrawImage(picture, dest, new Windows.Foundation.Rect(0, 0, pw, ph));
+        }
+        ds.Transform = screen;
     }
 
     private void Overlay_Draw(CanvasControl sender, CanvasDrawEventArgs args)

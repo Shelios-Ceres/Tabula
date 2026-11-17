@@ -45,9 +45,57 @@ public sealed partial class CanvasPage : Page
         Motion.ShowHide(Agent, 1, 0.5f, 0.97f);
         Motion.ShowHide(Map, 0, 1, 0.94f);
         QuotaButton.Flyout = new QuotaFlyout();
-        TitleCapsule.SizeChanged += (_, _) => KeepToolsClear();
-        ToolCapsule.SizeChanged += (_, _) => KeepToolsClear();
+        TitleHost.SizeChanged += (_, _) => KeepToolsClear();
+        ToolHost.SizeChanged += (_, _) => KeepToolsClear();
+        // Liquid glass experiment: scaled glass panels, the tuning panel and its shortcut.
+        GlassScale.Wrap(Library);
+        GlassScale.Wrap(Agent);
+        Motion.ShowHide(GlassPanel, 1, 0.5f, 0.97f);
+        GlassPanel.CloseRequested += () => ShowGlassPanel(false);
+        var accelerator = new Microsoft.UI.Xaml.Input.KeyboardAccelerator { Key = Windows.System.VirtualKey.L, Modifiers = Windows.System.VirtualKeyModifiers.Control | Windows.System.VirtualKeyModifiers.Shift };
+        accelerator.Invoked += (_, e) => { e.Handled = true; ShowGlassPanel(GlassPanel.Visibility != Visibility.Visible); };
+        KeyboardAccelerators.Add(accelerator);
+        KeyboardAcceleratorPlacementMode = Microsoft.UI.Xaml.Input.KeyboardAcceleratorPlacementMode.Hidden;
+        GlassSettings.Changed += GlassSettings_Changed;
+        Unloaded += (_, _) => GlassSettings.Changed -= GlassSettings_Changed;
+        Loaded += (_, _) => ApplyGlassTheme();
+        ApplyGlassScale();
+    }
+
+    private void GlassSettings_Changed(bool scaleChanged)
+    {
+        if (scaleChanged) ApplyGlassScale();
+        ApplyGlassTheme();
+    }
+
+    /// <summary>The tuning panel's theme switch applies to the whole window, so the canvas, the backdrop and the glass change together.</summary>
+    private static void ApplyGlassTheme()
+    {
+        if (App.Window.Content is not FrameworkElement root) return;
+        var theme = GlassSettings.Current.Theme switch { "light" => ElementTheme.Light, "dark" => ElementTheme.Dark, _ => ElementTheme.Default };
+        if (root.RequestedTheme != theme) root.RequestedTheme = theme;
+    }
+
+    /// <summary>Panel widths and the margins below the top capsules follow the glass UI scale.</summary>
+    private void ApplyGlassScale()
+    {
+        var s = GlassSettings.Current.UiScale;
+        Library.Width = 300 * s;
+        Agent.Width = 380 * s;
+        var top = 12 + 60 * s;
+        Library.Margin = new Thickness(16, top, 0, 16);
+        Agent.Margin = new Thickness(0, top, 16, 16 + 56 * s);
+        GlassPanel.Margin = new Thickness(0, top, 16, 16 + 56 * s);
         ApplySafeArea();
+        if (ActualWidth > 0) Page_SizeChanged(this, null);
+    }
+
+    private void GlassToggle_Click(object sender, RoutedEventArgs e) => ShowGlassPanel(GlassToggle.IsChecked == true);
+
+    private void ShowGlassPanel(bool open)
+    {
+        GlassPanel.Visibility = open ? Visibility.Visible : Visibility.Collapsed;
+        GlassToggle.IsChecked = open;
     }
 
     private void LibraryToggle_Click(object sender, RoutedEventArgs e)
@@ -82,13 +130,15 @@ public sealed partial class CanvasPage : Page
     {
         var library = Library.Visibility == Visibility.Visible ? Library.Margin.Left + Library.Width + 12 : 0;
         Map.Margin = new Thickness(Math.Max(16, library), 0, 0, 16);
-        Board.SafeArea = new Thickness(library, 68, Agent.Visibility == Visibility.Visible ? Agent.Margin.Right + Agent.Width + 12 : 0, 72);
+        var s = GlassSettings.Current.UiScale;
+        Board.SafeArea = new Thickness(library, 12 + 56 * s, Agent.Visibility == Visibility.Visible ? Agent.Margin.Right + Agent.Width + 12 : 0, 16 + 56 * s);
     }
 
-    private void Page_SizeChanged(object sender, SizeChangedEventArgs e)
+    private void Page_SizeChanged(object sender, SizeChangedEventArgs? e)
     {
         // Narrow windows collapse the toolbars to icons; every button keeps its tooltip and automation name.
-        var compact = e.NewSize.Width < 1440;
+        // The labelled toolbars need about 1250 DIPs at scale 1 (the old 1440 left slack); they grow with the glass UI scale.
+        var compact = ActualWidth < 1250 * GlassSettings.Current.UiScale;
         foreach (var label in new[] { TextLabel, ImageLabel, VideoLabel, AudioLabel, ConfigLabel, LibraryLabel, AgentLabel, QuotaLabel }) label.Visibility = compact ? Visibility.Collapsed : Visibility.Visible;
         TitleText.MaxWidth = compact ? 160 : 200;
         KeepToolsClear();
@@ -97,8 +147,8 @@ public sealed partial class CanvasPage : Page
     /// <summary>The tool capsule stays centred but slides right instead of covering the title capsule when the window is narrow or the title is long.</summary>
     private void KeepToolsClear()
     {
-        var overlap = TitleCapsule.Margin.Left + TitleCapsule.ActualWidth + 12 - (ActualWidth - ToolCapsule.ActualWidth) / 2;
-        ToolCapsule.Margin = new Thickness(Math.Max(0, overlap) * 2, 12, 0, 0);
+        var overlap = TitleHost.Margin.Left + TitleHost.ActualWidth + 12 - (ActualWidth - ToolHost.ActualWidth) / 2;
+        ToolHost.Margin = new Thickness(Math.Max(0, overlap) * 2, 12, 0, 0);
     }
 
     protected override void OnNavigatedTo(NavigationEventArgs e)

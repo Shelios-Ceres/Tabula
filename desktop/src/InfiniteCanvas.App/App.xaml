@@ -2,7 +2,8 @@
 <Application
     x:Class="InfiniteCanvas.App.App"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:board="using:InfiniteCanvas.App.Board">
     <Application.Resources>
         <ResourceDictionary>
             <ResourceDictionary.MergedDictionaries>
@@ -66,6 +67,8 @@
 
             <!-- Floating toolbars on the canvas: clear acrylic, 8 px corners like Windows 11 command bars. -->
             <Style x:Key="GlassCapsule" TargetType="Border">
+                <!-- Liquid glass experiment: a shader surface replaces the acrylic while GlassSettings.Enabled is on (Board/Glass). -->
+                <Setter Property="board:LiquidGlass.Surface" Value="True" />
                 <Setter Property="Background" Value="{ThemeResource GlassBrush}" />
                 <Setter Property="BorderBrush" Value="{ThemeResource GlassStrokeBrush}" />
                 <Setter Property="BorderThickness" Value="1" />
@@ -74,6 +77,8 @@
             </Style>
             <!-- Panels with more text (prompt panel, library, assistant) use a denser acrylic for legibility. -->
             <Style x:Key="FloatingPanel" TargetType="Border">
+                <!-- Liquid glass experiment: a shader surface replaces the acrylic while GlassSettings.Enabled is on (Board/Glass). -->
+                <Setter Property="board:LiquidGlass.Surface" Value="True" />
                 <Setter Property="Background" Value="{ThemeResource GlassThickBrush}" />
                 <Setter Property="BorderBrush" Value="{ThemeResource GlassStrokeBrush}" />
                 <Setter Property="BorderThickness" Value="1" />
