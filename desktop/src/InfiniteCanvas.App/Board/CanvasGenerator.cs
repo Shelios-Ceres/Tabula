@@ -252,11 +252,10 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
             }
             node.Y = y;
             node.X = source.Right + 80;
-            x ??= CanvasGraph.FreeX(node, doc.Nodes);
+            // Outputs are placed automatically, so they stay out of groups (they only join one when the user drops them there).
+            x ??= CanvasGraph.FreeX(node, doc.Nodes, avoidGroupsOf: doc);
             node.X = x.Value;
             y += node.Height + 24;
-            // Outputs placed inside a group join it, like nodes dropped there.
-            node.GroupId = CanvasGraph.ContainingGroup(doc, node)?.Id;
             doc.Nodes.Add(node);
             foreach (var input in inputs) doc.Connections.Add(CanvasConnection.Create(input, node.Id));
             targets.Add(node);
@@ -273,7 +272,7 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
         // New cards placed beside the source clear the nodes there with the whole spread in mind, not just one card; a source that receives a result stays where it is.
         if (!sibling && layout != StackLayout.Stack && targets.Count > 1)
         {
-            var shift = CanvasGraph.FreeBatchX(targets, layout, gap, doc.Nodes.Except(targets)) - targets[0].X;
+            var shift = CanvasGraph.FreeBatchX(targets, layout, gap, doc.Nodes.Except(targets), doc) - targets[0].X;
             foreach (var target in targets) target.X += shift;
         }
         Stacks.FormBatch(targets, layout, gap);
@@ -721,8 +720,7 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
         target.Height = source.Height;
         target.Y = source.Y;
         target.X = source.Right + 80;
-        target.X = CanvasGraph.FreeX(target, doc.Nodes);
-        target.GroupId = CanvasGraph.ContainingGroup(doc, target)?.Id;
+        target.X = CanvasGraph.FreeX(target, doc.Nodes, avoidGroupsOf: doc);
         target.Status = NodeStatus.Loading;
         doc.Nodes.Add(target);
         doc.Connections.Add(CanvasConnection.Create(source.Id, target.Id));

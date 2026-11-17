@@ -453,6 +453,30 @@ public class CoreTests
     }
 
     [Fact]
+    public void Automatically_placed_nodes_move_past_a_group_they_would_land_in()
+    {
+        var group = new CanvasNode { Kind = NodeKind.Group, X = 0, Y = 0, Width = 600, Height = 400 };
+        var other = new CanvasNode { Kind = NodeKind.Group, X = 680, Y = 0, Width = 300, Height = 400 };
+        var doc = new CanvasDocument { Nodes = [group, other] };
+        CanvasNode Output(double x) => new() { Kind = NodeKind.Image, X = x, Y = 100, Width = 200, Height = 200 };
+
+        // Next to the group's right edge and deep inside it: both end past the group's edge plus 80, and the second group in the way is skipped the same way.
+        var near = Output(450);
+        var deep = Output(150);
+        Assert.Equal(1060, CanvasGraph.FreeX(near, doc.Nodes, avoidGroupsOf: doc));
+        Assert.Equal(1060, CanvasGraph.FreeX(deep, doc.Nodes, avoidGroupsOf: doc));
+        Assert.Null(CanvasGraph.ContainingGroup(doc, Output(1060)));
+
+        // A spot outside every group stays; without the argument nothing changes.
+        Assert.Equal(1100, CanvasGraph.FreeX(Output(1100), doc.Nodes, avoidGroupsOf: doc));
+        Assert.Equal(150, CanvasGraph.FreeX(deep, doc.Nodes));
+
+        // A spread batch is checked as a whole: its centre in a group moves it out.
+        var batch = new[] { Output(0), Output(0), Output(0) };
+        Assert.Equal(680, CanvasGraph.FreeBatchX(batch, StackLayout.Row, 24, [], doc));
+    }
+
+    [Fact]
     public void A_spread_batch_looks_for_a_spot_where_the_whole_row_or_grid_is_free_beside_the_nodes_there()
     {
         CanvasNode Card(double x, double y, double w = 340, double h = 240) => new() { Kind = NodeKind.Image, X = x, Y = y, Width = w, Height = h };
