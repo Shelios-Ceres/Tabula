@@ -56,6 +56,12 @@ public sealed class GlassSettings
     public double Density { get; set; } = 0.35;
     public bool Legible { get; set; } = true;
     public double Threshold { get; set; } = 0.5;
+    /// <summary>XMind-style top fade: a band along the canvas top, blurred progressively towards the edge and washed into the canvas colour.</summary>
+    public bool FadeOn { get; set; } = true;
+    public double FadeHeight { get; set; } = 110;
+    public double FadeBlur { get; set; } = 18;
+    public double FadeWash { get; set; } = 0.55;
+    public double FadeOpacity { get; set; } = 1;
     public GlassMaterial Light { get; set; } = GlassMaterial.LightDefaults();
     public GlassMaterial Dark { get; set; } = GlassMaterial.DarkDefaults();
 

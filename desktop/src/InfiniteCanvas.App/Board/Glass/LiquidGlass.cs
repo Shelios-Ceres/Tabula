@@ -61,6 +61,7 @@ public static class LiquidGlass
     public static void Invalidate()
     {
         if (!GlassSettings.Current.Enabled) return;
+        Scene?.InvalidateTopFade();
         foreach (var pane in LivePanes()) pane.Redraw();
     }
 
@@ -225,6 +226,7 @@ public static class LiquidGlass
         private static int _count;
         private readonly int _id = ++_count;
         private int _draws;
+        private int _reach = -1;
         private double _adaptMs;
         private CanvasRenderTarget? _gpuProbe;
 
@@ -355,6 +357,10 @@ public static class LiquidGlass
             _blur.Source = _scene;
             _blur.BlurAmount = (float)Mix(x => x.Blur);
             _effect ??= new PixelShaderEffect<GlassShader>();
+            // The bend reads up to edge × rim × (1 + dispersion) inward; Direct2D must hand each tile that much input around it, or the
+            // rim samples transparent pixels at tile edges (dark patches that came and went as the canvas moved).
+            var reach = (int)Math.Ceiling(settings.Edge * rim * (1 + settings.Dispersion) * px) + 4;
+            if (reach != _reach) { _reach = reach; _effect.TransformMapper = ComputeSharp.D2D1.Interop.D2D1DrawTransformMapper<GlassShader>.Inflate(reach); }
             _effect.Sources[0] = _blur;
             _effect.ConstantBuffer = new GlassShader(
                 new float4(m * px, m * px, bw * px, bh * px),

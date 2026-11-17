@@ -117,13 +117,15 @@ public sealed partial class CanvasView : UserControl
                 Select((e.KeyModifiers & (VirtualKeyModifiers.Control | VirtualKeyModifiers.Shift)) != 0 ? [.. _selected, view.Node.Id] : [view.Node.Id]);
         }), true);
         ActualThemeChanged += (_, _) => UpdateColors();
-        Loaded += (_, _) => { LiquidGlass.Scene = this; GlassTrace.Start(); UpdateColors(); ApplyViewport(); FocusCanvas(); };
+        Loaded += (_, _) => { LiquidGlass.Scene = this; GlassTrace.Start(); GlassSettings.Changed += ApplyTopFade; ApplyTopFade(false); UpdateColors(); ApplyViewport(); FocusCanvas(); };
         Unloaded += (_, _) =>
         {
             // A window-level popup would otherwise stay over the next page.
             ClosePreview();
             foreach (var view in _views.Values) view.Detach();
             if (LiquidGlass.Scene == this) LiquidGlass.Scene = null;
+            GlassSettings.Changed -= ApplyTopFade;
+            TopFade.RemoveFromVisualTree();
             Backdrop.RemoveFromVisualTree();
             Overlay.RemoveFromVisualTree();
         };
@@ -382,6 +384,7 @@ public sealed partial class CanvasView : UserControl
 
     private void Root_SizeChanged(object sender, SizeChangedEventArgs e)
     {
+        ApplyTopFade(false);
         // The preview is sized to the old canvas area.
         ClosePreview();
         Realize();
@@ -864,6 +867,61 @@ public sealed partial class CanvasView : UserControl
         }
         using var blur = new GaussianBlurEffect { Source = shapes, BlurAmount = 12, BorderMode = EffectBorderMode.Soft };
         ds.DrawImage(blur);
+    }
+
+    private CanvasRenderTarget? _fadeScene;
+    private BorderEffect? _fadeClamp;
+    private ComputeSharp.D2D1.WinUI.PixelShaderEffect<FadeShader>? _fade;
+
+    /// <summary>Called with every liquid glass redraw (viewport, nodes, a picture finishing loading).</summary>
+    public void InvalidateTopFade()
+    {
+        if (TopFade.Visibility == Visibility.Visible) TopFade.Invalidate();
+    }
+
+    private void ApplyTopFade(bool scaleChanged)
+    {
+        var settings = GlassSettings.Current;
+        TopFade.Visibility = settings.Enabled && settings.FadeOn ? Visibility.Visible : Visibility.Collapsed;
+        // Cards run on under the window's title bar, above the canvas area; the band starts at the window's top edge.
+        var above = Math.Max(0, Root.TransformToVisual(null).TransformPoint(new Point(0, 0)).Y);
+        TopFade.Margin = new Thickness(0, -above, 0, 0);
+        TopFade.Height = settings.FadeHeight + above;
+        TopFade.Invalidate();
+    }
+
+    /// <summary>
+    /// The top fade: the band's scene (the same offscreen render the glass uses) through <see cref="FadeShader"/>, a blur whose radius
+    /// grows towards the top edge, washed into the canvas colour and clear at the band's bottom where the real canvas takes over.
+    /// </summary>
+    private void TopFade_Draw(CanvasControl sender, CanvasDrawEventArgs args)
+    {
+        var settings = GlassSettings.Current;
+        var (w, h) = ((float)sender.ActualWidth, (float)sender.ActualHeight);
+        if (!settings.Enabled || !settings.FadeOn || w < 1 || h < 1) return;
+        if (_fadeScene is null || _fadeScene.Size.Width != w || _fadeScene.Size.Height != h || _fadeScene.Dpi != sender.Dpi)
+        {
+            _fadeScene?.Dispose();
+            _fadeScene = new CanvasRenderTarget(sender, w, h);
+        }
+        var top = -TopFade.Margin.Top;
+        using (var ds = _fadeScene.CreateDrawingSession())
+        {
+            ds.Transform = Matrix3x2.CreateTranslation(0, (float)top);
+            DrawGlassScene(ds, new Windows.Foundation.Rect(0, -top, w, h));
+        }
+        _fadeClamp ??= new BorderEffect { ExtendX = CanvasEdgeBehavior.Clamp, ExtendY = CanvasEdgeBehavior.Clamp };
+        _fadeClamp.Source = _fadeScene;
+        // Direct2D renders effects in tiles; without the inflate a tile only gets its own pixels and the blur reads transparency past them.
+        _fade ??= new ComputeSharp.D2D1.WinUI.PixelShaderEffect<FadeShader> { TransformMapper = ComputeSharp.D2D1.Interop.D2D1DrawTransformMapper<FadeShader>.Inflate(200) };
+        _fade.Sources[0] = _fadeClamp;
+        var px = sender.Dpi / 96f;
+        var theme = (ResourceDictionary)Application.Current.Resources.ThemeDictionaries[ActualTheme == ElementTheme.Dark ? "Dark" : "Light"];
+        var background = theme.TryGetValue("CanvasBackgroundBrush", out var brush) && brush is SolidColorBrush solid ? solid.Color : Colors.Gray;
+        _fade.ConstantBuffer = new FadeShader(
+            new ComputeSharp.Float4(h * px, (float)settings.FadeBlur * px, (float)settings.FadeWash, (float)settings.FadeOpacity),
+            new ComputeSharp.Float4(background.R / 255f, background.G / 255f, background.B / 255f, 1));
+        args.DrawingSession.DrawImage(_fade);
     }
 
     /// <summary>The element the liquid glass measures its surfaces against: the canvas area.</summary>
