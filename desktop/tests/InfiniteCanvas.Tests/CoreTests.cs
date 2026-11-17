@@ -471,9 +471,18 @@ public class CoreTests
         Assert.Equal(1100, CanvasGraph.FreeX(Output(1100), doc.Nodes, avoidGroupsOf: doc));
         Assert.Equal(150, CanvasGraph.FreeX(deep, doc.Nodes));
 
-        // A spread batch is checked as a whole: its centre in a group moves it out.
+        // A spread batch is checked as a whole: its footprint in a group moves it out, past the second group too.
         var batch = new[] { Output(0), Output(0), Output(0) };
-        Assert.Equal(680, CanvasGraph.FreeBatchX(batch, StackLayout.Row, 24, [], doc));
+        Assert.Equal(1060, CanvasGraph.FreeBatchX(batch, StackLayout.Row, 24, [], doc));
+
+        // Not only the centre counts: a card whose centre is outside but whose left edge is inside the frame moves out, and so does a row whose lead card lands inside while its footprint centre is outside.
+        var single = new CanvasDocument { Nodes = [new CanvasNode { Kind = NodeKind.Group, X = 0, Y = 0, Width = 600, Height = 400 }] };
+        Assert.Equal(680, CanvasGraph.FreeX(Output(550), single.Nodes, avoidGroupsOf: single));
+        var narrow = new CanvasDocument { Nodes = [new CanvasNode { Kind = NodeKind.Group, X = 0, Y = 0, Width = 300, Height = 400 }] };
+        var row = new[] { Output(100), Output(100), Output(100) };
+        Assert.Equal(380, CanvasGraph.FreeBatchX(row, StackLayout.Row, 24, [], narrow));
+        // A card clear of every frame stays.
+        Assert.Equal(650, CanvasGraph.FreeX(Output(650), single.Nodes, avoidGroupsOf: single));
     }
 
     [Fact]

@@ -27,8 +27,8 @@ public static class CanvasGraph
 
     /// <summary>
     /// Shift right in node-width steps until the node no longer overlaps other top-level nodes.
-    /// With <paramref name="avoidGroupsOf"/> the node (an automatically placed one) also never ends with its centre inside a group of that document:
-    /// it moves past the group's right edge plus an 80 px gap and is checked again, up to 50 times.
+    /// With <paramref name="avoidGroupsOf"/> the node (an automatically placed one) also never overlaps a group of that document (so it neither joins nor half-sits in one):
+    /// it moves past the right edge of the overlapped group with the furthest edge plus an 80 px gap and is checked again, up to 50 times.
     /// </summary>
     public static double FreeX(CanvasNode node, IEnumerable<CanvasNode> nodes, double gap = 40, CanvasDocument? avoidGroupsOf = null)
     {
@@ -39,7 +39,7 @@ public static class CanvasGraph
             return left;
         }
         var x = Free(node.X);
-        for (var step = 0; avoidGroupsOf is not null && step < 50 && GroupAt(avoidGroupsOf, node.Id, x + node.Width / 2, node.Y + node.Height / 2) is { } group; step++) x = Free(group.Right + 80);
+        for (var step = 0; avoidGroupsOf is not null && step < 50 && GroupOverlapping(avoidGroupsOf, node, x) is { } group; step++) x = Free(group.Right + 80);
         return x;
     }
 
@@ -175,6 +175,10 @@ public static class CanvasGraph
 
     /// <summary>The innermost (smallest) group whose area contains the node centre.</summary>
     public static CanvasNode? ContainingGroup(CanvasDocument doc, CanvasNode node) => GroupAt(doc, node.Id, node.X + node.Width / 2, node.Y + node.Height / 2);
+
+    /// <summary>Of the groups the node's frame would overlap at this x, the one reaching furthest right.</summary>
+    private static CanvasNode? GroupOverlapping(CanvasDocument doc, CanvasNode node, double x) =>
+        doc.Nodes.Where(g => g.Kind == NodeKind.Group && g.Id != node.Id && new Rect(x, node.Y, x + node.Width, node.Bottom).Intersects(Rect.Of(g))).MaxBy(g => g.Right);
 
     private static CanvasNode? GroupAt(CanvasDocument doc, string nodeId, double x, double y) =>
         doc.Nodes.Where(g => g.Kind == NodeKind.Group && g.Id != nodeId && Rect.Of(g).Contains(x, y)).MinBy(g => g.Width * g.Height);
