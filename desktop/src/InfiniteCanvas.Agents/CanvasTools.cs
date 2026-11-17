@@ -545,7 +545,7 @@ public static class CanvasTools
         var nodes = matching.ToList();
         var kept = nodes.Select(n => n.Id).ToHashSet();
         var settings = SettingsStore.Current;
-        object Models(Capability capability) => settings.ModelsFor(capability).Select(id => new { Id = id, Label = settings.Label(id) }).ToList();
+        object Models(Capability capability) => settings.ModelsFor(capability).Select(id => ModelEntry(settings, id, capability)).ToList();
         return Json(new
         {
             Canvas = new { doc.Id, doc.Title },
@@ -555,6 +555,14 @@ public static class CanvasTools
             Connections = doc.Connections.Where(c => kept.Contains(c.From) && kept.Contains(c.To)).Select(c => new { c.From, c.To }),
             Models = new { Image = Models(Capability.Image), Text = Models(Capability.Text), Audio = Models(Capability.Audio) },
         });
+    }
+
+    /// <summary>An image model also lists the sizes, ratios and qualities its family takes, so an agent picks values the generation will really use.</summary>
+    private static object ModelEntry(AppSettings settings, string id, Capability capability)
+    {
+        var family = capability == Capability.Image && settings.Resolve(id) is { } resolved ? ModelFamilies.FindImage(resolved.Channel.Vendor, resolved.Model.Name) : null;
+        string[]? Some(string[]? values) => values is { Length: > 0 } ? values : null;
+        return new { Id = id, Label = settings.Label(id), Sizes = Some(family?.Tiers), Ratios = Some(family?.Ratios), Qualities = Some(family?.Qualities) };
     }
 
     private static NodeKind ParseKind(string? kind) =>
@@ -594,12 +602,33 @@ public static class CanvasTools
             throw new McpException($"{NodeKeys.LayerMax} 应是 {NodeKeys.LayerMin} 到 {NodeKeys.LayerMaxLimit} 的整数（含底图），收到「{value}」");
     }
 
-    private static void ValidateNodeOp(CanvasOp op, NodeKind kind)
+    /// <summary>
+    /// A size, ratio or quality the call sets must be one the image model the node will have after the call takes; the panel's fallback to the first tier is for leftovers, not for what an agent asked for.
+    /// <paramref name="current"/> is the node's model before the call, used when the call sets none; values the call leaves out are not checked.
+    /// </summary>
+    private static void ValidateImageParams(string? current, string? model, string? ratio, string? size, string? quality)
+    {
+        if (ratio is null && size is null && quality is null) return;
+        var settings = SettingsStore.Current;
+        if (settings.Resolve(settings.ModelFor(Capability.Image, model ?? current)) is not { } resolved || ModelFamilies.FindImage(resolved.Channel.Vendor, resolved.Model.Name) is not { } family) return;
+        var name = AppSettings.DisplayName(resolved.Channel, resolved.Model);
+        void Check(string key, string? value, string[] accepted)
+        {
+            if (value is null || accepted.Contains(value)) return;
+            throw new McpException(accepted.Length == 0 ? $"{name} 不支持设置 {key}（收到「{value}」）" : $"{name} 不支持 {key}「{value}」，可选 {string.Join("、", accepted)}");
+        }
+        Check("size", size, family.Tiers);
+        Check("ratio", ratio, family.Ratios);
+        Check("quality", quality, family.Qualities);
+    }
+
+    private static void ValidateNodeOp(CanvasOp op, NodeKind kind, CanvasNode? target = null)
     {
         ValidateGeometry(op.X, op.Y, op.Width, op.Height);
         ValidateOptions(op.Options);
         ValidateModel(op.Model);
-        if (op.Mode is not null) _ = ParseMode(op.Mode);
+        var mode = op.Mode is not null ? ParseMode(op.Mode) : target?.Mode ?? Capability.Image;
+        if (kind == NodeKind.Image || kind == NodeKind.Config && mode == Capability.Image) ValidateImageParams(target?.Model, op.Model, op.Ratio, op.Size, op.Quality);
         if (op.Text is not null && kind != NodeKind.Text) throw new McpException("只有文本节点可以设置 text");
     }
 
@@ -620,8 +649,9 @@ public static class CanvasTools
         var node = CanvasNode.Create(kind, host.ViewCenter.X, host.ViewCenter.Y);
         if (x is not null) node.X = x.Value;
         if (y is not null) node.Y = y.Value;
-        if (x is null) node.X = CanvasGraph.FreeX(node, host.Document.Nodes);
-        node.GroupId = CanvasGraph.ContainingGroup(host.Document, node)?.Id;
+        // A spot the agent gave joins the group it lands in; an automatic one stays out of every group.
+        if (x is null) node.X = CanvasGraph.FreeX(node, host.Document.Nodes, avoidGroupsOf: host.Document);
+        else node.GroupId = CanvasGraph.ContainingGroup(host.Document, node)?.Id;
         host.Document.Nodes.Add(node);
         return node;
     }
@@ -675,7 +705,7 @@ public static class CanvasTools
                         break;
                     case "update_node":
                         var target = Find(host, Resolve(op.Id));
-                        ValidateNodeOp(op, target.Kind);
+                        ValidateNodeOp(op, target.Kind, target);
                         if (op.Title is not null) target.Title = op.Title;
                         if (op.X is { } nx) target.X = nx;
                         if (op.Y is { } ny) target.Y = ny;
@@ -814,6 +844,7 @@ public static class CanvasTools
         ValidateLayout(layout, gap);
         ValidateOptions(options);
         ValidateModel(model);
+        if (capability == Capability.Image) ValidateImageParams(null, model, ratio, size, quality);
         var inputs = (references ?? []).Select(id => Find(host, id)).ToList();
         if (dryRun)
         {
@@ -836,7 +867,7 @@ public static class CanvasTools
             // Sit to the right of the inputs, like generation outputs do.
             node.X = inputs.Max(i => i.Right) + 80;
             node.Y = inputs.Min(i => i.Y);
-            node.X = CanvasGraph.FreeX(node, host.Document.Nodes.Where(n => n != node));
+            node.X = CanvasGraph.FreeX(node, host.Document.Nodes.Where(n => n != node), avoidGroupsOf: host.Document);
         }
         try
         {
@@ -860,7 +891,7 @@ public static class CanvasTools
                 if (node.Kind == NodeKind.Image) card.Height = CanvasGraph.OutputHeight(node.Width, node.Ratio);
                 batch.Add(card);
             }
-            node.X = CanvasGraph.FreeBatchX(batch, spread, Stacks.GapOf(node), host.Document.Nodes.Where(n => n != node));
+            node.X = CanvasGraph.FreeBatchX(batch, spread, Stacks.GapOf(node), host.Document.Nodes.Where(n => n != node), host.Document);
         }
         foreach (var input in inputs) Connect(host.Document, input, node);
         host.Reveal([node]);

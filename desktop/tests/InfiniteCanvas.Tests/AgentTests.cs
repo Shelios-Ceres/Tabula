@@ -1300,6 +1300,90 @@ public class AgentTests
     }
 
     [Fact]
+    public async Task Sizes_ratios_and_qualities_the_model_cannot_take_are_refused_instead_of_falling_back()
+    {
+        var host = new FakeHost();
+        var (_, seedream) = AddChannel(Vendor.Ark, "doubao-seedream-5-5-260115");
+        var (_, nano) = AddChannel(Vendor.Google, "gemini-3-pro-image");
+        await using var session = await Session.StartAsync(host);
+        async Task<(bool IsError, string Text)> Generate(string model, bool dry, string? size = null, string? ratio = null, string? quality = null)
+        {
+            var args = new Dictionary<string, object?> { ["mode"] = "image", ["prompt"] = "一只猫", ["model"] = model, ["dryRun"] = dry };
+            if (size is not null) args["size"] = size;
+            if (ratio is not null) args["ratio"] = ratio;
+            if (quality is not null) args["quality"] = quality;
+            return await session.CallAsync("canvas_generate", args);
+        }
+        async Task<JsonElement> Op(Dictionary<string, object?> op) => Parse((await session.CallAsync("canvas_apply_ops", new() { ["ops"] = new object[] { op } })).Text).GetProperty("results")[0];
+
+        // 4K, an unknown ratio and a quality the family lacks: errors that name the model and list what it takes, in the dry run and the real call alike, before any node or request.
+        var nodes = host.Document.Nodes.Count;
+        var records = host.Records;
+        foreach (var dry in new[] { true, false })
+        {
+            var fourK = await Generate(seedream, dry, size: "4K");
+            Assert.True(fourK.IsError);
+            Assert.Contains("Seedream 5.5", fourK.Text);
+            Assert.Contains("1K、1.5K、2K", fourK.Text);
+            Assert.True((await Generate(seedream, dry, ratio: "7:5")).IsError);
+            Assert.True((await Generate(seedream, dry, quality: "high")).IsError);
+        }
+        Assert.Equal((nodes, records, 0), (host.Document.Nodes.Count, host.Records, host.Generated.Count));
+
+        // 2K and a listed ratio pass; the call's own model decides, not a leftover.
+        Assert.False((await Generate(seedream, true, size: "2K", ratio: "9:21")).IsError);
+        Assert.False((await Generate(nano, true, size: "4K")).IsError);
+        var started = Parse((await Generate(seedream, false, size: "2K")).Text);
+        Assert.Equal("2K", host.Document.Find(started.GetProperty("nodeId").GetString()!)!.Size);
+
+        // The same check in apply_ops, as a per-op error before the node changes.
+        nodes = host.Document.Nodes.Count;
+        var added = await Op(new() { ["type"] = "add_node", ["kind"] = "image", ["model"] = seedream, ["size"] = "4K" });
+        Assert.Contains("Seedream 5.5", added.GetProperty("error").GetString());
+        Assert.Equal(nodes, host.Document.Nodes.Count);
+        var node = new CanvasNode { Kind = NodeKind.Image, Title = "原标题" };
+        host.Document.Nodes.Add(node);
+        Assert.False((await Op(new() { ["type"] = "update_node", ["id"] = node.Id, ["model"] = seedream, ["size"] = "2K" })).TryGetProperty("error", out _));
+        var rejected = await Op(new() { ["type"] = "update_node", ["id"] = node.Id, ["title"] = "不该改", ["size"] = "4K" });
+        Assert.Contains("4K", rejected.GetProperty("error").GetString());
+        Assert.Equal(("原标题", "2K"), (node.Title, node.Size));
+
+        // Changing only the model keeps the old size (the panel falls back at send time), and an image config node is checked the same way.
+        node.Size = "4K";
+        Assert.False((await Op(new() { ["type"] = "update_node", ["id"] = node.Id, ["model"] = seedream })).TryGetProperty("error", out _));
+        Assert.Equal("4K", node.Size);
+        Assert.True((await Op(new() { ["type"] = "add_node", ["kind"] = "config", ["mode"] = "image", ["model"] = seedream, ["quality"] = "high" })).TryGetProperty("error", out _));
+
+        // The state lists what each image model takes.
+        var models = Parse((await session.CallAsync("canvas_get_state", new())).Text).GetProperty("models").GetProperty("image").EnumerateArray().ToList();
+        var entry = models.Single(m => m.GetProperty("id").GetString() == seedream);
+        Assert.Equal(["1K", "1.5K", "2K"], entry.GetProperty("sizes").EnumerateArray().Select(e => e.GetString()));
+        Assert.Contains("9:21", entry.GetProperty("ratios").EnumerateArray().Select(e => e.GetString()));
+        Assert.False(entry.TryGetProperty("qualities", out _));
+    }
+
+    [Fact]
+    public async Task Nodes_the_agent_does_not_place_stay_out_of_groups_and_explicit_spots_still_join()
+    {
+        var host = new FakeHost();
+        var group = new CanvasNode { Kind = NodeKind.Group, X = 300, Y = 200, Width = 400, Height = 400 };
+        host.Document.Nodes.Add(group);
+        await using var session = await Session.StartAsync(host);
+
+        // The view centre (500, 400) is inside the group: an automatic spot moves right of its edge, no GroupId.
+        var auto = host.Document.Find(Parse((await session.CallAsync("canvas_generate", new() { ["mode"] = "image", ["prompt"] = "猫" })).Text).GetProperty("nodeId").GetString()!)!;
+        Assert.Null(auto.GroupId);
+        Assert.True(auto.X >= group.Right + 80, $"{auto.X}");
+        var added = host.Document.Find(Parse((await session.CallAsync("canvas_apply_ops", new() { ["ops"] = new object[] { new Dictionary<string, object?> { ["type"] = "add_node", ["kind"] = "text" } } })).Text).GetProperty("results")[0].GetProperty("id").GetString()!)!;
+        Assert.Null(added.GroupId);
+        Assert.True(added.X >= group.Right + 80);
+
+        // An explicit x / y inside the group still joins it.
+        var explicitNode = host.Document.Find(Parse((await session.CallAsync("canvas_generate", new() { ["mode"] = "image", ["prompt"] = "猫", ["x"] = 400.0, ["y"] = 300.0 })).Text).GetProperty("nodeId").GetString()!)!;
+        Assert.Equal(group.Id, explicitNode.GroupId);
+    }
+
+    [Fact]
     public async Task Seedream_layer_settings_pass_through_canvas_generate_and_apply_ops_within_2_to_100()
     {
         var host = new FakeHost();

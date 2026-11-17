@@ -25,13 +25,21 @@ public static class CanvasGraph
         return list.Count == 0 ? new(0, 0, 0, 0) : new(list.Min(n => n.X), list.Min(n => n.Y), list.Max(n => n.Right), list.Max(n => n.Bottom));
     }
 
-    /// <summary>Shift right in node-width steps until the node no longer overlaps other top-level nodes.</summary>
-    public static double FreeX(CanvasNode node, IEnumerable<CanvasNode> nodes, double gap = 40)
+    /// <summary>
+    /// Shift right in node-width steps until the node no longer overlaps other top-level nodes.
+    /// With <paramref name="avoidGroupsOf"/> the node (an automatically placed one) also never overlaps a group of that document (so it neither joins nor half-sits in one):
+    /// it moves past the right edge of the overlapped group with the furthest edge plus an 80 px gap and is checked again, up to 50 times.
+    /// </summary>
+    public static double FreeX(CanvasNode node, IEnumerable<CanvasNode> nodes, double gap = 40, CanvasDocument? avoidGroupsOf = null)
     {
         var others = nodes.Where(n => n.Kind != NodeKind.Group && n != node).ToList();
-        var x = node.X;
-        bool Overlaps(double left) => others.Any(n => left < n.Right + gap && left + node.Width + gap > n.X && node.Y < n.Bottom + gap && node.Bottom + gap > n.Y);
-        for (var step = 0; step < 50 && Overlaps(x); step++) x += node.Width + gap;
+        double Free(double left)
+        {
+            for (var step = 0; step < 50 && others.Any(n => left < n.Right + gap && left + node.Width + gap > n.X && node.Y < n.Bottom + gap && node.Bottom + gap > n.Y); step++) left += node.Width + gap;
+            return left;
+        }
+        var x = Free(node.X);
+        for (var step = 0; avoidGroupsOf is not null && step < 50 && GroupOverlapping(avoidGroupsOf, node, x) is { } group; step++) x = Free(group.Right + 80);
         return x;
     }
 
@@ -39,11 +47,11 @@ public static class CanvasGraph
     /// Like <see cref="FreeX"/> for the first card of a batch, but the whole spread (row or grid) has to fit, so the batch does not land on the nodes beside it.
     /// <paramref name="others"/> must not include the batch itself.
     /// </summary>
-    public static double FreeBatchX(IReadOnlyList<CanvasNode> members, StackLayout layout, double gap, IEnumerable<CanvasNode> others)
+    public static double FreeBatchX(IReadOnlyList<CanvasNode> members, StackLayout layout, double gap, IEnumerable<CanvasNode> others, CanvasDocument? avoidGroupsOf = null)
     {
         var lead = members[0];
         var (width, height) = Stacks.Footprint(members, layout, gap);
-        var x = FreeX(new CanvasNode { Kind = NodeKind.Image, X = lead.X, Y = lead.Y, Width = width, Height = height }, others);
+        var x = FreeX(new CanvasNode { Kind = NodeKind.Image, X = lead.X, Y = lead.Y, Width = width, Height = height }, others, avoidGroupsOf: avoidGroupsOf);
         // Sizes this large can overflow the search; the batch then stays where it is rather than get a coordinate that cannot be saved.
         return double.IsFinite(x) ? x : lead.X;
     }
@@ -166,9 +174,12 @@ public static class CanvasGraph
     }
 
     /// <summary>The innermost (smallest) group whose area contains the node centre.</summary>
-    public static CanvasNode? ContainingGroup(CanvasDocument doc, CanvasNode node)
-    {
-        var (cx, cy) = (node.X + node.Width / 2, node.Y + node.Height / 2);
-        return doc.Nodes.Where(g => g.Kind == NodeKind.Group && g.Id != node.Id && Rect.Of(g).Contains(cx, cy)).MinBy(g => g.Width * g.Height);
-    }
+    public static CanvasNode? ContainingGroup(CanvasDocument doc, CanvasNode node) => GroupAt(doc, node.Id, node.X + node.Width / 2, node.Y + node.Height / 2);
+
+    /// <summary>Of the groups the node's frame would overlap at this x, the one reaching furthest right.</summary>
+    private static CanvasNode? GroupOverlapping(CanvasDocument doc, CanvasNode node, double x) =>
+        doc.Nodes.Where(g => g.Kind == NodeKind.Group && g.Id != node.Id && new Rect(x, node.Y, x + node.Width, node.Bottom).Intersects(Rect.Of(g))).MaxBy(g => g.Right);
+
+    private static CanvasNode? GroupAt(CanvasDocument doc, string nodeId, double x, double y) =>
+        doc.Nodes.Where(g => g.Kind == NodeKind.Group && g.Id != nodeId && Rect.Of(g).Contains(x, y)).MinBy(g => g.Width * g.Height);
 }
