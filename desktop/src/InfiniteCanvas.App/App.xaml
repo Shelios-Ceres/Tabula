@@ -73,7 +73,8 @@
                 <Setter Property="BorderBrush" Value="{ThemeResource GlassStrokeBrush}" />
                 <Setter Property="BorderThickness" Value="1" />
                 <Setter Property="CornerRadius" Value="{ThemeResource OverlayCornerRadius}" />
-                <Setter Property="Padding" Value="4" />
+                <!-- Liquid glass: 6 so the pill-shaped hover fills sit evenly inside the capsule's round ends. -->
+                <Setter Property="Padding" Value="6" />
             </Style>
             <!-- Panels with more text (prompt panel, library, assistant) use a denser acrylic for legibility. -->
             <Style x:Key="FloatingPanel" TargetType="Border">
@@ -94,6 +95,8 @@
             </Style>
             <!-- Windows 11 subtle button: no fill until hovered. Clicking never takes focus from the canvas; Tab still reaches it. -->
             <Style x:Key="ToolbarButton" TargetType="Button" BasedOn="{StaticResource DefaultButtonStyle}">
+                <!-- Liquid glass: pill hover fills, matching the capsules they sit in. -->
+                <Setter Property="CornerRadius" Value="16" />
                 <Setter Property="Background" Value="Transparent" />
                 <Setter Property="BorderThickness" Value="0" />
                 <Setter Property="Padding" Value="10,6" />
@@ -138,6 +141,7 @@
             </Style>
             <!-- Same as ToolbarButton; checked keeps a subtle fill with accent content, like selected tools in Windows 11 apps. -->
             <Style x:Key="ToolbarToggleButton" TargetType="ToggleButton" BasedOn="{StaticResource DefaultToggleButtonStyle}">
+                <Setter Property="CornerRadius" Value="16" />
                 <Setter Property="Background" Value="Transparent" />
                 <Setter Property="BorderThickness" Value="0" />
                 <Setter Property="Padding" Value="10,6" />

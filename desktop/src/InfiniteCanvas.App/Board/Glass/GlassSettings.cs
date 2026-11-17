@@ -47,7 +47,11 @@ public sealed class GlassSettings
     public double Edge { get; set; } = 1.1;
     public double Power { get; set; } = 2.6;
     public double Dispersion { get; set; } = 0.15;
+    /// <summary>Corner radius of panels; toolbars are always capsules (radius half their height).</summary>
     public double Radius { get; set; } = 28;
+    /// <summary>Panels with text (library, assistant, prompt, this panel) are thicker glass: extra blur and a tint they never go below.</summary>
+    public double PanelBlur { get; set; } = 10;
+    public double PanelTint { get; set; } = 0.42;
     /// <summary>CSS superellipse(k): the corner's exponent is 2^k, 1 is a circle.</summary>
     public double Smoothing { get; set; } = 1.25;
     /// <summary>theme, auto, dark or light.</summary>

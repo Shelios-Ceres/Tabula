@@ -99,8 +99,11 @@ public sealed partial class GlassTuningPanel : UserControl
         Slider("色散 dispersion", 0, 0.4, 0.005, () => s.Dispersion, v => s.Dispersion = v, "0.000");
 
         Section("形状 Shape");
-        Slider("圆角 radius (px)", 0, 60, 1, () => s.Radius, v => s.Radius = v, "0");
+        Slider("面板圆角 radius (px)", 0, 60, 1, () => s.Radius, v => s.Radius = v, "0");
         Slider("圆角平滑 smoothing", 0.5, 3, 0.05, () => s.Smoothing, v => s.Smoothing = v);
+        _body.Children.Add(Note("工具栏和浮动工具条始终是胶囊形；圆角只作用于面板，面板内边距会随圆角自动加大，避免内容被圆角裁到。"));
+        Slider("面板额外模糊 panel blur (px)", 0, 30, 0.5, () => s.PanelBlur, v => s.PanelBlur = v, "0.0");
+        Slider("面板最低色调 panel tint", 0, 0.9, 0.01, () => s.PanelTint, v => s.PanelTint = v);
 
         Section("自适应 Adaptive");
         Choice("文字颜色 ink", ["跟随主题 theme", "自动 auto", "深色文字 dark", "浅色文字 light"], Array.IndexOf(GlassSettings.InkModes, s.Ink), 2,

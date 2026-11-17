@@ -238,9 +238,14 @@ public static class LiquidGlass
         }
 
         /// <summary>Moves the border's content into a grid with the glass control underneath it.</summary>
+        /// <summary>FloatingPanel surfaces (text-heavy) versus GlassCapsule toolbars.</summary>
+        private bool IsPanel => _border.Style == (Style)Application.Current.Resources["FloatingPanel"];
+        private Thickness? _basePadding;
+
         private void Install()
         {
             if (_control is not null) return;
+            if (IsPanel) AddPanelResources(_border.Resources);
             _control = new CanvasControl { IsHitTestVisible = false, ClearColor = Microsoft.UI.Colors.Transparent };
             _control.Draw += Draw;
             var content = _border.Child;
@@ -259,6 +264,11 @@ public static class LiquidGlass
             var on = GlassSettings.Current.Enabled;
             if (on)
             {
+                // Panels: the content moves in as far as the rounded corner cuts in at 45 degrees, so nothing sits in the curve.
+                _basePadding ??= _border.Padding;
+                var basePad = _basePadding.Value;
+                var cut = IsPanel ? Math.Min(24, GlassSettings.Current.Radius * (1 - Math.Pow(2, -1 / Math.Pow(2, GlassSettings.Current.Smoothing))) * 0.9) : 0;
+                _border.Padding = new Thickness(basePad.Left + cut, basePad.Top + cut * 0.6, basePad.Right + cut, basePad.Bottom + cut * 0.6);
                 var inset = _border.Padding;
                 var (b, m) = (_border.BorderThickness, ShadowMargin);
                 _control.Margin = new Thickness(-inset.Left - b.Left - m, -inset.Top - b.Top - m, -inset.Right - b.Right - m, -inset.Bottom - b.Bottom - m);
@@ -276,6 +286,7 @@ public static class LiquidGlass
                 _border.ClearValue(Border.BackgroundProperty);
                 _border.ClearValue(Border.BorderBrushProperty);
                 _border.ClearValue(Border.CornerRadiusProperty);
+                if (_basePadding is { } padding) _border.Padding = padding;
                 _border.RequestedTheme = ElementTheme.Default;
                 _ink?.ClearValue(ContentPresenter.ForegroundProperty);
                 if (_shadow is not null) _border.Shadow = _shadow;
@@ -350,12 +361,14 @@ public static class LiquidGlass
             var px = sender.Dpi / 96f;
             var rim = (float)Math.Round(Math.Max(4, Math.Min(settings.Rim, Math.Min(bw, bh) / 3.5)));
             var lens = settings.Lens && Math.Min(bw, bh) >= 32;
-            var radius = (float)Math.Min(settings.Radius, Math.Min(bw, bh) / 2);
+            // Toolbars are capsules; panels take the radius setting.
+            var radius = IsPanel ? (float)Math.Min(settings.Radius, Math.Min(bw, bh) / 2) : Math.Min(bw, bh) / 2;
             var corner = radius >= bh / 2 - 0.5f || radius >= bw / 2 - 0.5f ? 2f : (float)Math.Pow(2, settings.Smoothing);
+            if (IsPanel) tintA = Math.Min(0.95, Math.Max(tintA, settings.PanelTint));
 
             _blur ??= new GaussianBlurEffect { BorderMode = EffectBorderMode.Hard, Optimization = EffectOptimization.Speed };
             _blur.Source = _scene;
-            _blur.BlurAmount = (float)Mix(x => x.Blur);
+            _blur.BlurAmount = (float)(Mix(x => x.Blur) + (IsPanel ? settings.PanelBlur : 0));
             _effect ??= new PixelShaderEffect<GlassShader>();
             // The bend reads up to edge × rim × (1 + dispersion) inward; Direct2D must hand each tile that much input around it, or the
             // rim samples transparent pixels at tile edges (dark patches that came and went as the canvas moved).
@@ -438,6 +451,27 @@ public static class LiquidGlass
                 _easeTimer.Tick += (_, _) => Redraw();
             }
             if (!_easeTimer.IsRunning) _easeTimer.Start();
+        }
+
+        /// <summary>
+        /// Controls inside glass panels: rounder corners to match the glass, and inputs that let the glass through instead of
+        /// sitting on it as opaque Fluent boxes.
+        /// </summary>
+        private static void AddPanelResources(ResourceDictionary resources)
+        {
+            resources["ControlCornerRadius"] = new CornerRadius(12);
+            resources["OverlayCornerRadius"] = new CornerRadius(16);
+            ResourceDictionary Theme(byte rest, byte hover, Color tone)
+            {
+                var dictionary = new ResourceDictionary();
+                foreach (var key in new[] { "TextControlBackground", "ComboBoxBackground", "ButtonBackground" })
+                    dictionary[key] = new SolidColorBrush(Color.FromArgb(rest, tone.R, tone.G, tone.B));
+                foreach (var key in new[] { "TextControlBackgroundPointerOver", "ComboBoxBackgroundPointerOver", "ButtonBackgroundPointerOver" })
+                    dictionary[key] = new SolidColorBrush(Color.FromArgb(hover, tone.R, tone.G, tone.B));
+                return dictionary;
+            }
+            resources.ThemeDictionaries["Light"] = Theme(110, 170, Microsoft.UI.Colors.White);
+            resources.ThemeDictionaries["Dark"] = Theme(30, 48, Microsoft.UI.Colors.White);
         }
 
         /// <summary>Light ink means dark glass: the content follows through RequestedTheme, so every theme brush inside switches with it.</summary>
