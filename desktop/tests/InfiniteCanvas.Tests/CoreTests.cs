@@ -1,4 +1,5 @@
 using System.Text;
+using InfiniteCanvas.Core;
 using InfiniteCanvas.Core.Canvas;
 using InfiniteCanvas.Core.Models;
 using InfiniteCanvas.Core.Settings;
@@ -1708,5 +1709,34 @@ public class CoreTests
             Assert.Equal(["图片-001.png", "图片-002.png", "标注-001.png", "蒙版-001.png"], Directory.GetFiles(dir).Select(f => Path.GetFileName(f)).Order(StringComparer.Ordinal));
         }
         finally { Directory.Delete(Path.GetDirectoryName(dir)!, true); }
+    }
+
+    [Fact]
+    public void An_unknown_material_or_ground_falls_back_to_the_defaults()
+    {
+        Assert.Equal(Appearance.Frosted, Appearance.Material(null));
+        Assert.Equal(Appearance.Frosted, Appearance.Material("jelly"));
+        Assert.Equal(Appearance.Liquid, Appearance.Material("liquid"));
+        Assert.Equal(Appearance.Frosted, new AppSettings().GlassMaterial);
+        Assert.Equal("teal", CanvasGrounds.Find("neon").Id);
+        Assert.Equal("teal", new AppSettings().CanvasGround);
+        Assert.Equal("warm", CanvasGrounds.Find("warm").Id);
+    }
+
+    [Fact]
+    public void Every_canvas_ground_has_a_light_and_a_dark_colour_and_the_four_names_of_the_design()
+    {
+        Assert.Equal(["teal", "blue", "warm", "gray"], CanvasGrounds.All.Select(g => g.Id));
+        foreach (var ground in CanvasGrounds.All)
+            foreach (var hex in new[] { ground.Light, ground.Dark }) Assert.Matches("^[0-9A-F]{6}$", hex);
+    }
+
+    [Fact]
+    public void The_material_and_ground_survive_a_round_trip_through_the_settings_file()
+    {
+        var settings = new AppSettings { GlassMaterial = Appearance.Liquid, CanvasGround = "blue" };
+        var back = Json.Deserialize<AppSettings>(Json.Serialize(settings))!;
+        Assert.Equal(Appearance.Liquid, back.GlassMaterial);
+        Assert.Equal("blue", back.CanvasGround);
     }
 }

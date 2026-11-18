@@ -63,6 +63,7 @@ public partial class App : Application
                 if (Window.AppWindow.Presenter is OverlappedPresenter { State: OverlappedPresenterState.Minimized } presenter) presenter.Restore();
                 Window.Activate();
             });
+            Skin.Start();
             Window.Start();
             Window.Activate();
             _launched = true;

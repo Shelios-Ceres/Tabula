@@ -60,8 +60,9 @@ public static class LiquidGlass
     /// <summary>The scene under the glass changed (viewport, nodes, theme, a picture loaded): every visible surface re-renders.</summary>
     public static void Invalidate()
     {
-        if (!GlassSettings.Current.Enabled) return;
+        // The fade bands belong to every material.
         Scene?.InvalidateTopFade();
+        if (!GlassSettings.Current.Enabled) return;
         foreach (var pane in LivePanes()) pane.Redraw();
     }
 

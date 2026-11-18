@@ -8,7 +8,8 @@ namespace InfiniteCanvas.App.Board;
 /// and not at all at the band's bottom, and washed towards the canvas colour. Input 0 is the scene, edge-clamped, in output pixels.
 /// <paramref name="band"/>: band height and largest blur radius (window DIPs), wash, strength. <paramref name="color"/>: canvas colour.
 /// <paramref name="map"/>: window DIPs per output pixel and the window y of output row 0, so a glass surface can run the same fade on its
-/// own scene; z = 1 for an opaque result (the glass's input) instead of a band laid over the canvas.
+/// own scene; z = 1 for an opaque result (the glass's input) instead of a band laid over the canvas; w > 0 for a band along the bottom edge
+/// (w is the control's height in DIPs, and the fade grows towards the bottom instead of the top).
 /// </summary>
 [D2DInputCount(1)]
 [D2DInputComplex(0)]
@@ -20,7 +21,7 @@ public readonly partial struct FadeShader(float4 band, float4 color, float4 map)
 {
     public float4 Execute()
     {
-        float y = D2D.GetScenePosition().Y * map.X + map.Y;
+        float y = map.W > 0 ? map.W - D2D.GetScenePosition().Y * map.X : D2D.GetScenePosition().Y * map.X + map.Y;
         // 1 at the window's top edge, 0 at the band's bottom.
         float t = Hlsl.Clamp(1 - y / Hlsl.Max(band.X, 1), 0, 1);
         float r = Hlsl.Max(band.Y * t * t / Hlsl.Max(map.X, 0.0001f), 0.01f);

@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.Reflection;
+using InfiniteCanvas.App.Board;
 using InfiniteCanvas.Core.Canvas;
 using InfiniteCanvas.Core.Models;
 using InfiniteCanvas.Core.Settings;
@@ -27,7 +28,8 @@ public sealed partial class SettingsPage : Page
 {
     private static AppSettings Settings => SettingsStore.Current;
     private ModelChannel? _channel;
-    private bool _loading;
+    // True until the page is built: setting up the sliders and radio lists raises their change events, which must not write settings.
+    private bool _loading = true;
 
     public SettingsPage()
     {
@@ -45,11 +47,72 @@ public sealed partial class SettingsPage : Page
         VersionText.Text = $"版本 {version.ToString(3)}";
         SystemPromptBox.Text = Settings.SystemPrompt;
         BuildAgents();
+        BuildAppearance();
         ExternalAgentsSwitch.IsOn = Settings.ExternalAgents;
         WaitingAnimationsSwitch.IsOn = Settings.WaitingAnimations;
         BridgeCommand.Text = $"\"{Environment.ProcessPath}\" {Agents.McpBridge.Argument}";
         RefreshChannels(Settings.Channels.FirstOrDefault());
         App.Window.SetCaption("设置");
+    }
+
+    // ---------- 外观: material, canvas ground, theme and UI scale ----------
+
+    private static readonly string[] Themes = ["system", "light", "dark"];
+
+    private void BuildAppearance()
+    {
+        _loading = true;
+        foreach (var tint in CanvasGrounds.All)
+        {
+            // A coloured dot and the label as one piece of text, so the radio button is named by it.
+            var item = new TextBlock();
+            item.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run { Text = "● ", Foreground = new SolidColorBrush(Skin.Rgb(Dot(tint.Id))) });
+            item.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run { Text = tint.Label });
+            GroundList.Items.Add(item);
+        }
+        MaterialList.SelectedIndex = Array.IndexOf(Appearance.Materials, Skin.Material);
+        GroundList.SelectedIndex = CanvasGrounds.All.ToList().IndexOf(CanvasGrounds.Find(Settings.CanvasGround));
+        ThemeList.SelectedIndex = Math.Max(0, Array.IndexOf(Themes, GlassSettings.Current.Theme));
+        ScaleSlider.Value = GlassSettings.Current.UiScale;
+        TuningButton.IsEnabled = Skin.Liquid;
+        _loading = false;
+    }
+
+    /// <summary>A mid-tone of each ground tint, for the dot in front of its name (the ground colours themselves are too pale to read as a dot).</summary>
+    private static string Dot(string id) => id switch { "blue" => "4C78C8", "warm" => "C98B4A", "gray" => "7A808C", _ => "2A9D8F" };
+
+    private void Material_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (_loading || MaterialList.SelectedIndex < 0) return;
+        Skin.SetMaterial(Appearance.Materials[MaterialList.SelectedIndex]);
+        TuningButton.IsEnabled = Skin.Liquid;
+    }
+
+    private void Ground_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (!_loading && GroundList.SelectedIndex >= 0) Skin.SetGround(CanvasGrounds.All[GroundList.SelectedIndex].Id);
+    }
+
+    private void Theme_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (!_loading && ThemeList.SelectedIndex >= 0) GlassSettings.Update(g => g.Theme = Themes[ThemeList.SelectedIndex]);
+    }
+
+    private void Scale_Changed(object sender, Microsoft.UI.Xaml.Controls.Primitives.RangeBaseValueChangedEventArgs e)
+    {
+        if (!_loading) GlassSettings.Update(g => g.UiScale = Math.Round(e.NewValue, 2));
+    }
+
+    /// <summary>The tuning panel lives on the canvas: go back to it with the panel open, or say where to find it.</summary>
+    private async void Tuning_Click(object sender, RoutedEventArgs e)
+    {
+        if (Frame.BackStack.LastOrDefault()?.SourcePageType != typeof(CanvasPage))
+        {
+            await Dialogs.MessageAsync("液态玻璃参数", "参数面板在画布里：打开一个画布，按 Ctrl+Shift+L。");
+            return;
+        }
+        Skin.OpenTuning = true;
+        Frame.GoBack();
     }
 
     private void RefreshChannels(ModelChannel? select)

@@ -238,6 +238,7 @@ public static class CanvasCommands
     /// <summary>Keys that belong to no command of the table.</summary>
     public static readonly IReadOnlyList<(string Title, string Text)> ExtraKeys =
     [
+        ("全屏", "F11"),
         ("液态玻璃设置", "Ctrl+Shift+L"),
     ];
 

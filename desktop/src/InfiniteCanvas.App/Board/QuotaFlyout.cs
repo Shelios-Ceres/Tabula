@@ -20,7 +20,7 @@ internal sealed class QuotaFlyout : Flyout
 
     public QuotaFlyout()
     {
-        Placement = FlyoutPlacementMode.BottomEdgeAlignedLeft;
+        Placement = FlyoutPlacementMode.BottomEdgeAlignedRight;
         var caption = (Style)Application.Current.Resources["SecondaryCaption"];
         Content = new StackPanel
         {

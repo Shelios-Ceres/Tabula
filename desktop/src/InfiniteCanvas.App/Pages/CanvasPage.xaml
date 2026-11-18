@@ -9,34 +9,84 @@
     <Grid>
         <board:CanvasView x:Name="Board" />
 
-        <!-- Top-left: back, title, save state -->
+        <!-- Top-left: menu, home, the canvas title with its menu and save state, undo / redo, running count -->
         <board:GlassScale x:Name="TitleHost" Margin="16,12,0,0" HorizontalAlignment="Left" VerticalAlignment="Top">
         <Border x:Name="TitleCapsule" Style="{StaticResource GlassCapsule}">
             <StackPanel Orientation="Horizontal" Spacing="2">
+                <Button x:Name="MenuButton" Style="{StaticResource ToolbarButton}" Padding="10,7" ToolTipService.ToolTip="菜单：新建、导入、设置" AutomationProperties.Name="菜单">
+                    <FontIcon Glyph="&#xE700;" FontSize="15" />
+                </Button>
                 <Button Style="{StaticResource ToolbarButton}" Padding="10,7" Click="Back_Click" ToolTipService.ToolTip="返回画布列表" AutomationProperties.Name="返回画布列表">
-                    <FontIcon Glyph="&#xE76B;" FontSize="15" />
+                    <FontIcon Glyph="&#xE80F;" FontSize="15" />
                 </Button>
-                <Button Style="{StaticResource ToolbarButton}" Click="Rename_Click" ToolTipService.ToolTip="重命名画布" AutomationProperties.Name="重命名画布">
-                    <TextBlock x:Name="TitleText" MaxWidth="200" TextTrimming="CharacterEllipsis" FontWeight="SemiBold" />
-                </Button>
-                <Button Style="{StaticResource ToolbarButton}" Click="Save_Click" ToolTipService.ToolTip="立即保存；保存失败时点击重试" AutomationProperties.Name="保存画布">
-                    <TextBlock x:Name="SaveState" VerticalAlignment="Center" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                </Button>
+                <StackPanel VerticalAlignment="Center" Margin="2,0,8,0">
+                    <Button x:Name="TitleButton" Style="{StaticResource ToolbarButton}" Padding="8,0" MinHeight="24" CornerRadius="12" ToolTipService.ToolTip="画布操作：重命名、在资源管理器中显示、显示全部内容" AutomationProperties.Name="画布操作">
+                        <StackPanel Orientation="Horizontal" Spacing="4">
+                            <TextBlock x:Name="TitleText" MaxWidth="200" TextTrimming="CharacterEllipsis" FontWeight="SemiBold" VerticalAlignment="Center" />
+                            <FontIcon Glyph="&#xE70D;" FontSize="10" VerticalAlignment="Center" />
+                        </StackPanel>
+                        <Button.Flyout>
+                            <MenuFlyout>
+                                <MenuFlyoutItem Text="重命名画布…" Click="Rename_Click" AutomationProperties.Name="重命名画布">
+                                    <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE8AC;" /></MenuFlyoutItem.Icon>
+                                </MenuFlyoutItem>
+                                <MenuFlyoutItem Text="在资源管理器中显示" Click="RevealFolder_Click" AutomationProperties.Name="在资源管理器中显示画布文件夹">
+                                    <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE838;" /></MenuFlyoutItem.Icon>
+                                </MenuFlyoutItem>
+                                <MenuFlyoutItem Text="显示全部内容" KeyboardAcceleratorTextOverride="Ctrl+1" Click="Fit_Click" AutomationProperties.Name="显示全部内容">
+                                    <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE9A6;" /></MenuFlyoutItem.Icon>
+                                </MenuFlyoutItem>
+                            </MenuFlyout>
+                        </Button.Flyout>
+                    </Button>
+                    <StackPanel Orientation="Horizontal" Margin="8,0,0,0" Spacing="3">
+                        <TextBlock Text="我的画布 ›" VerticalAlignment="Center" Style="{StaticResource SecondaryCaption}" />
+                        <Button x:Name="SaveButton" Style="{StaticResource ToolbarButton}" Padding="3,0" MinHeight="18" CornerRadius="9" Click="Save_Click" ToolTipService.ToolTip="立即保存；保存失败时点击重试" AutomationProperties.Name="保存画布">
+                            <TextBlock x:Name="SaveState" VerticalAlignment="Center" Style="{StaticResource SecondaryCaption}" />
+                        </Button>
+                    </StackPanel>
+                </StackPanel>
+                <Rectangle Style="{StaticResource ToolbarDivider}" />
                 <Button x:Name="UndoButton" Style="{StaticResource ToolbarButton}" Padding="10,7" Click="Undo_Click" ToolTipService.ToolTip="撤销 (Ctrl+Z)" AutomationProperties.Name="撤销 (Ctrl+Z)">
                     <FontIcon Glyph="&#xE7A7;" FontSize="15" />
                 </Button>
                 <Button x:Name="RedoButton" Style="{StaticResource ToolbarButton}" Padding="10,7" Click="Redo_Click" ToolTipService.ToolTip="重做 (Ctrl+Shift+Z / Ctrl+Y)" AutomationProperties.Name="重做 (Ctrl+Shift+Z / Ctrl+Y)">
                     <FontIcon Glyph="&#xE7A6;" FontSize="15" />
                 </Button>
-                <Rectangle Style="{StaticResource ToolbarDivider}" />
-                <ToggleButton x:Name="LibraryToggle" Style="{StaticResource ToolbarToggleButton}" Padding="10,7" Click="LibraryToggle_Click" ToolTipService.ToolTip="资料库" AutomationProperties.Name="资料库">
-                    <StackPanel Orientation="Horizontal" Spacing="7"><FontIcon Glyph="&#xE8F1;" FontSize="15" /><TextBlock x:Name="LibraryLabel" Text="资料库" /></StackPanel>
+                <Rectangle x:Name="JobsDivider" Style="{StaticResource ToolbarDivider}" Visibility="Collapsed" />
+                <Button x:Name="JobsButton" Style="{StaticResource ToolbarButton}" Padding="10,6" Visibility="Collapsed" Click="Jobs_Click" ToolTipService.ToolTip="在画布上找到正在生成的节点" AutomationProperties.Name="正在生成的节点">
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                        <Ellipse Width="7" Height="7" Fill="{ThemeResource KindConfigBrush}" VerticalAlignment="Center" />
+                        <TextBlock x:Name="JobsText" VerticalAlignment="Center" />
+                    </StackPanel>
+                </Button>
+            </StackPanel>
+        </Border>
+        </board:GlassScale>
+
+        <!-- Top-right: library, assistant, today's spend, command search, settings -->
+        <board:GlassScale x:Name="RightHost" Margin="0,12,16,0" HorizontalAlignment="Right" VerticalAlignment="Top">
+        <Border x:Name="RightCapsule" Style="{StaticResource GlassCapsule}">
+            <StackPanel Orientation="Horizontal" Spacing="2">
+                <ToggleButton x:Name="LibraryToggle" Style="{StaticResource ToolbarToggleButton}" Padding="10,7" Click="LibraryToggle_Click" ToolTipService.ToolTip="资料库与画布文件" AutomationProperties.Name="资料库">
+                    <FontIcon Glyph="&#xE8F1;" FontSize="15" />
                 </ToggleButton>
                 <ToggleButton x:Name="AgentToggle" Style="{StaticResource ToolbarToggleButton}" Padding="10,7" Click="AgentToggle_Click" ToolTipService.ToolTip="助手：让本机的 Agent 操作画布" AutomationProperties.Name="助手">
-                    <StackPanel Orientation="Horizontal" Spacing="7"><FontIcon Glyph="&#xE99A;" FontSize="15" /><TextBlock x:Name="AgentLabel" Text="助手" /></StackPanel>
+                    <FontIcon Glyph="&#xE99A;" FontSize="15" />
                 </ToggleButton>
-                <Button x:Name="QuotaButton" Style="{StaticResource ToolbarButton}" Padding="10,7" ToolTipService.ToolTip="额度：各服务商的余额与本机用量" AutomationProperties.Name="额度">
-                    <StackPanel Orientation="Horizontal" Spacing="7"><FontIcon Glyph="&#xE8C7;" FontSize="15" /><TextBlock x:Name="QuotaLabel" Text="额度" /></StackPanel>
+                <Rectangle Style="{StaticResource ToolbarDivider}" />
+                <Button x:Name="QuotaButton" Style="{StaticResource ToolbarButton}" Padding="10,7" ToolTipService.ToolTip="额度与用量：各服务商的余额和本机用量" AutomationProperties.Name="额度">
+                    <StackPanel Orientation="Horizontal" Spacing="7">
+                        <FontIcon Glyph="&#xE8C7;" FontSize="15" />
+                        <TextBlock x:Name="QuotaLabel" VerticalAlignment="Center" />
+                    </StackPanel>
+                </Button>
+                <Rectangle Style="{StaticResource ToolbarDivider}" />
+                <Button x:Name="SearchButton" Style="{StaticResource ToolbarButton}" Padding="10,7" Click="Search_Click" ToolTipService.ToolTip="命令与快捷键" AutomationProperties.Name="命令">
+                    <FontIcon Glyph="&#xE721;" FontSize="15" />
+                </Button>
+                <Button x:Name="SettingsButton" Style="{StaticResource ToolbarButton}" Padding="10,7" Click="Settings_Click" ToolTipService.ToolTip="设置" AutomationProperties.Name="设置">
+                    <FontIcon Glyph="&#xE713;" FontSize="15" />
                 </Button>
             </StackPanel>
         </Border>
@@ -45,56 +95,60 @@
         <!-- Left: shared media library -->
         <board:LibraryPanel x:Name="Library" Width="300" Margin="16,72,0,16" HorizontalAlignment="Left" VerticalAlignment="Stretch" Visibility="Collapsed" />
 
-        <!-- Bottom-left: overview map, beside the library when it is open -->
-        <board:MiniMap x:Name="Map" Margin="16,0,0,16" HorizontalAlignment="Left" VerticalAlignment="Bottom" Visibility="Collapsed" />
+        <!-- Bottom-right: overview map, above the status bar and beside the right panel when it is open -->
+        <board:MiniMap x:Name="Map" Margin="0,0,16,76" HorizontalAlignment="Right" VerticalAlignment="Bottom" Visibility="Collapsed" />
 
-        <!-- Right: local agent assistant, above the zoom capsule -->
+        <!-- Right dock: one panel at a time, the local agent assistant or the glass tuning panel, above the status bar -->
         <board:AgentPanel x:Name="Agent" Width="380" Margin="0,72,16,72" HorizontalAlignment="Right" VerticalAlignment="Stretch" Visibility="Collapsed" />
 
-        <!-- Bottom-right: zoom -->
-        <board:GlassScale x:Name="ZoomHost" Margin="0,0,16,16" HorizontalAlignment="Right" VerticalAlignment="Bottom">
-        <Border x:Name="ZoomCapsule" Style="{StaticResource GlassCapsule}">
+        <!-- Bottom-right: status bar -->
+        <board:GlassScale x:Name="StatusHost" Margin="0,0,16,16" HorizontalAlignment="Right" VerticalAlignment="Bottom">
+        <Border x:Name="StatusCapsule" Style="{StaticResource GlassCapsule}">
             <StackPanel Orientation="Horizontal" Spacing="2">
-                <Button Style="{StaticResource ToolbarButton}" Padding="10,7" Click="ZoomOut_Click" ToolTipService.ToolTip="缩小" AutomationProperties.Name="缩小">
-                    <FontIcon Glyph="&#xE738;" FontSize="15" />
-                </Button>
-                <Button Style="{StaticResource ToolbarButton}" Click="ZoomReset_Click" ToolTipService.ToolTip="恢复 100% (Ctrl+0)" AutomationProperties.Name="恢复 100% (Ctrl+0)" MinWidth="68">
-                    <TextBlock x:Name="ZoomText" Text="100%" FontWeight="SemiBold" />
-                </Button>
-                <Button Style="{StaticResource ToolbarButton}" Padding="10,7" Click="ZoomIn_Click" ToolTipService.ToolTip="放大" AutomationProperties.Name="放大">
-                    <FontIcon Glyph="&#xE710;" FontSize="15" />
+                <TextBlock x:Name="CountText" VerticalAlignment="Center" Margin="10,0" Style="{StaticResource SecondaryCaption}" />
+                <Rectangle Style="{StaticResource ToolbarDivider}" />
+                <Button x:Name="ZoomButton" Style="{StaticResource ToolbarButton}" Padding="10,7" MinWidth="64" ToolTipService.ToolTip="缩放" AutomationProperties.Name="缩放">
+                    <StackPanel Orientation="Horizontal" Spacing="4">
+                        <TextBlock x:Name="ZoomText" Text="100%" FontWeight="SemiBold" VerticalAlignment="Center" />
+                        <FontIcon Glyph="&#xE70D;" FontSize="10" VerticalAlignment="Center" />
+                    </StackPanel>
+                    <Button.Flyout>
+                        <MenuFlyout Placement="TopEdgeAlignedRight">
+                            <MenuFlyoutItem Text="放大" KeyboardAcceleratorTextOverride="Ctrl+=" Click="ZoomIn_Click" AutomationProperties.Name="放大">
+                                <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE710;" /></MenuFlyoutItem.Icon>
+                            </MenuFlyoutItem>
+                            <MenuFlyoutItem Text="缩小" KeyboardAcceleratorTextOverride="Ctrl+-" Click="ZoomOut_Click" AutomationProperties.Name="缩小">
+                                <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE738;" /></MenuFlyoutItem.Icon>
+                            </MenuFlyoutItem>
+                            <MenuFlyoutSeparator />
+                            <MenuFlyoutItem Text="恢复 100%" KeyboardAcceleratorTextOverride="Ctrl+0" Click="ZoomReset_Click" AutomationProperties.Name="恢复 100%">
+                                <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE71E;" /></MenuFlyoutItem.Icon>
+                            </MenuFlyoutItem>
+                            <MenuFlyoutItem Text="显示全部内容" KeyboardAcceleratorTextOverride="Ctrl+1" Click="Fit_Click" AutomationProperties.Name="显示全部内容">
+                                <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE9A6;" /></MenuFlyoutItem.Icon>
+                            </MenuFlyoutItem>
+                        </MenuFlyout>
+                    </Button.Flyout>
                 </Button>
                 <Rectangle Style="{StaticResource ToolbarDivider}" />
-                <Button Style="{StaticResource ToolbarButton}" Padding="10,7" Click="Fit_Click" ToolTipService.ToolTip="显示全部内容 (Ctrl+1)" AutomationProperties.Name="显示全部内容 (Ctrl+1)">
-                    <FontIcon Glyph="&#xE9A6;" FontSize="15" />
-                </Button>
-                <ToggleButton x:Name="GlassToggle" Style="{StaticResource ToolbarToggleButton}" Padding="10,7" Click="GlassToggle_Click" ToolTipService.ToolTip="液态玻璃设置 (Ctrl+Shift+L)" AutomationProperties.Name="液态玻璃设置 (Ctrl+Shift+L)">
-                    <FontIcon Glyph="&#xE771;" FontSize="15" />
-                </ToggleButton>
                 <ToggleButton x:Name="MiniMapToggle" Style="{StaticResource ToolbarToggleButton}" Padding="10,7" Click="MiniMapToggle_Click" ToolTipService.ToolTip="小地图" AutomationProperties.Name="小地图">
                     <FontIcon Glyph="&#xE826;" FontSize="15" />
                 </ToggleButton>
-                <Button Style="{StaticResource ToolbarButton}" Padding="10,7" ToolTipService.ToolTip="操作说明" AutomationProperties.Name="操作说明">
+                <!-- Placeholder until the outline drawer (phase R7). -->
+                <ToggleButton x:Name="OutlineToggle" Style="{StaticResource ToolbarToggleButton}" Padding="10,7" IsEnabled="False" ToolTipService.ToolTip="大纲（即将推出）" AutomationProperties.Name="大纲">
+                    <FontIcon Glyph="&#xE8FD;" FontSize="15" />
+                </ToggleButton>
+                <ToggleButton x:Name="FullScreenToggle" Style="{StaticResource ToolbarToggleButton}" Padding="10,7" Click="FullScreen_Click" ToolTipService.ToolTip="全屏" AutomationProperties.Name="全屏">
+                    <FontIcon Glyph="&#xE740;" FontSize="15" />
+                </ToggleButton>
+                <Button x:Name="HelpButton" Style="{StaticResource ToolbarButton}" Padding="10,7" ToolTipService.ToolTip="操作说明" AutomationProperties.Name="操作说明">
                     <FontIcon Glyph="&#xE9CE;" FontSize="15" />
-                    <Button.Flyout>
-                        <Flyout Placement="TopEdgeAlignedRight">
-                            <!-- Rows are generated from the command table (Core/Canvas/CanvasCommands.cs): gestures first, then every shortcut. -->
-                            <ScrollViewer MaxHeight="560" Width="400">
-                                <Grid x:Name="HelpGrid" ColumnSpacing="20" RowSpacing="8" Padding="0,0,12,0">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="*" />
-                                    </Grid.ColumnDefinitions>
-                                </Grid>
-                            </ScrollViewer>
-                        </Flyout>
-                    </Button.Flyout>
                 </Button>
             </StackPanel>
         </Border>
         </board:GlassScale>
 
-        <!-- Liquid glass experiment: tuning panel (Ctrl+Shift+L) -->
+        <!-- Liquid glass experiment: tuning panel (Ctrl+Shift+L, or 设置 › 外观 while liquid glass is chosen); shares the right dock with the assistant -->
         <board:GlassTuningPanel x:Name="GlassPanel" Width="460" Margin="0,72,16,72" HorizontalAlignment="Right" VerticalAlignment="Stretch" Visibility="Collapsed" />
     </Grid>
 </Page>

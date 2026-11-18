@@ -186,7 +186,7 @@ public class CommandTests
     {
         var text = string.Join("\n", CanvasCommands.Gestures.Select(g => g.Title + g.Text).Concat(CanvasCommands.Shortcuts().Select(s => s.Title + s.Text)));
         foreach (var command in CanvasCommands.All.Where(c => c.Shortcut is not null)) Assert.Contains(command.Shortcut!, text);
-        foreach (var key in new[] { "Ctrl+0", "Ctrl+1", "Ctrl+Y", "Ctrl+Enter", "Ctrl+Shift+L", "Shift+滚轮", "按 C", "2 到 4 张" }) Assert.Contains(key, text);
+        foreach (var key in new[] { "Ctrl+0", "Ctrl+1", "Ctrl+Y", "Ctrl+Enter", "Ctrl+Shift+L", "F11", "Shift+滚轮", "按 C", "2 到 4 张" }) Assert.Contains(key, text);
     }
 
     [Fact]

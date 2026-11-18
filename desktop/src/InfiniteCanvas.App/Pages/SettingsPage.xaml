@@ -169,6 +169,30 @@
                 </Border>
 
                 <Border Style="{StaticResource SectionCard}">
+                    <StackPanel Spacing="14">
+                        <StackPanel Orientation="Horizontal" Spacing="10">
+                            <Border Width="28" Height="28" CornerRadius="6" Background="{ThemeResource KindGroupBrush}"><FontIcon Glyph="&#xE771;" FontSize="14" Foreground="White" /></Border>
+                            <TextBlock Text="外观" Style="{StaticResource BodyStrongTextBlockStyle}" VerticalAlignment="Center" />
+                        </StackPanel>
+                        <RadioButtons x:Name="MaterialList" Header="玻璃材质" MaxColumns="3" AutomationProperties.Name="玻璃材质" SelectionChanged="Material_Changed">
+                            <x:String>磨砂</x:String>
+                            <x:String>液态</x:String>
+                            <x:String>亚克力</x:String>
+                        </RadioButtons>
+                        <TextBlock Style="{StaticResource SecondaryCaption}" TextWrapping="Wrap"
+                                   Text="磨砂是默认的薄玻璃：半透明填充加强背景模糊。液态是带折射的着色器玻璃，参数还在打磨。亚克力是 Windows 自带的材质。" />
+                        <Button x:Name="TuningButton" Style="{StaticResource ActionButton}" Content="调整液态玻璃参数…" Click="Tuning_Click" />
+                        <RadioButtons x:Name="GroundList" Header="画布底色" MaxColumns="4" AutomationProperties.Name="画布底色" SelectionChanged="Ground_Changed" />
+                        <RadioButtons x:Name="ThemeList" Header="主题" MaxColumns="3" AutomationProperties.Name="主题" SelectionChanged="Theme_Changed">
+                            <x:String>跟随系统</x:String>
+                            <x:String>浅色</x:String>
+                            <x:String>深色</x:String>
+                        </RadioButtons>
+                        <Slider x:Name="ScaleSlider" Header="界面缩放（画布上的浮动工具栏和面板）" Minimum="0.75" Maximum="2" StepFrequency="0.05" AutomationProperties.Name="界面缩放" ValueChanged="Scale_Changed" />
+                    </StackPanel>
+                </Border>
+
+                <Border Style="{StaticResource SectionCard}">
                     <StackPanel Spacing="12">
                         <StackPanel Orientation="Horizontal" Spacing="10">
                             <Border Width="28" Height="28" CornerRadius="6" Background="{ThemeResource KindConfigBrush}"><FontIcon Glyph="&#xE99A;" FontSize="14" Foreground="White" /></Border>

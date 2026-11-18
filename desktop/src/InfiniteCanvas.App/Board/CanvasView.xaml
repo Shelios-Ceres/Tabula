@@ -16,8 +16,9 @@
             </Canvas.RenderTransform>
         </Canvas>
         <win2d:CanvasControl x:Name="Overlay" Draw="Overlay_Draw" IsHitTestVisible="False" ClearColor="Transparent" />
-        <!-- Liquid glass experiment: XMind-style progressive blur along the top edge (TopFade_Draw). -->
+        <!-- XMind-style progressive blur along the top and bottom edge, with every glass material (DrawFade). -->
         <win2d:CanvasControl x:Name="TopFade" Draw="TopFade_Draw" IsHitTestVisible="False" ClearColor="Transparent" VerticalAlignment="Top" Height="110" />
+        <win2d:CanvasControl x:Name="BottomFade" Draw="BottomFade_Draw" IsHitTestVisible="False" ClearColor="Transparent" VerticalAlignment="Bottom" Height="110" />
         <StackPanel x:Name="EmptyHint" Spacing="10" HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False" Visibility="Collapsed">
             <FontIcon Glyph="&#xE790;" FontSize="36" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
             <TextBlock Text="开始创作" HorizontalAlignment="Center" FontSize="20" FontWeight="SemiBold" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />

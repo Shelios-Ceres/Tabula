@@ -146,6 +146,10 @@ public sealed class AppSettings
     public string Agent { get; set; } = "claude";
     public bool AgentOpen { get; set; }
     public bool MiniMapOpen { get; set; } = true;
+    /// <summary>The look of the canvas's floating surfaces: frosted (default), liquid (the shader glass) or acrylic (the plain Windows material).</summary>
+    public string GlassMaterial { get; set; } = Appearance.Frosted;
+    /// <summary>The tint of the canvas ground, one of <see cref="CanvasGrounds"/>.</summary>
+    public string CanvasGround { get; set; } = CanvasGrounds.Default;
     /// <summary>Play local HTML waiting animations while images generate; off keeps the progress ring.</summary>
     public bool WaitingAnimations { get; set; } = true;
     /// <summary>Serve the canvas tools on the fixed per-user pipe, so agents outside the client (Claude Code, terminal CLIs) can operate the open canvas.</summary>
