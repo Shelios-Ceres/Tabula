@@ -64,6 +64,8 @@ public sealed partial class CanvasPage : Page
         Board.Changed += UpdateUndo;
         Board.Changed += UpdateCount;
         Board.SelectionChanged += UpdateCount;
+        // Each node's status change raises Changed, so a batch's count follows its pictures one by one, not only when the whole run starts or ends.
+        Board.Changed += UpdateRunning;
         Board.RunningChanged += UpdateRunning;
         Board.RunningChanged += UpdateSpend;
         GlassSettings.Changed += GlassSettings_Changed;
