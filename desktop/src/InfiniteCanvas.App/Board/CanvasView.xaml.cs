@@ -75,6 +75,9 @@ public sealed partial class CanvasView : UserControl
     public double StatusWidth { get; set; }
     /// <summary>How far the composer's top is above the window's bottom edge; 0 while it is hidden. Things that float at the bottom keep above it.</summary>
     public double ComposerClearance => double.IsNaN(_composerTop) ? 0 : Math.Max(0, Root.ActualHeight - _composerTop);
+    /// <summary>The composer's left and right edges in window coordinates, and a notice when it moves or hides, so the map can keep clear of it.</summary>
+    public (double Left, double Right) ComposerSpan { get; private set; }
+    public event Action? ComposerMoved;
     /// <summary>The composer's 添加 asked for the library.</summary>
     public event Action? LibraryRequested;
     /// <summary>The command bar floating at the selection, and its glass wrapper.</summary>
@@ -700,7 +703,7 @@ public sealed partial class CanvasView : UserControl
 
     private void PositionComposer(bool makeRoom)
     {
-        if (_composer.Visibility != Visibility.Visible) { _composerTop = double.NaN; return; }
+        if (_composer.Visibility != Visibility.Visible) { _composerTop = double.NaN; ComposerMoved?.Invoke(); return; }
         var scale = GlassSettings.Current.UiScale;
         var (left, right) = (_safe.Left + 16, Root.ActualWidth - _safe.Right - 16);
         var width = Math.Max(300, Math.Min(820 * scale, right - left));
@@ -712,6 +715,8 @@ public sealed partial class CanvasView : UserControl
         Canvas.SetLeft(_composer, x);
         Canvas.SetTop(_composer, y);
         _composerTop = y;
+        ComposerSpan = (x, x + width);
+        ComposerMoved?.Invoke();
         // Before its first layout the composer has no real height: the layout that follows asks again.
         if (makeRoom && _composer.ActualHeight > 0) MakeRoomForSelection();
     }
@@ -1914,6 +1919,15 @@ public sealed partial class CanvasView : UserControl
 
     /// <summary>Give keyboard focus back to the canvas so its shortcuts work again.</summary>
     public void FocusCanvas() => Root.Focus(FocusState.Programmatic);
+
+    /// <summary>Esc in the composer's prompt box: the keyboard goes back to the canvas; with nothing selected there is no next step, so the composer called up by Enter or / is put away too.</summary>
+    public void LeaveComposer()
+    {
+        FocusCanvas();
+        if (_selected.Count > 0 || !_called) return;
+        _called = false;
+        UpdateComposer();
+    }
 
     private async void Root_KeyDown(object sender, KeyRoutedEventArgs e)
     {

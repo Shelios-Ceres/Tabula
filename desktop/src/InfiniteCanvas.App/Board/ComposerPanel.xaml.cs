@@ -365,7 +365,7 @@ public sealed partial class ComposerPanel : UserControl
         if (e.Key == VirtualKey.Escape)
         {
             e.Handled = true;
-            _host.FocusCanvas();
+            _host.LeaveComposer();
             return;
         }
         if (e.Key != VirtualKey.Enter || _composing) return;

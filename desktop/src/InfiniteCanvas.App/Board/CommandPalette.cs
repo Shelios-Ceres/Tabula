@@ -30,6 +30,8 @@ public sealed class CommandPalette : UserControl
         // The surrounding area is transparent but takes clicks, so a click outside the box closes it.
         Content = new Grid { Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent), Children = { _shell } };
         ((Grid)Content).Tapped += (_, e) => { if (ReferenceEquals(e.OriginalSource, Content)) Close(); };
+        // Esc closes wherever the focus is inside the palette (the search box, or the list after a click).
+        ((Grid)Content).KeyDown += (_, e) => { if (e.Key == VirtualKey.Escape) { e.Handled = true; Close(); } };
         Visibility = Visibility.Collapsed;
         _query.TextChanged += (_, _) => Fill();
         _query.PreviewKeyDown += Query_PreviewKeyDown;
@@ -58,7 +60,9 @@ public sealed class CommandPalette : UserControl
         _query.Text = "";
         Fill();
         Visibility = Visibility.Visible;
-        _query.Focus(FocusState.Programmatic);
+        // A box that has just become visible cannot take focus until it has been laid out.
+        UpdateLayout();
+        if (!_query.Focus(FocusState.Programmatic)) DispatcherQueue.TryEnqueue(() => _query.Focus(FocusState.Programmatic));
     }
 
     public void Close()

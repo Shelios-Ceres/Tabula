@@ -61,6 +61,7 @@ public sealed partial class CanvasPage : Page
         Palette.CastShadowOn(Board);
         Motion.ShowHide(ToastHost, 0.5f, 1, 0.97f);
         Board.NodesDeleted += Board_NodesDeleted;
+        Board.ComposerMoved += () => PlaceMap();
         // The composer's 添加 → 从资料库选…: show the library panel. The composer sits above the status bar when they would meet, so it needs its width.
         Board.LibraryRequested += () => { if (Library.Visibility != Visibility.Visible) { LibraryToggle.IsChecked = true; LibraryToggle_Click(LibraryToggle, new RoutedEventArgs()); } };
         StatusHost.SizeChanged += (_, _) => ApplySafeArea();
@@ -159,9 +160,20 @@ public sealed partial class CanvasPage : Page
         var s = GlassSettings.Current.UiScale;
         var library = Library.Visibility == Visibility.Visible ? Library.Margin.Left + Library.Width + 12 : 0;
         var dock = RightDock is { } panel ? panel.Margin.Right + panel.Width + 12 : 0;
-        Map.Margin = new Thickness(0, 0, Math.Max(16, dock), 16 + 56 * s + 8);
+        PlaceMap(dock);
         Board.StatusWidth = StatusHost.ActualWidth + 16;
         Board.SafeArea = new Thickness(library, 12 + 56 * s, dock, 16 + 56 * s);
+    }
+
+    /// <summary>The map sits above the status bar, beside the right dock; when the composer reaches it sideways, it rides above the composer instead.</summary>
+    private void PlaceMap(double? dock = null)
+    {
+        var s = GlassSettings.Current.UiScale;
+        var right = Math.Max(16, dock ?? (RightDock is { } panel ? panel.Margin.Right + panel.Width + 12 : 0));
+        var bottom = 16 + 56 * s + 8;
+        if (Board.ComposerClearance > 0 && Board.ComposerSpan.Right + 12 > ActualWidth - right - (Map.ActualWidth > 0 ? Map.ActualWidth : 240))
+            bottom = Math.Max(bottom, Board.ComposerClearance + 12);
+        Map.Margin = new Thickness(0, 0, right, bottom);
     }
 
     /// <summary>Narrow windows drop the spend label to its icon; every button keeps its tooltip and automation name. The labelled pills need about 1250 DIPs at scale 1 and grow with the glass UI scale.</summary>
