@@ -8,7 +8,7 @@ namespace InfiniteCanvas.App.Board;
 
 /// <summary>
 /// The command bar that floats at the selection (hosted by <see cref="CanvasView"/>): a chip for several nodes or a collapsed batch, the
-/// selection's commands (<see cref="CanvasCommands.Bar"/>) and ⋯ 更多 for the rest of the node menu. Built from the command table only.
+/// selection's commands (<see cref="CanvasCommands.Bar"/>) and ⋯ 更多, which opens the whole node menu. Built from the command table only.
 /// </summary>
 public sealed class CommandBar : UserControl
 {
@@ -64,7 +64,7 @@ public sealed class CommandBar : UserControl
         if (_board is null || _board.Doc is null) return;
         var context = _board.Context();
         var items = CanvasCommands.BarItems(context);
-        var more = CanvasCommands.More(context).Count > 0;
+        var more = CanvasCommands.Offered(context).Count > 0;
         var chip = ChipOf(context, _board.Subject());
         var signature = $"{string.Join(",", items.Select(i => i.Spec is null ? "|" : i.Spec.Id + (i.Text ? "+" : "")))};{more};{chip.Text};{chip.Kind}";
         if (!force && signature == _signature) return;
@@ -127,8 +127,8 @@ public sealed class CommandBar : UserControl
         var button = new Button { Style = (Style)Application.Current.Resources["ToolbarButton"], Padding = new Thickness(10, 7, 10, 7), Content = new FontIcon { Glyph = "", FontSize = 15 } };
         ToolTipService.SetToolTip(button, "更多");
         AutomationProperties.SetName(button, "更多");
-        // The menu is built when it opens, from the selection at that moment.
-        button.Click += (_, _) => _board?.BuildMoreMenu().ShowAt(button);
+        // The node menu (the one right-click and the menu key open) is built when it opens, from the selection at that moment.
+        button.Click += (_, _) => _board?.ShowNodeMenu(button);
         return button;
     }
 

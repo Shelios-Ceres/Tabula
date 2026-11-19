@@ -197,6 +197,12 @@ public sealed partial class LibraryPanel : UserControl
 
     private async void Items_KeyDown(object sender, KeyRoutedEventArgs e)
     {
+        if (e.Key == VirtualKey.F2 && Items.SelectedItems.Count == 1 && Items.SelectedItems[0] is LibraryEntry renamed && CanRename(renamed))
+        {
+            e.Handled = true;
+            await RenameAsync(renamed);
+            return;
+        }
         if (e.Key != VirtualKey.Delete || Items.SelectedItems.Count == 0) return;
         e.Handled = true;
         await DeleteAsync(Items.SelectedItems.OfType<LibraryEntry>().ToList());
@@ -218,6 +224,7 @@ public sealed partial class LibraryPanel : UserControl
             if (entry.CanvasFile) menu.Items.Add(CanvasView.Item("加入资料库", "\uE8F1", () => LibraryStore.AddAsync(canvas.Doc.Id, [entry.Path])));
         }
         menu.Items.Add(CanvasView.Item("在资源管理器中显示", "\uE838", () => Process.Start("explorer.exe", $"/select,\"{entry.Path}\"")));
+        if (CanRename(entry)) menu.Items.Add(CanvasView.Item("重命名…", "\uE8AC", () => RenameAsync(entry), "F2"));
         menu.Items.Add(new MenuFlyoutSeparator());
         // On a selected item, delete acts on the whole selection, like the Delete key.
         var targets = Items.SelectedItems.Contains(entry) ? Items.SelectedItems.OfType<LibraryEntry>().ToList() : [entry];
@@ -226,6 +233,31 @@ public sealed partial class LibraryPanel : UserControl
         if (e.TryGetPosition(target, out var point)) menu.ShowAt(target, new FlyoutShowOptions { Position = point });
         else menu.ShowAt(target);
         e.Handled = true;
+    }
+
+    /// <summary>A library file can always be renamed; a canvas file goes by the title of the node that shows it, so one that is off the canvas has no name to change.</summary>
+    private static bool CanRename(LibraryEntry entry) => !entry.CanvasFile || entry.NodeId is not null;
+
+    /// <summary>
+    /// 重命名…: a library file changes its file name but not its extension, with the rules of the agent tool library_rename (<see cref="LibraryStore.Rename"/>).
+    /// A canvas file is named after its node, so the node is renamed (one undo step) like the node menu's 重命名….
+    /// </summary>
+    private async Task RenameAsync(LibraryEntry entry)
+    {
+        if (Target is not { } canvas) return;
+        try
+        {
+            if (entry.CanvasFile)
+            {
+                if (entry.NodeId is { } id && canvas.Doc.Find(id) is { } node) await canvas.RenameAsync(node);
+                return;
+            }
+            var file = System.IO.Path.GetFileName(entry.Path);
+            var stem = System.IO.Path.GetFileNameWithoutExtension(file);
+            if (await Dialogs.InputAsync("重命名文件", stem, "新的文件名，扩展名不变") is not { Length: > 0 } name || name == stem) return;
+            LibraryStore.Rename(canvas.Doc.Id, file, name);
+        }
+        catch (LibraryException ex) { await Dialogs.MessageAsync("重命名文件", ex.Message); }
     }
 
     /// <summary>Only successfully recycled files lose their nodes and historical references; restore files through the system recycle bin.</summary>

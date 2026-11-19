@@ -7,6 +7,7 @@ using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Windows.Foundation;
+using Windows.Storage.Pickers;
 
 namespace InfiniteCanvas.App.Board;
 
@@ -19,7 +20,8 @@ public sealed partial class CanvasView
     private Dictionary<string, Func<Task>>? _handlers;
 
     internal CommandContext Context() => CommandContext.From(Doc, _selected,
-        node => MarkSupport(node) is var (mask, points, markup) && (mask || points || markup), CanvasGenerator.CanGenerate, CanGroup, id => Generator?.IsRunning(id) == true);
+        node => MarkSupport(node) is var (mask, points, markup) && (mask || points || markup), CanvasGenerator.CanGenerate, CanGroup, id => Generator?.IsRunning(id) == true)
+        with { CanUndo = History?.CanUndo == true, CanRedo = History?.CanRedo == true };
 
     /// <summary>The one shown node that is selected (a collapsed batch counts as its cover), or null.</summary>
     internal CanvasNode? Subject()
@@ -27,6 +29,12 @@ public sealed partial class CanvasView
         var hidden = Stacks.Hidden(Doc);
         var shown = Doc.Nodes.Where(n => _selected.Contains(n.Id) && !hidden.Contains(n)).Take(2).ToList();
         return shown.Count == 1 ? shown[0] : null;
+    }
+
+    /// <summary>Run a command from its shortcut: only when the table offers it for this selection.</summary>
+    private void Offer(string id)
+    {
+        if (CanvasCommands.Find(id).Visible(Context())) _ = RunAsync(id);
     }
 
     /// <summary>Run a command on the current selection; a failure is logged and shown with the command's name as the title.</summary>
@@ -87,6 +95,8 @@ public sealed partial class CanvasView
         ["library"] = AddSelectionToLibraryAsync,
         ["save-as"] = Node(node => SaveAsAsync(node, PathOf(node))),
         ["open"] = Node(node => OpenFile(PathOf(node))),
+        ["play"] = Node(node => { if (_views.TryGetValue(node.Id, out var view)) view.TogglePlayback(); }),
+        ["replace"] = Node(ReplaceFileAsync),
         ["reveal"] = Node(node => Process.Start("explorer.exe", $"/select,\"{PathOf(node)}\"")),
 
         ["compare"] = () => TrackLocalAsync(ShowCompareAsync),
@@ -141,14 +151,33 @@ public sealed partial class CanvasView
         return menu;
     }
 
-    /// <summary>The command bar's 更多 menu: what the node menu offers and the bar does not, in the same groups and order.</summary>
-    internal MenuFlyout BuildMoreMenu()
+    /// <summary>Open the node menu for the current selection at a point of the canvas, or beside an element (the bar's ⋯): right-click, the menu key and ⋯ all show this one menu.</summary>
+    internal void ShowNodeMenu(FrameworkElement? anchor = null, Point? position = null)
     {
-        var context = Context();
-        var menu = BuildMenu(context, CanvasCommands.More(context));
-        if (menu.Items.Count > 0) menu.Items.RemoveAt(0);
-        return menu;
+        var menu = BuildNodeMenu();
+        if (anchor is not null) menu.ShowAt(anchor);
+        else menu.ShowAt(Root, new FlyoutShowOptions { Position = position ?? Center });
     }
+
+    /// <summary>
+    /// 替换文件…: say what it does, then pick a file of the node's own kind and put it in the node's place, with the agent tool's rules
+    /// (a readable file of the same kind, never while the node generates, one undo step, the old file stays in the canvas folder).
+    /// </summary>
+    private async Task ReplaceFileAsync(CanvasNode node)
+    {
+        if (!await Dialogs.ConfirmAsync("替换文件", "选一个新文件，它会直接换掉这个节点现在的文件：节点的位置、大小、标题和连线不变，针对旧图的标注和对话记录会清除。旧文件仍留在画布文件夹里，可以撤销。", "选择文件…")) return;
+        var picker = new FileOpenPicker();
+        foreach (var ext in Extensions(node.Kind)) picker.FileTypeFilter.Add(ext);
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, WinRT.Interop.WindowNative.GetWindowHandle(App.Window));
+        if (await picker.PickSingleFileAsync() is not { } file || Doc.Find(node.Id) != node) return;
+        if (Media.ImportProblem(file.Path) is { } problem) throw new InvalidOperationException($"{file.Name}：{problem}");
+        if (Media.KindOf(file.Path) != node.Kind) throw new InvalidOperationException($"文件类型和节点不一致：这个节点是{KindName(node.Kind)}，选的文件是{KindName(Media.KindOf(file.Path)!.Value)}。");
+        if (node.Status == NodeStatus.Loading || Generator.IsRunning(node.Id)) throw new InvalidOperationException("节点正在生成，请等它结束或先停止后再替换。");
+        await ReplaceMediaAsync(node, Path.GetFullPath(file.Path));
+        Select([node.Id]);
+    }
+
+    private static string KindName(NodeKind kind) => kind switch { NodeKind.Image => "图片", NodeKind.Video => "视频", NodeKind.Audio => "音频", _ => "节点" };
 
     /// <summary>Menu items for these commands, one separator before each group.</summary>
     private MenuFlyout BuildMenu(CommandContext context, List<CommandSpec> offered)

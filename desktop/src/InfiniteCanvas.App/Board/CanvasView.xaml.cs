@@ -55,6 +55,8 @@ public sealed partial class CanvasView : UserControl
     public event Action? SelectionChanged;
     /// <summary>A generation started or ended (for the title pill's running count).</summary>
     public event Action? RunningChanged;
+    /// <summary>Raised after the user deleted nodes: how many went (the page offers 撤销).</summary>
+    public event Action<int>? NodesDeleted;
     public bool IsClosing { get; private set; }
     private readonly HashSet<Task> _localTasks = [];
 
@@ -68,7 +70,9 @@ public sealed partial class CanvasView : UserControl
     private readonly List<string> _order = [];
     private Thickness _safe = new(0, 68, 0, 72);
     private string? _selectedConnection;
-    private bool _suspend, _space, _moved;
+    private bool _suspend, _space, _moved, _rightPan;
+    // A right-drag that panned the canvas also ends in a context request; this swallows it.
+    private long _menuBlockedUntil;
     private double _lastZoom = -1;
 
     private Gesture _gesture;
@@ -1137,6 +1141,14 @@ public sealed partial class CanvasView : UserControl
             _gesture = Gesture.Pan;
             _startViewport = V;
         }
+        else if (props.IsRightButtonPressed && !props.IsLeftButtonPressed && (view is null || view.Node.Kind == NodeKind.Group))
+        {
+            // Holding the right button on empty canvas pans once it moves; without movement the release opens the canvas menu.
+            _gesture = Gesture.Pan;
+            _rightPan = true;
+            _startViewport = V;
+            _selectedConnection = null;
+        }
         else if (!props.IsLeftButtonPressed) return;
         else if (view is not null && part is "source" or "target")
         {
@@ -1183,13 +1195,14 @@ public sealed partial class CanvasView : UserControl
         }
         else
         {
-            // Plain drag on empty canvas pans it; a click without movement just clears the selection.
-            _gesture = Gesture.Pan;
-            _startViewport = V;
+            // Plain drag on empty canvas draws a selection box; a click without movement just clears the selection.
+            _gesture = Gesture.Box;
+            _active = null;
             _selectedConnection = null;
+            _boxInitial = [];
             Select([]);
         }
-        if (_gesture == Gesture.Pan) ProtectedCursor = InputSystemCursor.Create(InputSystemCursorShape.SizeAll);
+        if (_gesture == Gesture.Pan && !_rightPan) ProtectedCursor = InputSystemCursor.Create(InputSystemCursorShape.SizeAll);
         // Dragging and resizing hide the bar with the first node move; a connection or a box moves nothing, so hide it now.
         // (A plain click starts a drag too, so that one must not flash the bar off and on.) The release shows it again.
         if (_gesture is Gesture.Connect or Gesture.Box) PositionPanel();
@@ -1213,6 +1226,11 @@ public sealed partial class CanvasView : UserControl
         var position = e.GetCurrentPoint(Root).Position;
         _currentWorld = ToWorld(position);
         var (dx, dy) = (_currentWorld.X - _startWorld.X, _currentWorld.Y - _startWorld.Y);
+        if (!_moved && _rightPan)
+        {
+            if (!DragGesture.IsDrag(position.X - _startScreen.X, position.Y - _startScreen.Y)) return;
+            ProtectedCursor = InputSystemCursor.Create(InputSystemCursorShape.SizeAll);
+        }
         if (!_moved && Math.Abs(position.X - _startScreen.X) + Math.Abs(position.Y - _startScreen.Y) < 3) return;
         if (!_moved && _gesture is Gesture.Drag or Gesture.Resize) History.Record();
         _moved = true;
@@ -1252,6 +1270,8 @@ public sealed partial class CanvasView : UserControl
         var gesture = _gesture;
         _gesture = Gesture.None;
         ProtectedCursor = null;
+        if (_rightPan && _moved) _menuBlockedUntil = Environment.TickCount64 + 400;
+        _rightPan = false;
         Root.ReleasePointerCapture(e.Pointer);
         if (gesture == Gesture.Connect && _active is { } active)
         {
@@ -1282,6 +1302,7 @@ public sealed partial class CanvasView : UserControl
     {
         if (_gesture == Gesture.None) return;
         _gesture = Gesture.None;
+        _rightPan = false;
         ProtectedCursor = null;
         _active = null;
         Overlay.Invalidate();
@@ -1397,8 +1418,11 @@ public sealed partial class CanvasView : UserControl
             return;
         }
         if (!Doc.Nodes.Any(n => _selected.Contains(n.Id))) return;
+        var ids = WithStacks(_selected);
+        var count = Doc.Nodes.Count(n => ids.Contains(n.Id));
         History.Record();
-        DeleteNodes(WithStacks(_selected));
+        DeleteNodes(ids);
+        NodesDeleted?.Invoke(count);
     }
 
     /// <summary>Remove nodes with their connections and group membership, stopping their generations; the caller records history. A collapsed stack's lead takes its whole stack along unless <paramref name="wholeStacks"/> is false.</summary>
@@ -1611,7 +1635,20 @@ public sealed partial class CanvasView : UserControl
         if (e.Handled) return;
         var (view, part) = HitTest(e.OriginalSource);
         if (part == "panel" || e.OriginalSource is TextBox) return;
+        if (Environment.TickCount64 < _menuBlockedUntil) { e.Handled = true; return; }
         var keyboard = !e.TryGetPosition(Root, out var position);
+        // The menu key (or Shift+F10) opens the menu of what is selected, in the middle of it, without changing the selection.
+        if (keyboard && _selected.Count > 0)
+        {
+            var hiddenCards = Stacks.Hidden(Doc);
+            var chosen = Doc.Nodes.Where(n => _selected.Contains(n.Id) && !hiddenCards.Contains(n)).ToList();
+            if (chosen.Count > 0)
+            {
+                e.Handled = true;
+                ShowNodeMenu(position: ToScreen(chosen.Average(n => n.X + n.Width / 2), chosen.Average(n => n.Y + n.Height / 2)));
+                return;
+            }
+        }
         var node = view?.Node ?? (keyboard ? _order.Select(Doc.Find).LastOrDefault(n => n is not null) : null);
         if (keyboard) position = node is null ? Center : ToScreen(node.X + node.Width / 2, node.Y + node.Height / 2);
         e.Handled = true;
@@ -1635,7 +1672,7 @@ public sealed partial class CanvasView : UserControl
             return;
         }
         if (!_selected.Contains(node.Id)) Select([node.Id]);
-        BuildNodeMenu().ShowAt(Root, new FlyoutShowOptions { Position = position });
+        ShowNodeMenu(position: position);
     }
 
     /// <summary>Keep this card of a batch and remove the others from the canvas (their files stay), after the usual confirmation. One undo step.</summary>
@@ -1746,7 +1783,7 @@ public sealed partial class CanvasView : UserControl
         _ = Generator.UpscaleAsync(node, models[model.SelectedIndex].Name, factor.SelectedIndex == 0 ? 2 : 4);
     }
 
-    private async Task RenameAsync(CanvasNode node)
+    internal async Task RenameAsync(CanvasNode node)
     {
         if (await Dialogs.InputAsync("重命名节点", node.Title) is not { Length: > 0 } title) return;
         History.Record();
@@ -1782,6 +1819,9 @@ public sealed partial class CanvasView : UserControl
             case VirtualKey.Escape when _preview is not null: ClosePreview(); break;
             case VirtualKey.Escape: _selectedConnection = null; Select([]); break;
             case VirtualKey.C when ctrl: _ = RunAsync("copy"); break;
+            // Ctrl+S saves the selected file as a copy elsewhere (the canvas itself saves by itself); Ctrl+O imports files.
+            case VirtualKey.S when ctrl && !shift: Offer("save-as"); break;
+            case VirtualKey.O when ctrl: Offer("import"); break;
             // Ctrl + = / Ctrl + - (main keyboard or keypad) zoom like the toolbar buttons.
             case (VirtualKey)187 or VirtualKey.Add when ctrl: ZoomBy(1.2); break;
             case (VirtualKey)189 or VirtualKey.Subtract when ctrl: ZoomBy(1 / 1.2); break;
@@ -2052,16 +2092,18 @@ public sealed partial class CanvasView : UserControl
         if (files.Count > 0) await ImportFilesAsync(files.Select(f => f.Path).ToList(), world ?? ViewCenterWorld);
     }
 
+    /// <summary>The file types a picture, video or audio node takes.</summary>
+    private static string[] Extensions(NodeKind kind) => kind switch
+    {
+        NodeKind.Image => [".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".bmp"],
+        NodeKind.Video => [".mp4", ".mov", ".webm"],
+        _ => [".mp3", ".wav", ".m4a", ".aac", ".flac"],
+    };
+
     private async Task ImportIntoAsync(CanvasNode node)
     {
         var picker = new FileOpenPicker();
-        var extensions = node.Kind switch
-        {
-            NodeKind.Image => new[] { ".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".bmp" },
-            NodeKind.Video => [".mp4", ".mov", ".webm"],
-            _ => [".mp3", ".wav", ".m4a", ".aac", ".flac"],
-        };
-        foreach (var ext in extensions) picker.FileTypeFilter.Add(ext);
+        foreach (var ext in Extensions(node.Kind)) picker.FileTypeFilter.Add(ext);
         WinRT.Interop.InitializeWithWindow.Initialize(picker, WinRT.Interop.WindowNative.GetWindowHandle(App.Window));
         if (await picker.PickSingleFileAsync() is not { } file || IsClosing || Doc.Find(node.Id) != node) return;
         await TrackLocalAsync(async () =>

@@ -20,6 +20,10 @@ public sealed partial class CanvasPage : Page
     private DispatcherQueueTimer? _saveTimer;
     private bool _dirty, _confirmingClose, _preparedToLeave;
     private Flyout _help = null!;
+    private DispatcherQueueTimer? _toastTimer;
+    private int _toastVersion;
+    /// <summary>How long the delete toast stays: a UI timing, not a limit on anything.</summary>
+    private static readonly TimeSpan ToastTime = TimeSpan.FromSeconds(6);
 
     public CanvasPage()
     {
@@ -27,7 +31,7 @@ public sealed partial class CanvasPage : Page
         // Glass capsules float above the canvas with a soft system shadow cast onto it.
         var shadow = new ThemeShadow();
         shadow.Receivers.Add(Board);
-        foreach (var capsule in new UIElement[] { TitleCapsule, RightCapsule, StatusCapsule })
+        foreach (var capsule in new UIElement[] { TitleCapsule, RightCapsule, StatusCapsule, ToastCapsule })
         {
             capsule.Shadow = shadow;
             capsule.Translation = new Vector3(0, 0, 24);
@@ -53,12 +57,18 @@ public sealed partial class CanvasPage : Page
         BuildMainMenu();
         _help = BuildHelp();
         HelpButton.Flyout = _help;
+        Palette.Attach(Board.Context, RunCommandAsync);
+        Palette.CastShadowOn(Board);
+        Motion.ShowHide(ToastHost, 0.5f, 1, 0.97f);
+        Board.NodesDeleted += Board_NodesDeleted;
+        Board.Changed += HideToastWhenStale;
         // Liquid glass experiment: scaled glass panels, the tuning panel and its shortcut.
         GlassScale.Wrap(Library);
         GlassScale.Wrap(Agent);
         Motion.ShowHide(GlassPanel, 1, 0.5f, 0.97f);
         GlassPanel.CloseRequested += () => ShowGlassPanel(false);
         AddAccelerator(Windows.System.VirtualKey.L, Windows.System.VirtualKeyModifiers.Control | Windows.System.VirtualKeyModifiers.Shift, () => ShowGlassPanel(GlassPanel.Visibility != Visibility.Visible));
+        AddAccelerator(Windows.System.VirtualKey.K, Windows.System.VirtualKeyModifiers.Control, Palette.Open);
         AddAccelerator(Windows.System.VirtualKey.F11, Windows.System.VirtualKeyModifiers.None, () => SetFullScreen(App.Window.AppWindow.Presenter.Kind != AppWindowPresenterKind.FullScreen));
         KeyboardAcceleratorPlacementMode = Microsoft.UI.Xaml.Input.KeyboardAcceleratorPlacementMode.Hidden;
         Board.Changed += UpdateUndo;
@@ -205,7 +215,58 @@ public sealed partial class CanvasPage : Page
 
     private MenuFlyoutItem CommandItem(string id) => CanvasView.Item(id, () => Board.RunAsync(id));
 
-    private void Search_Click(object sender, RoutedEventArgs e) => _help.ShowAt(SearchButton);
+    private void Search_Click(object sender, RoutedEventArgs e) => Palette.Open();
+
+    /// <summary>Run a palette command: the page's own panels and places here, every other command on the canvas.</summary>
+    private async Task RunCommandAsync(string id)
+    {
+        switch (id)
+        {
+            case "open-library": LibraryToggle.IsChecked = Library.Visibility != Visibility.Visible; LibraryToggle_Click(LibraryToggle, new RoutedEventArgs()); break;
+            case "open-agent": SetAgentOpen(Agent.Visibility != Visibility.Visible); break;
+            case "open-quota": QuotaButton.Flyout.ShowAt(QuotaButton); break;
+            case "minimap": MiniMapToggle.IsChecked = Map.Visibility != Visibility.Visible; MiniMapToggle_Click(MiniMapToggle, new RoutedEventArgs()); break;
+            case "fullscreen": SetFullScreen(App.Window.AppWindow.Presenter.Kind != AppWindowPresenterKind.FullScreen); break;
+            case "help": _help.ShowAt(HelpButton); break;
+            case "settings": await OpenSettingsAsync(); break;
+            case "home": await BackAsync(); break;
+            default: await Board.RunAsync(id); break;
+        }
+    }
+
+    private void Board_NodesDeleted(int count)
+    {
+        _toastVersion = Board.History?.Version ?? 0;
+        ToastText.Text = $"已删除 {count} 个节点";
+        ToastHost.Visibility = Visibility.Visible;
+        _toastTimer ??= DispatcherQueue.CreateTimer();
+        _toastTimer.Interval = ToastTime;
+        _toastTimer.IsRepeating = false;
+        _toastTimer.Tick -= ToastTimer_Tick;
+        _toastTimer.Tick += ToastTimer_Tick;
+        _toastTimer.Stop();
+        _toastTimer.Start();
+    }
+
+    private void ToastTimer_Tick(DispatcherQueueTimer sender, object args) => HideToast();
+
+    private void HideToast()
+    {
+        _toastTimer?.Stop();
+        ToastHost.Visibility = Visibility.Collapsed;
+    }
+
+    /// <summary>Any other edit after the delete means 撤销 would undo something else: the toast goes.</summary>
+    private void HideToastWhenStale()
+    {
+        if (ToastHost.Visibility == Visibility.Visible && (Board.History?.Version ?? 0) != _toastVersion) HideToast();
+    }
+
+    private void ToastUndo_Click(object sender, RoutedEventArgs e)
+    {
+        if ((Board.History?.Version ?? 0) == _toastVersion) { Board.Undo(); UpdateUndo(); }
+        HideToast();
+    }
 
     private async void Settings_Click(object sender, RoutedEventArgs e) => await OpenSettingsAsync();
 

@@ -148,7 +148,22 @@
         </Border>
         </board:GlassScale>
 
+        <!-- Delete toast: what went and 撤销, for a few seconds -->
+        <board:GlassScale x:Name="ToastHost" Margin="0,0,0,76" HorizontalAlignment="Center" VerticalAlignment="Bottom" Visibility="Collapsed">
+        <Border x:Name="ToastCapsule" Style="{StaticResource GlassCapsule}">
+            <StackPanel Orientation="Horizontal" Spacing="4">
+                <TextBlock x:Name="ToastText" VerticalAlignment="Center" Margin="12,0,6,0" AutomationProperties.LiveSetting="Polite" />
+                <Button x:Name="ToastUndo" Style="{StaticResource ToolbarButton}" Padding="12,6" Click="ToastUndo_Click" ToolTipService.ToolTip="撤销这次删除" AutomationProperties.Name="撤销删除">
+                    <TextBlock Text="撤销" FontWeight="SemiBold" />
+                </Button>
+            </StackPanel>
+        </Border>
+        </board:GlassScale>
+
         <!-- Liquid glass experiment: tuning panel (Ctrl+Shift+L, or 设置 › 外观 while liquid glass is chosen); shares the right dock with the assistant -->
         <board:GlassTuningPanel x:Name="GlassPanel" Width="460" Margin="0,72,16,72" HorizontalAlignment="Right" VerticalAlignment="Stretch" Visibility="Collapsed" />
+
+        <!-- Ctrl+K command palette, above everything -->
+        <board:CommandPalette x:Name="Palette" Margin="0,84,0,0" />
     </Grid>
 </Page>

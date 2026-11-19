@@ -19,6 +19,9 @@ public sealed class CanvasHistory(CanvasDocument doc)
     public bool CanUndo => _undo.Count > 0;
     public bool CanRedo => _redo.Count > 0;
 
+    /// <summary>Changes with every recorded step, undo, redo and asset cleanup, so a toast can tell whether its 撤销 still undoes what it announced.</summary>
+    public int Version { get; private set; }
+
     /// <summary>
     /// Call before a mutation; the pre-change state becomes the undo point.
     /// Repeated calls with the same key (typing in one box) share one point until anything else records, undoes or redoes.
@@ -27,6 +30,7 @@ public sealed class CanvasHistory(CanvasDocument doc)
     {
         if (key is not null && Equals(key, _coalesce)) return;
         _coalesce = key;
+        Version++;
         _undo.Add(Capture());
         if (_undo.Count > Limit) _undo.RemoveAt(0);
         _redo.Clear();
@@ -52,11 +56,13 @@ public sealed class CanvasHistory(CanvasDocument doc)
                 history[i] = JsonSerializer.Serialize(snapshot, Compact);
             }
         _coalesce = null;
+        Version++;
     }
 
     private bool Step(List<string> from, List<string> to)
     {
         if (from.Count == 0) return false;
+        Version++;
         _coalesce = null;
         to.Add(Capture());
         var json = from[^1];

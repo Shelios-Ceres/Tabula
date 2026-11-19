@@ -378,6 +378,15 @@ public sealed partial class NodeView : UserControl
 
     public void FocusEditor() => _textBox?.Focus(FocusState.Keyboard);
 
+    /// <summary>The 播放 command: play or pause the card's own player, which opens on first use.</summary>
+    public void TogglePlayback()
+    {
+        RequestMedia();
+        if (_player?.MediaPlayer is not { } media) return;
+        if (media.PlaybackSession.PlaybackState == Windows.Media.Playback.MediaPlaybackState.Playing) media.Pause();
+        else media.Play();
+    }
+
     // The media engine is heavy: the player opens on the first hover or keyboard focus (not on selection, so select-all stays cheap) and stays open until Detach.
     private void RequestMedia()
     {
