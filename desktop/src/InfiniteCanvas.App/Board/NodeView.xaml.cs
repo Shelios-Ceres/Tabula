@@ -29,6 +29,11 @@ public sealed partial class NodeView : UserControl
     private TextBlock? _configPrompt;
     private TextBox? _textBox;
     private MediaPlayerElement? _player;
+    private Windows.Media.Playback.MediaPlayer? _media;
+    private MediaSource? _mediaSource;
+    private string? _mediaFile;
+    private int _mediaVersion;
+    private bool _playWhenReady;
     private WebView2? _loader;
 
     public NodeView(CanvasNode node, CanvasView host)
@@ -176,11 +181,7 @@ public sealed partial class NodeView : UserControl
     {
         HideLoader();
         Node.PropertyChanged -= Node_PropertyChanged;
-        if (_player is not null)
-        {
-            _player.MediaPlayer?.Pause();
-            _player.Source = null;
-        }
+        SetMedia(null);
     }
 
     private void UpdateChrome()
@@ -373,7 +374,7 @@ public sealed partial class NodeView : UserControl
                 break;
             case NodeKind.Video or NodeKind.Audio when _player is not null:
                 var file = AssetPath is { } path && File.Exists(path) ? path : null;
-                _player.Source = _mediaRequested && file is not null ? MediaSource.CreateFromUri(new Uri(file)) : null;
+                SetMedia(_mediaRequested ? file : null);
                 if (!_mediaRequested && file is not null && Node.Kind == NodeKind.Video) LoadPoster(file);
                 _player.Visibility = AssetPath is null ? Visibility.Collapsed : Visibility.Visible;
                 break;
@@ -393,9 +394,46 @@ public sealed partial class NodeView : UserControl
     public void TogglePlayback()
     {
         RequestMedia();
-        if (_player?.MediaPlayer is not { } media) return;
+        if (_media is not { } media) { if (_mediaFile is not null) _playWhenReady = !_playWhenReady; return; }
         if (media.PlaybackSession.PlaybackState == Windows.Media.Playback.MediaPlaybackState.Playing) media.Pause();
         else media.Play();
+    }
+
+    /// <summary>
+    /// Opens, swaps or releases the card's player. The MediaPlayer is created from its own dispatcher callback, not inside a XAML work item:
+    /// creating it activates the system media transport controls, which pumps messages, and a second XAML work item running in that pump is
+    /// WinUI's fail-fast (0xc000027b). The command manager must stay on: switching it off also disables the card's own play button.
+    /// </summary>
+    private void SetMedia(string? file)
+    {
+        if (file == _mediaFile) return;
+        _mediaFile = file;
+        var version = ++_mediaVersion;
+        if (file is null && _media is null) return;
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            if (version != _mediaVersion || _player is null) return;
+            if (file is null)
+            {
+                var old = _media;
+                _media = null;
+                _player.SetMediaPlayer(null);
+                old?.Dispose();
+                _mediaSource?.Dispose();
+                _mediaSource = null;
+                return;
+            }
+            if (_media is null)
+            {
+                _media = new Windows.Media.Playback.MediaPlayer();
+                _player.SetMediaPlayer(_media);
+            }
+            var previous = _mediaSource;
+            _mediaSource = MediaSource.CreateFromUri(new Uri(file));
+            _media.Source = _mediaSource;
+            previous?.Dispose();
+            if (_playWhenReady) { _playWhenReady = false; _media.Play(); }
+        });
     }
 
     // The media engine is heavy: the player opens on the first hover or keyboard focus (not on selection, so select-all stays cheap) and stays open until Detach.
