@@ -54,6 +54,9 @@ public sealed class CommandPalette : UserControl
 
     public bool IsOpen => Visibility == Visibility.Visible;
 
+    /// <summary>The palette went away (Esc, a click outside, or a command was chosen); the page gives the keyboard back to the canvas. A command run afterwards may then move the focus on purpose.</summary>
+    public event Action? Closed;
+
     public void Open()
     {
         if (_context is null) return;
@@ -69,6 +72,7 @@ public sealed class CommandPalette : UserControl
     {
         if (!IsOpen) return;
         Visibility = Visibility.Collapsed;
+        Closed?.Invoke();
     }
 
     private void Fill()

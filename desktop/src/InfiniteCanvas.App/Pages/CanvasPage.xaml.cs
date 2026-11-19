@@ -58,6 +58,7 @@ public sealed partial class CanvasPage : Page
         _help = BuildHelp();
         HelpButton.Flyout = _help;
         Palette.Attach(Board.Context, RunCommandAsync);
+        Palette.Closed += Board.FocusCanvas;
         Palette.CastShadowOn(Board);
         Motion.ShowHide(ToastHost, 0.5f, 1, 0.97f);
         Board.NodesDeleted += Board_NodesDeleted;
