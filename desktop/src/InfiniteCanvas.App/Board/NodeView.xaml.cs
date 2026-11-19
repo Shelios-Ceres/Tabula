@@ -408,6 +408,7 @@ public sealed partial class NodeView : UserControl
     {
         if (file == _mediaFile) return;
         _mediaFile = file;
+        if (file is null) _playWhenReady = false;
         var version = ++_mediaVersion;
         if (file is null && _media is null) return;
         DispatcherQueue.TryEnqueue(() =>
