@@ -24,6 +24,10 @@ public sealed record CommandContext
     public bool InBatch { get; init; }
     public bool BatchOpen { get; init; }
     public bool Recomposable { get; init; }
+    /// <summary>The node was generated (it, or the node that made it, carries a prompt): its prompt and settings can be reused.</summary>
+    public bool Reusable { get; init; }
+    /// <summary>The composer holds something a 配方 could be saved from: a prompt or references, and it is not already bound to a node.</summary>
+    public bool CanSaveRecipe { get; init; }
     /// <summary>Selected bitmap pictures a composition or comparison can take.</summary>
     public int Pictures { get; init; }
     public bool Groupable { get; init; }
@@ -85,6 +89,7 @@ public sealed record CommandContext
             InBatch = stack is not null && Stacks.Members(doc, stack).Count > 1,
             BatchOpen = Stacks.IsOpen(node),
             Recomposable = node.Kind == NodeKind.Image && node.Option(NodeKeys.Compose).Length > 0,
+            Reusable = Composer.ReuseSource(doc, node) is not null,
         };
     }
 }
@@ -117,7 +122,7 @@ public static class CanvasCommands
         C("new-image", "新建图片节点", "\uEB9F", null, CommandGroup.Canvas, CommandScope.Selection, Always, false, null, "图片"),
         C("new-video", "新建视频节点", "\uE714", null, CommandGroup.Canvas, CommandScope.Selection, Always, false, null, "视频"),
         C("new-audio", "新建音频节点", "\uE8D6", null, CommandGroup.Canvas, CommandScope.Selection, Always, false, null, "音频"),
-        C("new-config", "新建生成配置节点", "\uE945", null, CommandGroup.Canvas, CommandScope.Selection, Always, false, "连接多个输入，统一生成", "生成配置"),
+        C("new-config", "新建配方节点", "\uE945", null, CommandGroup.Canvas, CommandScope.Selection, Always, false, "连接多个输入，统一生成", "配方"),
         C("import", "导入文件…", "\uE8E5", "Ctrl+O", CommandGroup.Canvas, CommandScope.Selection, Always, false, "导入图片、视频或音频"),
         C("paste", "粘贴", "\uE77F", "Ctrl+V", CommandGroup.Canvas, CommandScope.Selection, Always, false),
         C("select-all", "全选", "\uE8B3", "Ctrl+A", CommandGroup.Canvas, CommandScope.Selection, Always, false),
@@ -132,6 +137,8 @@ public static class CanvasCommands
         C("generate", "生成", "\uE768", "Ctrl+Enter", CommandGroup.Generate, CommandScope.Single, c => c.Single && c.CanGenerate && !c.Running && !c.Failed),
         C("retry", "重试", "\uE72C", "Ctrl+Enter", CommandGroup.Generate, CommandScope.Single, c => c.Single && c.CanGenerate && !c.Running && c.Failed),
         C("stop", "停止", "\uE71A", "Ctrl+Enter", CommandGroup.Generate, CommandScope.Single, c => c.Single && c.Running),
+        C("reuse", "沿用这次的设置", "\uE8EE", null, CommandGroup.Generate, CommandScope.Single, c => c.Single && c.Reusable, true, "把它的提示词、模型和参数填进指令栏", "沿用"),
+        C("save-recipe", "存为配方", "\uE945", null, CommandGroup.Generate, CommandScope.Selection, c => c.CanSaveRecipe, false, "把指令栏里的提示词、参考和设置存成一个配方节点"),
 
         C("view", "查看大图", "\uE7B3", null, CommandGroup.View, CommandScope.Single, c => c.Single && c.Kind == NodeKind.Image && c.HasContent, true, "双击图片也能打开", "查看"),
         C("play", "播放", "\uE768", null, CommandGroup.View, CommandScope.Single, c => c.IsMedia && c.Kind is NodeKind.Video or NodeKind.Audio, true, "在卡片上播放或暂停"),
@@ -195,11 +202,11 @@ public static class CanvasCommands
         if (c.Count == 0) return [];
         if (c.Count > 1) return ["compare+", "compose+", "group+", "ungroup+", "|", "match-width", "match-height", "match-both"];
         // A running or failed node offers to stop or retry first; the rest is under ⋯.
-        if (c.Kind != NodeKind.Group && (c.Running || c.Failed)) return ["stop+", "retry+"];
+        if (c.Kind != NodeKind.Group && (c.Running || c.Failed)) return ["stop+", "retry+", "reuse+"];
         return c.Kind switch
         {
             NodeKind.Group => ["ungroup+", "rename+"],
-            NodeKind.Text => ["edit+", "copy+"],
+            NodeKind.Text => ["edit+", "copy+", "reuse+"],
             NodeKind.Config => ["duplicate+", "rename+"],
             NodeKind.Video or NodeKind.Audio => c.HasContent ? ["play+", "library+", "open+"] : [],
             NodeKind.Image when !c.HasContent => [],
@@ -252,13 +259,15 @@ public static class CanvasCommands
         ("框选", "在空白处按住左键拖动 · 按住 Shift 或 Ctrl 拖动可加选"),
         ("连线", "拖动节点两侧的圆点"),
         ("新建", "双击空白处 · 从资料库拖入 · 右键空白处"),
-        ("编辑", "Enter 进入提示词或文本 · Esc 回到画布"),
+        ("指令栏", "选中节点时自动出现；什么都没选时按 Enter 或 / 调出 · 在里面 Enter 生成、Shift+Enter 换行 · Esc 回到画布"),
+        ("参考", "选中的图片和文本就是指令栏的参考（参考 1、参考 2…）；点芯片上的图钉固定，选中别的节点时仍保留；× 只是这次不用它，节点仍保持选中"),
+        ("编辑文本", "选中文本节点后按 Enter 或双击"),
         ("导入", "把文件拖进窗口 · Ctrl+V 粘贴图片、文字或文件"),
         ("统一尺寸", "选中两个以上节点，用命令栏的同宽 / 同高 / 同宽高，以第一个点选的节点为基准"),
         ("微调位置", "方向键移动 1 像素 · 按住 Shift 移动 10 像素"),
         ("对比", "选中 2 到 4 张图片后按 C 或点「对比」"),
         ("查看大图", "双击图片 · Ctrl+滚轮缩放 · Esc 关闭"),
-        ("一批结果", "批量生成的结果叠成一摞，点击展开，点「收起」收回，被选中的那张做封面"),
+        ("一批结果", "批量生成的结果叠成一摞，点击展开，点「收起」收回，被选中的那张做封面；选中一张结果再写提示词，它就是下一轮的参考 1"),
         ("更多", "在节点或空白处点右键，或按菜单键 / Shift+F10；命令栏的 ⋯ 打开同一个菜单"),
         ("返回", "Esc 一级一级返回：菜单和命令面板、大图、输入框、最后取消选择"),
         ("删除", "删除后几秒内可以点「撤销」找回"),

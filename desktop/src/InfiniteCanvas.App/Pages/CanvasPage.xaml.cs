@@ -61,6 +61,9 @@ public sealed partial class CanvasPage : Page
         Palette.CastShadowOn(Board);
         Motion.ShowHide(ToastHost, 0.5f, 1, 0.97f);
         Board.NodesDeleted += Board_NodesDeleted;
+        // The composer's 添加 → 从资料库选…: show the library panel. The composer sits above the status bar when they would meet, so it needs its width.
+        Board.LibraryRequested += () => { if (Library.Visibility != Visibility.Visible) { LibraryToggle.IsChecked = true; LibraryToggle_Click(LibraryToggle, new RoutedEventArgs()); } };
+        StatusHost.SizeChanged += (_, _) => ApplySafeArea();
         Board.Changed += HideToastWhenStale;
         // Liquid glass experiment: scaled glass panels, the tuning panel and its shortcut.
         GlassScale.Wrap(Library);
@@ -157,6 +160,7 @@ public sealed partial class CanvasPage : Page
         var library = Library.Visibility == Visibility.Visible ? Library.Margin.Left + Library.Width + 12 : 0;
         var dock = RightDock is { } panel ? panel.Margin.Right + panel.Width + 12 : 0;
         Map.Margin = new Thickness(0, 0, Math.Max(16, dock), 16 + 56 * s + 8);
+        Board.StatusWidth = StatusHost.ActualWidth + 16;
         Board.SafeArea = new Thickness(library, 12 + 56 * s, dock, 16 + 56 * s);
     }
 
@@ -238,6 +242,8 @@ public sealed partial class CanvasPage : Page
     {
         _toastVersion = Board.History?.Version ?? 0;
         ToastText.Text = $"已删除 {count} 个节点";
+        // Above the composer when it is still up.
+        ToastHost.Margin = new Thickness(0, 0, 0, Math.Max(76, Board.ComposerClearance + 12));
         ToastHost.Visibility = Visibility.Visible;
         _toastTimer ??= DispatcherQueue.CreateTimer();
         _toastTimer.Interval = ToastTime;

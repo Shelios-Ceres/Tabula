@@ -11,7 +11,7 @@ Infinite Canvas is a native Windows desktop client (WinUI 3, in the repository's
 
 - The canvas list creates and opens multiple canvases; deleted canvases go to the recycle bin.
 - A Win2D infinite canvas: drag empty space to pan, hold Shift / Ctrl and drag to box-select, with touchpad gestures. Nodes can be moved, resized, connected and grouped. Undo and redo keep up to 100 steps, and the canvas saves automatically.
-- Node kinds are image, video, audio, text, generation config and group, each with its own color for icons, connections and the mini-map.
+- Node kinds are image, video, audio, text, recipe (配方) and group, each with its own color for icons, connections and the mini-map.
 - Images, videos and audio can be dropped in from Explorer, imported or pasted. Imported and generated files are numbered per canvas and kind (for example `图片-001.png`), and node titles follow the number until renamed.
 - A mini-map in the bottom-left corner; click or drag it to jump.
 - With several nodes selected, match width, height or both, or group them, using the first clicked node as the reference.
@@ -20,11 +20,11 @@ Infinite Canvas is a native Windows desktop client (WinUI 3, in the repository's
 ## Generation
 
 - Five vendors, called directly: OpenAI, Google Gemini, Volcengine Ark, xAI and Qwen each use their own official native API, never a compatibility layer. Add vendors in Settings; requests go straight from the client to the vendor.
-- Image, text and speech generation. A generation config node gathers upstream text and images and generates with one model and set of parameters.
+- Image, text and speech generation. A recipe (配方) node gathers upstream text and images and generates with one model and set of parameters.
 - Signature features of each vendor's models: Seedream 5.0 pro / flash point and box editing, layer decomposition and transparent backgrounds; GPT Image 2.5 masked inpainting; multi-turn editing with GPT Image and Nano Banana; Qwen 3.0 pro agent rewriting, thinking mode and seeds.
 - OpenAI "Responses image tool" jobs run as background tasks, so a dropped proxy connection does not fail long generations, and reopening a canvas after closing the client picks up the result.
 - Multi-image results stack into a pile: click to fan it out, click "收起" to fold it back, and the selected image becomes the cover. Failed nodes have a one-click "重试".
-- References over a vendor's official limit are shrunk below it before sending, and the generation panel says what changed.
+- References over a vendor's official limit are shrunk below it before sending, and the composer says what changed.
 - Models show a short name without vendor prefixes and dates by default, or a custom display name; requests always use the full model ID.
 - This version imports and plays videos only; video generation lives on the `video-models` branch.
 
@@ -46,7 +46,7 @@ The panel on the left of a canvas has two tabs, both scoped to the current canva
 
 ## Prompt library
 
-- The generation panel opens a local prompt library: search, filter by tag, and click an entry to insert it. Save the current prompt, or edit and delete saved ones.
+- The composer opens a local prompt library: search, filter by tag, and click an entry to insert it. Save the current prompt, or edit and delete saved ones.
 - The library is stored in the data folder's `prompts.json`, shared by all canvases and kept on this machine only.
 
 ## Agent assistant

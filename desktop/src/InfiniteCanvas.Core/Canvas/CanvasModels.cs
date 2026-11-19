@@ -101,7 +101,7 @@ public sealed record NodeSpec(string Title, double Width, double Height)
     {
         NodeKind.Image => new("图片", 340, 240),
         NodeKind.Text => new("文本", 340, 240),
-        NodeKind.Config => new("生成配置", 340, 240),
+        NodeKind.Config => new("配方", 340, 240),
         NodeKind.Video => new("视频", 420, 236),
         NodeKind.Audio => new("音频", 340, 120),
         _ => new("分组", 760, 480),
@@ -135,6 +135,12 @@ public sealed class CanvasDocument
     public Viewport Viewport { get; set; } = new(0, 0, 1);
     public ObservableCollection<CanvasNode> Nodes { get; set; } = [];
     public ObservableCollection<CanvasConnection> Connections { get; set; } = [];
+
+    /// <summary>The composer's unbound draft (prompt, output kind, model and parameters), kept per canvas. A config-kind node that is never part of <see cref="Nodes"/>, so it takes no part in undo.</summary>
+    public CanvasNode? Draft { get; set; }
+
+    /// <summary>Nodes the user pinned as references: they stay in the composer while other nodes are selected.</summary>
+    public List<string> Pins { get; set; } = [];
 
     public CanvasNode? Find(string id) => Nodes.FirstOrDefault(node => node.Id == id);
 }

@@ -8,7 +8,7 @@ using Microsoft.UI.Xaml.Controls.Primitives;
 namespace InfiniteCanvas.App.Board;
 
 /// <summary>
-/// The generation panel's local prompt library: search, filter by tag, click an entry to put it into the prompt,
+/// The composer's local prompt library: search, filter by tag, click an entry to put it into the prompt,
 /// save the current prompt, and edit or delete entries from their context menu.
 /// </summary>
 internal sealed class PromptLibraryFlyout : Flyout
@@ -25,7 +25,7 @@ internal sealed class PromptLibraryFlyout : Flyout
     {
         _current = current;
         _use = use;
-        Placement = FlyoutPlacementMode.RightEdgeAlignedBottom;
+        Placement = FlyoutPlacementMode.Top;
         AutomationProperties.SetName(_search, "搜索提示词");
         AutomationProperties.SetName(_tags, "按标签筛选");
         var save = new Button { Style = (Style)Application.Current.Resources["ToolbarButton"], Padding = new(10, 4, 10, 4), HorizontalAlignment = HorizontalAlignment.Left };

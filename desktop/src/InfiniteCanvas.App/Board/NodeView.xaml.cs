@@ -103,14 +103,25 @@ public sealed partial class NodeView : UserControl
         set => AnchorChip.Visibility = value ? Visibility.Visible : Visibility.Collapsed;
     }
 
+    /// <summary>The number of this node among the composer's references (参考 N), or 0 when it is not one.</summary>
+    public int RefIndex
+    {
+        set
+        {
+            RefChip.Visibility = value > 0 ? Visibility.Visible : Visibility.Collapsed;
+            RefText.Text = value > 0 ? $"参考 {value}" : "";
+        }
+    }
+
     public void SetZoom(double zoom)
     {
         // Handles, chips, their gaps and the selection ring keep a constant on-screen size whatever the zoom.
         var scale = new ScaleTransform { ScaleX = 1 / zoom, ScaleY = 1 / zoom };
-        foreach (var element in new UIElement[] { TargetHandle, SourceHandle, ResizeGrip, FloatingTitle, AnchorChip, StatusChip, StackBadge }) element.RenderTransform = scale;
+        foreach (var element in new UIElement[] { TargetHandle, SourceHandle, ResizeGrip, FloatingTitle, AnchorChip, RefChip, StatusChip, StackBadge }) element.RenderTransform = scale;
         StackBadge.Margin = new(8 / zoom, 8 / zoom, 0, 0);
         FloatingTitle.Margin = new(6 / zoom, -18 - 6 / zoom, 0, 0);
         AnchorChip.Margin = new(0, -20 - 8 / zoom, 0, 0);
+        RefChip.Margin = new(0, 8 / zoom, 8 / zoom, 0);
         if (IsMedia) Header.Padding = new(0, 10 / zoom, 10 / zoom, 0);
         SelectionRing.BorderThickness = new(2 / zoom);
         SelectionRing.Margin = new(-3 / zoom);

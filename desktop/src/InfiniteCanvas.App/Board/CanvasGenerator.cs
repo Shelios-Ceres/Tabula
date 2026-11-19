@@ -131,7 +131,7 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
         var resources = InputsOf(doc, source);
         if (string.IsNullOrWhiteSpace(source.Prompt) && resources.Count == 0)
         {
-            await Dialogs.MessageAsync("请先输入提示词", "在提示词框里描述想要生成的内容，或连接文本、图片节点作为输入。");
+            await Dialogs.MessageAsync("请先输入提示词", "在指令栏里描述想要生成的内容，或选中（连接）文本、图片节点作为输入。");
             return;
         }
 
@@ -142,7 +142,7 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
             : CanvasGraph.ComposePrompt(source.Prompt ?? "", resources);
         if (audio && prompt.Length == 0)
         {
-            await Dialogs.MessageAsync("请先输入要朗读的文字", "在提示词框里输入要朗读的文字，或连接文本节点作为输入。");
+            await Dialogs.MessageAsync("请先输入要朗读的文字", "在指令栏里输入要朗读的文字，或选中（连接）文本节点作为输入。");
             return;
         }
         // Keep this request's settings independent of edits made while references or the provider are still working.
@@ -454,6 +454,8 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
             node.NaturalHeight = height;
             node.Height = Math.Round(node.Width * height / width);
         }
+        // Marks carried over from the picture this one was made from described that picture, not this result.
+        foreach (var key in new[] { NodeKeys.Mask, NodeKeys.Markup, NodeKeys.Selections }) node.SetOption(key, null);
         node.Preview = null;
         node.Error = null;
         node.Status = NodeStatus.Success;
@@ -581,7 +583,8 @@ public sealed class CanvasGenerator(CanvasDocument doc, DispatcherQueue ui, Acti
     {
         var family = ModelFamilies.FindImage(channel.Vendor, model.Name);
         // Editing an image node: its own marks travel with the request (mask for GPT Image, points / boxes for Seedream).
-        var editing = source.Kind == NodeKind.Image && source.HasContent;
+        // A node the composer created from a marked picture carries that picture's marks and conversation: the first input is the one they describe.
+        var editing = source.Kind == NodeKind.Image && (source.HasContent || images.Count > 0 && (NodeKeys.HasMarks(source) || source.Option(NodeKeys.ConversationId).Length > 0));
         var mask = editing && channel.Vendor == Vendor.OpenAI && source.Option(NodeKeys.Mask) is { Length: > 0 } maskAsset && File.Exists(ProjectStore.AssetPath(doc.Id, maskAsset))
             ? await LoadMaskAsync(ProjectStore.AssetPath(doc.Id, maskAsset), images[0], ct) : null;
         var markup = editing && channel.Vendor == Vendor.OpenAI && family?.Markup == true && source.Option(NodeKeys.Markup) is { Length: > 0 } markupAsset && File.Exists(ProjectStore.AssetPath(doc.Id, markupAsset))

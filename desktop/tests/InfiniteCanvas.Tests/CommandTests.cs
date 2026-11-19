@@ -348,7 +348,7 @@ public class CommandTests
         var picture = Picture();
         var context = Selection(Doc(picture), true, picture);
         Assert.Equal(["crop"], CanvasCommands.Palette(context, "裁剪").Select(c => c.Id));
-        Assert.Contains("new-config", CanvasCommands.Palette(context, "新建 配置").Select(c => c.Id));
+        Assert.Contains("new-config", CanvasCommands.Palette(context, "新建 配方").Select(c => c.Id));
         // The group's word finds its commands, and a word nothing holds finds none.
         Assert.Contains("mark", CanvasCommands.Palette(context, "图片").Select(c => c.Id));
         Assert.Empty(CanvasCommands.Palette(context, "没有这个命令"));

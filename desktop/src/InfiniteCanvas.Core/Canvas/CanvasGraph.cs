@@ -56,6 +56,33 @@ public static class CanvasGraph
         return double.IsFinite(x) ? x : lead.X;
     }
 
+    /// <summary>
+    /// Where the node of a new generation goes (the one place the composer and the agent tool canvas_generate agree on): to the right of its inputs,
+    /// top-aligned with the highest of them, or where it already sits (the view centre) when it has none; clear of other nodes and of every group;
+    /// and when the run asks for a row or a grid, with room for the whole spread. The node must already be in the document.
+    /// </summary>
+    public static void PlaceGeneration(CanvasDocument doc, CanvasNode node, IReadOnlyList<CanvasNode> inputs)
+    {
+        if (inputs.Count > 0)
+        {
+            node.X = inputs.Max(i => i.Right) + 80;
+            node.Y = inputs.Min(i => i.Y);
+        }
+        node.X = FreeX(node, doc.Nodes, avoidGroupsOf: doc);
+        var spread = Stacks.ParseLayout(node.Option(NodeKeys.Layout)) ?? StackLayout.Stack;
+        if (spread == StackLayout.Stack || node.Count <= 1) return;
+        // A row or grid spreads right from this card: find a spot where all of it, not just one card, is free.
+        var batch = new List<CanvasNode> { node };
+        for (var i = 1; i < node.Count; i++)
+        {
+            var card = CanvasNode.Create(node.Kind, 0, 0);
+            card.Width = node.Width;
+            if (node.Kind == NodeKind.Image) card.Height = OutputHeight(node.Width, node.Ratio);
+            batch.Add(card);
+        }
+        node.X = FreeBatchX(batch, spread, Stacks.GapOf(node), doc.Nodes.Where(n => n != node), doc);
+    }
+
     /// <summary>Height of a generated picture card of this width and ratio, as the generator sizes its outputs.</summary>
     public static double OutputHeight(double width, string? ratio) => Math.Clamp(width / ModelFamilies.AspectOf(ratio is null or "auto" ? "1:1" : ratio), 120, 640);
 

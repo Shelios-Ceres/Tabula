@@ -63,7 +63,20 @@ public sealed partial class CanvasView : UserControl
     private readonly Dictionary<string, NodeView> _views = [];
     private readonly HashSet<CanvasNode> _tracked = [];
     private readonly HashSet<string> _selected = [];
-    private readonly PromptPanel _panel;
+    private readonly ComposerPanel _composer;
+    /// <summary>References the user dropped (× on a chip) for the next generation; they stay selected, and come back when deselected and selected again.</summary>
+    private readonly HashSet<string> _dropped = [];
+    /// <summary>The composer was called up with Enter or / while nothing is selected.</summary>
+    private bool _called;
+    /// <summary>参考 N of every node the composer currently takes as a reference (new generations only).</summary>
+    private Dictionary<string, int> _refTags = [];
+    private double _composerTop = double.NaN;
+    /// <summary>Width the status bar takes up at the right edge, so the composer sits above it when they would meet.</summary>
+    public double StatusWidth { get; set; }
+    /// <summary>How far the composer's top is above the window's bottom edge; 0 while it is hidden. Things that float at the bottom keep above it.</summary>
+    public double ComposerClearance => double.IsNaN(_composerTop) ? 0 : Math.Max(0, Root.ActualHeight - _composerTop);
+    /// <summary>The composer's 添加 asked for the library.</summary>
+    public event Action? LibraryRequested;
     /// <summary>The command bar floating at the selection, and its glass wrapper.</summary>
     private readonly CommandBar _commands = new();
     private readonly Border _bar;
@@ -99,20 +112,19 @@ public sealed partial class CanvasView : UserControl
     public CanvasView()
     {
         InitializeComponent();
-        _panel = new PromptPanel(this) { Visibility = Visibility.Collapsed };
-        GlassScale.Wrap(_panel);
-        ScreenLayer.Children.Add(_panel);
-        _panel.CastShadowOn(Backdrop);
-        // The panel makes room (glides the canvas) only after it was bound to another node or opened / folded, once its new size is laid out;
+        _composer = new ComposerPanel(this) { Visibility = Visibility.Collapsed };
+        GlassScale.Wrap(_composer);
+        ScreenLayer.Children.Add(_composer);
+        _composer.CastShadowOn(Backdrop);
+        // The composer makes room (glides the canvas) only after the selection changed, once its new size is laid out;
         // any other size change (typing, the estimate, 生成 ↔ 停止) only repositions it.
         _bar = FloatingBar(_commands);
         ScreenLayer.Children.Add(_bar);
         _commands.Attach(this);
         _commands.Rebuilt += () => PositionPanel();
         Motion.ShowHide(_bar, 0.5f, 1);
-        _panel.SizeChanged += (_, _) => { PositionPanel(_roomPending); _roomPending = false; };
-        _panel.ExpandedChanged += AskForRoom;
-        Motion.ShowHide(_panel, 0.5f, 0);
+        _composer.SizeChanged += (_, _) => { PositionPanel(_roomPending); _roomPending = false; };
+        Motion.ShowHide(_composer, 0.5f, 1);
         Motion.ShowHide(EmptyHint);
         // Text boxes and media controls inside nodes swallow pointer presses; still select the node they belong to.
         Root.AddHandler(PointerPressedEvent, new PointerEventHandler((_, e) =>
@@ -146,7 +158,9 @@ public sealed partial class CanvasView : UserControl
         History = new CanvasHistory(doc);
         Generator = new CanvasGenerator(doc, DispatcherQueue, () => History.Record(), RaiseChanged);
         Generator.TargetsPrepared += targets => EnsureVisible(CanvasGraph.Bounds(targets));
-        Generator.RunningChanged += () => { _panel.Refresh(); QueueCommands(); RunningChanged?.Invoke(); };
+        Generator.RunningChanged += () => { UpdateComposer(); QueueCommands(); RunningChanged?.Invoke(); };
+        // Pins of nodes that no longer exist (deleted in an earlier session) go.
+        doc.Pins.RemoveAll(id => doc.Find(id) is null);
         // Anything that was mid-generation when the app closed is interrupted, except resumable vendor tasks.
         foreach (var node in doc.Nodes.Where(n => n.Status == NodeStatus.Loading && n.TaskId is null))
         {
@@ -245,7 +259,7 @@ public sealed partial class CanvasView : UserControl
         if (_selectedConnection is not null && Doc.Connections.All(c => c.Id != _selectedConnection)) _selectedConnection = null;
         foreach (var view in _views.Values) view.SyncConfig();
         Backdrop.Invalidate();
-        UpdatePanel();
+        UpdateComposer();
         RaiseChanged();
     }
 
@@ -263,13 +277,24 @@ public sealed partial class CanvasView : UserControl
         // The command bar follows the selected node's state (title, content, running, group, batch…), never its position.
         if (e.PropertyName is not (nameof(CanvasNode.X) or nameof(CanvasNode.Y) or nameof(CanvasNode.Width) or nameof(CanvasNode.Height) or nameof(CanvasNode.Preview))
             && sender is CanvasNode node && _selected.Contains(node.Id)) QueueCommands();
+        // What the composer shows (its mode, the references, a title) follows the state of the nodes it is about.
+        if (e.PropertyName is nameof(CanvasNode.Status) or nameof(CanvasNode.Content) or nameof(CanvasNode.Options) or nameof(CanvasNode.Title) or nameof(CanvasNode.Error)
+            && sender is CanvasNode watched && (_selected.Contains(watched.Id) || Doc.Pins.Contains(watched.Id) || _refTags.ContainsKey(watched.Id))) QueueComposer();
         if (e.PropertyName != nameof(CanvasNode.Preview)) RaiseChanged();
     }
 
     /// <summary>The selection or something it depends on changed: the command bar re-reads it once, after the current burst of changes.</summary>
     public event Action? CommandsChanged;
 
-    private bool _commandsQueued;
+    private bool _commandsQueued, _composerQueued;
+
+    /// <summary>The composer re-reads the selection once, after the current burst of changes (streamed text, a batch finishing).</summary>
+    private void QueueComposer()
+    {
+        if (_composerQueued) return;
+        _composerQueued = true;
+        DispatcherQueue.TryEnqueue(() => { _composerQueued = false; UpdateComposer(); });
+    }
 
     private void QueueCommands()
     {
@@ -434,7 +459,7 @@ public sealed partial class CanvasView : UserControl
             var visible = !hidden.Contains(node) && (view.Intersects(Rect.Of(node)) || _selected.Contains(node.Id) || node.Kind == NodeKind.Group);
             if (visible && !_views.ContainsKey(node.Id))
             {
-                var nodeView = new NodeView(node, this) { IsSelected = _selected.Contains(node.Id), IsAnchor = node == anchor };
+                var nodeView = new NodeView(node, this) { IsSelected = _selected.Contains(node.Id), IsAnchor = node == anchor, RefIndex = _refTags.GetValueOrDefault(node.Id) };
                 nodeView.SetZoom(V.K);
                 _views[node.Id] = nodeView;
                 World.Children.Add(nodeView);
@@ -525,6 +550,8 @@ public sealed partial class CanvasView : UserControl
     {
         var list = ids.ToList();
         _selectedConnection = null;
+        // Clearing the selection (a click on empty canvas, Esc) also puts the composer away.
+        if (list.Count == 0) _called = false;
         _selected.Clear();
         foreach (var id in list) _selected.Add(id);
         // Click order is kept so the first node picked stays the reference for size matching.
@@ -538,7 +565,7 @@ public sealed partial class CanvasView : UserControl
         }
         Realize();
         Backdrop.Invalidate();
-        UpdatePanel();
+        UpdateComposer(true);
         SelectionChanged?.Invoke();
     }
 
@@ -593,15 +620,15 @@ public sealed partial class CanvasView : UserControl
     }
 
     /// <summary>
-    /// Place the command bar centred above the selection (clear of the node titles), or below it when there is no room above, or beside it;
-    /// hidden while dragging, resizing, box selecting or connecting, kept while panning. Returns where it ended up so the prompt panel can keep clear.
-    /// </summary>
-    /// <summary>
     /// The gap above a selection that its floating things keep clear: a single node's gap, plus the floating title of media cards;
-    /// several nodes keep room for the titles of all of them. The bar and the prompt panel (and the glide that makes room for both) share it.
+    /// several nodes keep room for the titles of all of them. The bar and the glide that makes room for the composer share it.
     /// </summary>
     private static double GapAbove(IReadOnlyList<CanvasNode> nodes) => nodes.Count == 1 ? 14 + (nodes[0].Kind is NodeKind.Image or NodeKind.Video ? 26 : 0) : 34;
 
+    /// <summary>
+    /// Place the command bar centred above the selection (clear of the node titles), or below it when there is no room above (never under the composer), or beside it;
+    /// hidden while dragging, resizing, box selecting or connecting, kept while panning.
+    /// </summary>
     private (double Top, double Bottom, bool Below)? PositionBar()
     {
         var hidden = Stacks.Hidden(Doc);
@@ -613,7 +640,7 @@ public sealed partial class CanvasView : UserControl
         var (topLeft, bottomRight) = (ToScreen(bounds.Left, bounds.Top), ToScreen(bounds.Right, bounds.Bottom));
         _commands.Compact = _commands.FullWidth * GlassSettings.Current.UiScale > Root.ActualWidth - 16;
         var (width, height) = (Math.Max(_bar.ActualWidth, 200), Math.Max(_bar.ActualHeight, 44));
-        var (minLeft, maxRight, maxBottom) = (_safe.Left + 8, Root.ActualWidth - _safe.Right - 8, Root.ActualHeight - 8);
+        var (minLeft, maxRight, maxBottom) = (_safe.Left + 8, Root.ActualWidth - _safe.Right - 8, BarFloor);
         var centered = Math.Clamp((topLeft.X + bottomRight.X) / 2 - width / 2, minLeft, Math.Max(minLeft, maxRight - width));
         var gap = GapAbove(nodes);
         bool below = false;
@@ -628,81 +655,172 @@ public sealed partial class CanvasView : UserControl
         return (at.Y, at.Y + height, below);
     }
 
-    private void UpdatePanel()
+    /// <summary>
+    /// The selection (or something it depends on) changed: the command bar and the composer read it again. The composer takes its mode and its references from it,
+    /// shows 参考 N on the referenced nodes, and slides in while something is selected (or was called up with Enter or /). While a box is being dragged it keeps what it shows.
+    /// </summary>
+    private void UpdateComposer(bool selectionChanged = false)
     {
         // The selection changed: the bar reads it now, not on the next dispatch, so it never shows the previous one.
         _commands.Refresh();
-        var node = _selected.Count == 1 && _gesture != Gesture.Box ? Doc.Find(_selected.First()) : null;
-        if (node is null || !CanvasGenerator.CanGenerate(node))
-        {
-            _panel.Visibility = Visibility.Collapsed;
-            _panel.Bind(null);
-            PositionPanel();
-            return;
-        }
-        var another = _panel.Node != node;
-        if (another) _panel.Bind(node);
-        else _panel.Refresh();
-        _panel.Visibility = Visibility.Visible;
-        if (another) AskForRoom();
-        PositionPanel(another);
+        if (_gesture == Gesture.Box) { PositionPanel(); return; }
+        var state = Composer.StateOf(Doc, _selected, id => Generator?.IsRunning(id) == true, CanGenerate);
+        var ids = _order.Where(_selected.Contains).Concat(Doc.Nodes.Select(n => n.Id).Where(id => _selected.Contains(id) && !_order.Contains(id))).ToList();
+        _dropped.IntersectWith(Composer.References(Doc, ids, Doc.Pins, []).Select(n => n.Id));
+        var references = state.Mode == ComposerMode.New ? Composer.References(Doc, ids, Doc.Pins, _dropped) : [];
+        _composer.Update(state, references);
+        _refTags = references.Select((node, i) => (node.Id, Number: i + 1)).ToDictionary(pair => pair.Id, pair => pair.Number);
+        foreach (var (id, view) in _views) view.RefIndex = _refTags.GetValueOrDefault(id);
+        var show = _selected.Count > 0 || _called || _composer.HasFocus;
+        _composer.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+        if (show && selectionChanged) AskForRoom();
+        PositionPanel(show && selectionChanged);
     }
 
     private bool _roomPending;
 
-    /// <summary>The next layout of the panel may glide the canvas to make room; a pending request that no layout used is dropped once the UI is idle.</summary>
+    /// <summary>The next layout of the composer may glide the canvas to make room; a pending request that no layout used is dropped once the UI is idle.</summary>
     private void AskForRoom()
     {
         _roomPending = true;
         DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () => _roomPending = false);
     }
 
+    private bool CanGenerate(CanvasNode node) => CanvasGenerator.CanGenerate(node);
+
     /// <summary>
-    /// Put the prompt panel where it never covers its own node: below it, else above it, else beside it, else (<paramref name="makeRoom"/>:
-    /// only when the panel was bound to another node or opened / folded, never while the user pans, zooms or edits) glide the canvas so it fits below. A window too
-    /// small even for that leaves the panel below, clamped into the window.
+    /// Put the composer at the bottom centre of the room between the side panels, clear of the status bar (beside it when there is room, else just above it),
+    /// then the command bar. <paramref name="makeRoom"/> (only after the selection changed, never while the user pans, zooms or types) glides the canvas so the selection is not under the composer.
     /// </summary>
     private void PositionPanel(bool makeRoom = false)
     {
-        var bar = PositionBar();
-        if (_panel.Node is not { } node || _panel.Visibility != Visibility.Visible) return;
-        var (width, height) = (_panel.ActualWidth > 0 ? _panel.ActualWidth : 520, _panel.ActualHeight > 0 ? _panel.ActualHeight : 180);
-        var (topLeft, bottomRight) = (ToScreen(node.X, node.Y), ToScreen(node.Right, node.Bottom));
-        const double gap = 14;
-        // Media cards carry a floating title above them; the bar keeps the same distance from the node.
-        var above = GapAbove([node]);
-        var (minLeft, maxRight, minTop, maxBottom) = (_safe.Left + 8, Root.ActualWidth - _safe.Right - 8, _safe.Top, Root.ActualHeight - _safe.Bottom - 16);
-        var centered = Math.Clamp((topLeft.X + bottomRight.X) / 2 - width / 2, minLeft, Math.Max(minLeft, maxRight - width));
-        var beside = Math.Clamp(topLeft.Y, minTop, Math.Max(minTop, maxBottom - height));
-        Point at;
-        // The bar floats above the node, or below it when there is no room above; the panel goes past it either way.
-        var belowTop = (bar is { Below: true } below ? below.Bottom + 8 : bottomRight.Y + gap);
-        var aboveBottom = bar is { Below: false } over ? over.Top - 8 : topLeft.Y - above;
-        if (belowTop + height <= maxBottom) at = new(centered, belowTop);
-        else if (aboveBottom - height >= minTop) at = new(centered, aboveBottom - height);
-        else if (bottomRight.X + gap + width <= maxRight) at = new(bottomRight.X + gap, beside);
-        else if (topLeft.X - gap - width >= minLeft) at = new(topLeft.X - gap - width, beside);
-        else
-        {
-            if (makeRoom && _glide is null && MakeRoomForPanel(node, height, above + (_bar.Visibility == Visibility.Visible ? Math.Max(_bar.ActualHeight, 44) + 8 : 0), gap, minTop, maxBottom)) return;
-            at = new(centered, Math.Clamp(bottomRight.Y + gap, minTop, Math.Max(minTop, Root.ActualHeight - height - 8)));
-        }
-        Canvas.SetLeft(_panel, at.X);
-        Canvas.SetTop(_panel, at.Y);
+        PositionComposer(makeRoom);
+        PositionBar();
     }
 
-    /// <summary>Glide the canvas (and zoom out when the node is too tall) so the node and the panel under it both fit; false when even the smallest zoom cannot.</summary>
-    private bool MakeRoomForPanel(CanvasNode node, double panelHeight, double above, double gap, double minTop, double maxBottom)
+    private void PositionComposer(bool makeRoom)
     {
-        var free = maxBottom - minTop - above - gap - panelHeight;
-        var zoom = Math.Min(V.K, free / Math.Max(1, node.Height));
-        if (zoom < MinZoom) return false;
-        // The node's top edge goes as near its title's place as the free height allows, keeping its horizontal centre.
-        var top = Math.Clamp(ToScreen(0, node.Y).Y, minTop + above, minTop + above + free - node.Height * zoom);
-        var target = new Viewport(ToScreen(node.X + node.Width / 2, 0).X - (node.X + node.Width / 2) * zoom, top - node.Y * zoom, zoom);
-        if (Math.Abs(target.Y - V.Y) < 1 && Math.Abs(target.X - V.X) < 1 && Math.Abs(zoom - V.K) < 1e-6) return false;
+        if (_composer.Visibility != Visibility.Visible) { _composerTop = double.NaN; return; }
+        var scale = GlassSettings.Current.UiScale;
+        var (left, right) = (_safe.Left + 16, Root.ActualWidth - _safe.Right - 16);
+        var width = Math.Max(300, Math.Min(820 * scale, right - left));
+        _composer.SetWidth(width / scale);
+        var height = _composer.ActualHeight > 0 ? _composer.ActualHeight : 150;
+        var x = left + (right - left - width) / 2;
+        var bottom = x + width > Root.ActualWidth - StatusWidth - 8 ? _safe.Bottom + 8 : 16;
+        var y = Math.Max(_safe.Top, Root.ActualHeight - bottom - height);
+        Canvas.SetLeft(_composer, x);
+        Canvas.SetTop(_composer, y);
+        _composerTop = y;
+        // Before its first layout the composer has no real height: the layout that follows asks again.
+        if (makeRoom && _composer.ActualHeight > 0) MakeRoomForSelection();
+    }
+
+    /// <summary>The floor the command bar keeps above: the composer's top while it is shown, else the window's bottom.</summary>
+    private double BarFloor => double.IsNaN(_composerTop) ? Root.ActualHeight - 8 : _composerTop - 8;
+
+    /// <summary>
+    /// The selection must not sit under the composer: glide the canvas up just far enough, and zoom out only when the selection is taller than the free height.
+    /// Done once per selection change (the caller decides), never after the user's own pan; nothing happens while another glide runs or when even the smallest zoom cannot fit it.
+    /// </summary>
+    private void MakeRoomForSelection()
+    {
+        if (_glide is not null || double.IsNaN(_composerTop)) return;
+        var hidden = Stacks.Hidden(Doc);
+        var nodes = Doc.Nodes.Where(n => _selected.Contains(n.Id) && !hidden.Contains(n)).ToList();
+        if (nodes.Count == 0) return;
+        var bounds = CanvasGraph.Bounds(nodes);
+        const double gap = 16;
+        var limit = _composerTop - gap;
+        var (top, bottom) = (ToScreen(0, bounds.Top).Y, ToScreen(0, bounds.Bottom).Y);
+        if (bottom <= limit) return;
+        // The bar floats above the selection (or below it, which the composer's top then bounds); keep the node's top where the bar and the titles still fit.
+        var above = GapAbove(nodes) + (_bar.Visibility == Visibility.Visible ? Math.Max(_bar.ActualHeight, 44) + 8 : 0);
+        var floor = _safe.Top + above;
+        var free = limit - floor;
+        var zoom = Math.Min(V.K, free / Math.Max(1, bounds.Height));
+        if (zoom < MinZoom) return;
+        Viewport target;
+        if (zoom < V.K)
+        {
+            // Too tall for the free height at this zoom: smaller, with the node's top at the floor and its horizontal centre kept.
+            var centerX = bounds.Left + bounds.Width / 2;
+            target = new Viewport(ToScreen(centerX, 0).X - centerX * zoom, floor - bounds.Top * zoom, zoom);
+        }
+        else
+        {
+            // Just up: the bottom edge at the limit, but never so far that the top goes past the floor.
+            var dy = Math.Max(limit - bottom, floor - top);
+            target = V with { Y = V.Y + Math.Min(0, dy) };
+        }
+        if (Math.Abs(target.Y - V.Y) < 1 && Math.Abs(target.X - V.X) < 1 && Math.Abs(target.K - V.K) < 1e-6) return;
         Glide(target);
-        return true;
+    }
+
+    // ---------- Composer: references, drafts and the two things it creates ----------
+
+    internal bool IsPinned(CanvasNode node) => Doc.Pins.Contains(node.Id);
+
+    /// <summary>Pin a reference so it stays in the composer while other nodes are selected; pinning it again lets go.</summary>
+    internal void TogglePin(CanvasNode node)
+    {
+        if (!Doc.Pins.Remove(node.Id)) Doc.Pins.Add(node.Id);
+        RaiseChanged();
+        UpdateComposer();
+    }
+
+    /// <summary>× on a chip: this node is left out of the next generation (and unpinned) without being deselected.</summary>
+    internal void DropReference(CanvasNode node)
+    {
+        if (Doc.Pins.Remove(node.Id)) RaiseChanged();
+        _dropped.Add(node.Id);
+        UpdateComposer();
+    }
+
+    /// <summary>The draft (or a bound node's setting) changed in the composer; the draft is saved with the canvas.</summary>
+    internal void DraftChanged(bool isDraft)
+    {
+        if (isDraft) RaiseChanged();
+    }
+
+    internal void RequestLibrary() => LibraryRequested?.Invoke();
+
+    /// <summary>Where a result lands when there are no references: the middle of what is free above the composer.</summary>
+    private Point FreeCenter()
+    {
+        var bottom = double.IsNaN(_composerTop) ? Root.ActualHeight - _safe.Bottom : _composerTop;
+        return ToWorld(new Point(Center.X, (_safe.Top + bottom) / 2));
+    }
+
+    /// <summary>
+    /// A new generation from the composer: an empty node of the draft's kind is created beside the references with their wires, then run like any node
+    /// (the same path as the agent tool canvas_generate). One undo step covers the new node and the outputs that follow.
+    /// </summary>
+    internal async Task GenerateFromComposerAsync(CanvasNode draft, IReadOnlyList<CanvasNode> references)
+    {
+        History.Record();
+        var center = FreeCenter();
+        var node = Composer.NewGeneration(Doc, draft, references, center.X, center.Y);
+        _dropped.Clear();
+        await Generator.GenerateAsync(node, recordUndo: false);
+    }
+
+    /// <summary>存为配方: the draft and its references become a 配方 node, which is selected (the composer is then bound to it).</summary>
+    internal void SaveRecipeFromComposer(CanvasNode draft, IReadOnlyList<CanvasNode> references)
+    {
+        History.Record();
+        var center = FreeCenter();
+        var recipe = Composer.SaveRecipe(Doc, draft, references, center.X, center.Y);
+        Select([recipe.Id]);
+        EnsureVisible(CanvasGraph.Bounds([recipe]));
+    }
+
+    /// <summary>Enter or / (and Enter on anything but a text node): bring the composer up, with nothing selected too, and put the cursor in the prompt.</summary>
+    public void CallComposer()
+    {
+        _called = true;
+        UpdateComposer();
+        _composer.FocusPrompt();
     }
 
     // ---------- Hit testing ----------
@@ -712,7 +830,7 @@ public sealed partial class CanvasView : UserControl
         string? part = null;
         for (var element = source as DependencyObject; element is not null; element = VisualTreeHelper.GetParent(element))
         {
-            if (element == _panel) return (null, "panel");
+            if (element == _composer) return (null, "panel");
             if (element is FrameworkElement { Tag: string tag } && tag is "source" or "target" or "resize") part ??= tag;
             if (element is NodeView view) return (view, part);
             if (element == Root) break;
@@ -1295,7 +1413,7 @@ public sealed partial class CanvasView : UserControl
         _active = null;
         Overlay.Invalidate();
         Backdrop.Invalidate();
-        UpdatePanel();
+        UpdateComposer();
     }
 
     private void Root_PointerCaptureLost(object sender, PointerRoutedEventArgs e)
@@ -1306,7 +1424,7 @@ public sealed partial class CanvasView : UserControl
         ProtectedCursor = null;
         _active = null;
         Overlay.Invalidate();
-        UpdatePanel();
+        UpdateComposer();
     }
 
     private void Root_PointerWheelChanged(object sender, PointerRoutedEventArgs e)
@@ -1386,15 +1504,17 @@ public sealed partial class CanvasView : UserControl
         Glide(V with { X = V.X + Center.X - middle.X, Y = V.Y + Center.Y - middle.Y });
     }
 
-    /// <summary>Pan (never zoom) just enough to bring an area and the panel under it into view, clear of the safe area; content larger than the view keeps its top-left visible.</summary>
+    /// <summary>Pan (never zoom) just enough to bring an area into view, clear of the safe area and the composer; content larger than the view keeps its top-left visible.</summary>
     public void EnsureVisible(Rect bounds)
     {
         var (topLeft, bottomRight) = (ToScreen(bounds.Left, bounds.Top), ToScreen(bounds.Right, bounds.Bottom));
-        const double margin = 80, panelSpace = 220;
+        const double margin = 80;
+        // Clear of the composer while it is shown, else of the bottom edge.
+        var floor = double.IsNaN(_composerTop) ? Root.ActualHeight - 80 : _composerTop - 16;
         var (minX, minY) = (Math.Max(margin, _safe.Left + 40), _safe.Top + 12);
         var dx = Math.Min(0, Root.ActualWidth - margin - bottomRight.X);
         if (topLeft.X + dx < minX) dx = minX - topLeft.X;
-        var dy = topLeft.Y < minY ? minY - topLeft.Y : bottomRight.Y > Root.ActualHeight - panelSpace ? Math.Max(minY - topLeft.Y, Root.ActualHeight - panelSpace - bottomRight.Y) : 0;
+        var dy = topLeft.Y < minY ? minY - topLeft.Y : bottomRight.Y > floor ? Math.Max(minY - topLeft.Y, floor - bottomRight.Y) : 0;
         if (dx != 0 || dy != 0) Glide(V with { X = V.X + dx, Y = V.Y + dy });
     }
 
@@ -1826,12 +1946,13 @@ public sealed partial class CanvasView : UserControl
             case (VirtualKey)187 or VirtualKey.Add when ctrl: ZoomBy(1.2); break;
             case (VirtualKey)189 or VirtualKey.Subtract when ctrl: ZoomBy(1 / 1.2); break;
             case VirtualKey.Left or VirtualKey.Right or VirtualKey.Up or VirtualKey.Down when _selected.Count > 0: Nudge(e.Key, shift ? 10 : 1); break;
-            // Ctrl+Enter generates or stops the selected node, like in its prompt box.
+            // Ctrl+Enter does what the composer's button does for this selection: generate, run the 配方, stop or retry.
             case VirtualKey.Enter when ctrl:
-                if (!e.KeyStatus.WasKeyDown && Subject() is not null && new[] { "generate", "retry", "stop" }.FirstOrDefault(id => CanvasCommands.Find(id).Visible(Context())) is { } generation) _ = RunAsync(generation);
+                if (!e.KeyStatus.WasKeyDown && _composer.Visibility == Visibility.Visible) _ = _composer.SubmitAsync();
                 break;
-            // Deferred so this Enter is consumed before the editor gets focus and cannot type a line break.
-            case VirtualKey.Enter when _selected.Count == 1: DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, FocusSelected); break;
+            // Deferred so this Enter (or /) is consumed before the editor gets focus and cannot type a line break or a slash.
+            case VirtualKey.Enter when !ctrl: DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, FocusSelected); break;
+            case (VirtualKey)191 when !ctrl && !shift: DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, CallComposer); break;
             case VirtualKey.F2 when _selected.Count == 1 && Doc.Find(_selected.First()) is { } renamed: _ = RenameAsync(renamed); break;
             case VirtualKey.V when ctrl: e.Handled = true; await PasteAsync(ViewCenterWorld); return;
             case VirtualKey.C when !ctrl && !shift && ComposeInputs().Count >= 2: _ = RunAsync("compare"); break;
@@ -2002,13 +2123,11 @@ public sealed partial class CanvasView : UserControl
         if (e.Key == VirtualKey.Space) _space = false;
     }
 
-    /// <summary>Enter on a selected node: edit a text node in place, otherwise jump into the prompt box.</summary>
+    /// <summary>Enter on a selected text node edits it in place; Enter or / on anything else (or on nothing) calls up the composer and puts the cursor in its prompt.</summary>
     private void FocusSelected()
     {
-        if (_selected.Count != 1) return;
-        var id = _selected.First();
-        if (Doc.Find(id) is { Kind: NodeKind.Text } && _views.TryGetValue(id, out var view)) view.FocusEditor();
-        else if (_panel.Visibility == Visibility.Visible) _panel.FocusPrompt();
+        if (_selected.Count == 1 && Doc.Find(_selected.First()) is { Kind: NodeKind.Text } text && _views.TryGetValue(text.Id, out var view)) view.FocusEditor();
+        else CallComposer();
     }
 
     // ---------- Import / paste ----------
@@ -2290,7 +2409,7 @@ public sealed partial class CanvasView : UserControl
             node.SetOption(NodeKeys.Markup, dialog.MarkupPng is { } layer ? ProjectStore.SaveAsset(Doc.Id, layer, "image/png", ProjectStore.MarkupPrefix) : null);
             NodeKeys.SetSelections(node, dialog.Selections);
             RaiseChanged();
-            _panel.Refresh();
+            UpdateComposer();
         }
         catch (Exception ex)
         {

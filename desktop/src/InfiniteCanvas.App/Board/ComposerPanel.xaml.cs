@@ -10,109 +10,92 @@ using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
+using Microsoft.UI.Xaml.Media;
 using Windows.System;
 
 namespace InfiniteCanvas.App.Board;
 
 /// <summary>
-/// Generation panel next to the selected node: one box with the inputs and status on top, the prompt, then model, parameters, cost and the
-/// generate button. A picture that already has content shows just one line until the user opens it.
+/// The composer: one glass box at the bottom of the canvas where every generation starts. The selected pictures and texts are its references (chips, pinnable, droppable),
+/// and it adapts to the selection — a new generation, a bound 配方 or empty node, or stop / retry — saying where the result will go. The prompt, model and parameters
+/// belong to the bound node, or to the canvas's draft when nothing is bound. The rules (mode, references, placement) live in <see cref="Composer"/>.
 /// </summary>
-public sealed partial class PromptPanel : UserControl
+public sealed partial class ComposerPanel : UserControl
 {
     private static readonly string[] Voices = ["alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse", "marin", "cedar", "fable", "onyx", "nova"];
     private readonly CanvasView _host;
+    private ComposerState _state = new(ComposerMode.New, []);
+    private List<CanvasNode> _refs = [];
+    /// <summary>The node the prompt and parameters are read from and written to: the bound node, else the canvas's draft.</summary>
     private CanvasNode? _node;
     private List<string> _models = [];
     private bool _loading;
+    /// <summary>An IME is composing: Enter then confirms the candidate and must not generate.</summary>
+    private bool _composing;
     private Panel _params = null!;
     /// <summary>Set while rebuilding the open flyout, so the 高级 section the user is working in stays expanded.</summary>
     private bool _keepAdvanced;
-    /// <summary>A picture with content starts as one line under it; this says whether the whole panel is open.</summary>
-    private bool _expanded = true;
+    private PromptLibraryFlyout? _library;
 
-    public PromptPanel(CanvasView host)
+    public ComposerPanel(CanvasView host)
     {
         InitializeComponent();
         _host = host;
-        // Keep panel interaction from starting canvas gestures underneath.
+        // Keep composer interaction from starting canvas gestures underneath.
         Shell.PointerPressed += (_, e) => e.Handled = true;
         Shell.PointerReleased += (_, e) => e.Handled = true;
         Shell.PointerMoved += (_, e) => e.Handled = true;
         Shell.PointerWheelChanged += (_, e) => e.Handled = true;
         Shell.DoubleTapped += (_, e) => e.Handled = true;
         Shell.RightTapped += (_, e) => e.Handled = true;
-        Loaded += (_, _) => Bind(_node);
         Unloaded += (_, _) => { if (_node is not null) _node.PropertyChanged -= Node_PropertyChanged; };
     }
 
-    public CanvasNode? Node => _node;
+    public ComposerState State => _state;
+    public IReadOnlyList<CanvasNode> References => _refs;
+    public bool HasFocus => PromptBox.FocusState != FocusState.Unfocused;
+    private static AppSettings Settings => SettingsStore.Current;
+    private Capability Capability => _node is null ? Capability.Image : CanvasGenerator.CapabilityOf(_node);
+    private bool New => _state.Mode == ComposerMode.New;
 
-    /// <summary>Pictures with content collapse to one line; empty pictures, text, audio and config nodes always show the whole panel.</summary>
-    private static bool Collapsible(CanvasNode node) => node.Kind == NodeKind.Image && node.HasContent;
+    /// <summary>The draft counts as something to save as a 配方 when nothing is bound and there is a prompt or a reference.</summary>
+    public bool CanSaveRecipe => _state.Mode is ComposerMode.New && _node is not null && (!string.IsNullOrWhiteSpace(_node.Prompt) || _refs.Count > 0);
 
-    /// <summary>Raised when the panel opens or folds (including when another node is bound), so the canvas can make room for its new size.</summary>
-    public event Action? ExpandedChanged;
-
-    private bool _shown = true;
-
-    private void ApplyExpanded()
-    {
-        if (_shown != _expanded) { _shown = _expanded; ExpandedChanged?.Invoke(); }
-        FullPanel.Visibility = _expanded ? Visibility.Visible : Visibility.Collapsed;
-        CollapsedRow.Visibility = _expanded ? Visibility.Collapsed : Visibility.Visible;
-        Shell.Width = _expanded ? 540 : 440;
-        Shell.Padding = _expanded ? new Thickness(14, 10, 14, 10) : new Thickness(16, 6, 6, 6);
-    }
-
-    /// <summary>Open the whole panel (a click on the line, Enter, or anything that needs the prompt box).</summary>
-    public void Expand()
-    {
-        if (_expanded) return;
-        _expanded = true;
-        ApplyExpanded();
-    }
-
-    private void Collapsed_Click(object sender, RoutedEventArgs e) => FocusPrompt();
+    /// <summary>The width of the box in layout units: the canvas decides, from the room between its panels.</summary>
+    public void SetWidth(double width) => Shell.Width = width;
 
     /// <summary>Shadow goes on the rounded shell, not the control, so it follows the corners.</summary>
     public void CastShadowOn(UIElement receiver)
     {
-        var shadow = new Microsoft.UI.Xaml.Media.ThemeShadow();
+        var shadow = new ThemeShadow();
         shadow.Receivers.Add(receiver);
         Shell.Shadow = shadow;
         Shell.Translation = new System.Numerics.Vector3(0, 0, 32);
     }
-    private static AppSettings Settings => SettingsStore.Current;
-    private Capability Capability => _node is null ? Capability.Image : CanvasGenerator.CapabilityOf(_node);
 
-    public void Bind(CanvasNode? node)
+    /// <summary>The selection (or what it holds) changed: take the new mode and references. Binding to another node reloads the prompt and closes the flyouts.</summary>
+    public void Update(ComposerState state, IReadOnlyList<CanvasNode> references)
     {
-        // Open flyouts belong to the previous node; close them when another node takes over (e.g. an agent changed the selection).
+        var node = state.Bound ?? Composer.DraftOf(_host.Doc);
+        _state = state;
+        _refs = [.. references];
         if (node != _node)
         {
             ParamsFlyout.Hide();
             _library?.Hide();
-            if (node is not null) _expanded = !Collapsible(node);
+            if (_node is not null) _node.PropertyChanged -= Node_PropertyChanged;
+            _node = node;
+            node.PropertyChanged += Node_PropertyChanged;
+            ShowPrompt();
         }
-        if (_node is not null) _node.PropertyChanged -= Node_PropertyChanged;
-        _node = node;
-        if (node is null) return;
-        ApplyExpanded();
-        node.PropertyChanged += Node_PropertyChanged;
-        _loading = true;
-        ModeBar.Visibility = node.Kind == NodeKind.Config ? Visibility.Visible : Visibility.Collapsed;
-        ModeBar.SelectedItem = ModeBar.Items.FirstOrDefault(item => (string)item.Tag == node.Mode.ToString());
-        PromptBox.Text = node.Prompt ?? "";
-        PromptBox.PlaceholderText = Capability switch
-        {
-            Capability.Audio => "输入要朗读的文字，Ctrl+Enter 开始生成",
-            Capability.Text => "输入要让模型完成的任务，Ctrl+Enter 开始生成",
-            _ => node.HasContent && node.Kind == NodeKind.Image ? "描述要如何修改这张图片，结果会生成到右侧新节点" : "描述想要生成的内容，Ctrl+Enter 开始生成",
-        };
-        ShowCollapsedText();
-        _loading = false;
         Refresh();
+    }
+
+    private void ShowPrompt()
+    {
+        _loading = true;
+        PromptBox.Text = NodeView.BoxText(_node!.Prompt);
+        _loading = false;
     }
 
     private void Node_PropertyChanged(object? sender, PropertyChangedEventArgs e)
@@ -123,8 +106,7 @@ public sealed partial class PromptPanel : UserControl
         {
             // External changes must not leave an open parameter editor bound to an old model or value.
             ParamsFlyout.Hide();
-            if (e.PropertyName == nameof(CanvasNode.Mode)) Bind(_node);
-            else Refresh();
+            Refresh();
             return;
         }
         if (e.PropertyName != nameof(CanvasNode.Prompt)) return;
@@ -135,8 +117,8 @@ public sealed partial class PromptPanel : UserControl
         var length = Math.Min(PromptBox.SelectionLength, text.Length - start);
         PromptBox.Text = text;
         PromptBox.Select(start, length);
-        ShowCollapsedText();
         ShowEstimate();
+        ShowButtons();
     }
 
     /// <summary>Re-read everything that depends on settings, connections or running state.</summary>
@@ -149,52 +131,125 @@ public sealed partial class PromptPanel : UserControl
         _models = Settings.ModelsFor(capability).ToList();
         ModelBox.ItemsSource = _models.Select(Settings.Label).ToList();
         ModelBox.SelectedIndex = _models.IndexOf(_node.Model);
-        // Same list and order the request numbers 图片N with, so the node's own image counts as 图片1.
-        var inputs = CanvasGenerator.InputsOf(_host.Doc, _node);
-        ShowInputs(inputs);
-        ShowMarks();
-        ShowHint();
-        TopLine.Visibility = ModeBar.Visibility == Visibility.Visible || inputs.Count > 0 || MarksRow.Visibility == Visibility.Visible || HintRow.Visibility == Visibility.Visible
-            || InfoButton.Visibility == Visibility.Visible ? Visibility.Visible : Visibility.Collapsed;
+        // A bound empty node takes its output kind from itself; everything else lets the user pick it.
+        ModeBar.Visibility = _state.Mode == ComposerMode.Fill ? Visibility.Collapsed : Visibility.Visible;
+        ModeBar.SelectedItem = ModeBar.Items.FirstOrDefault(item => (string)item.Tag == _node.Mode.ToString());
+        PromptBox.PlaceholderText = _state.Mode switch
+        {
+            ComposerMode.Recipe => "写下这个配方的提示词，Enter 运行配方，Shift+Enter 换行",
+            ComposerMode.Fill => "描述想要生成到这个节点里的内容，Enter 生成，Shift+Enter 换行",
+            _ when capability == Capability.Audio => "输入要朗读的文字，Enter 生成，Shift+Enter 换行",
+            _ when capability == Capability.Text => "输入要让模型完成的任务，Enter 生成，Shift+Enter 换行",
+            _ when _refs.Count > 0 => "描述要怎么用这些参考，例如：把她的外套换成红色，Enter 生成",
+            _ => "描述想要生成的画面，选中画布上的图片或文本可作为参考，Enter 生成",
+        };
+        ShowReferences();
+        ShowInfo();
         ParamsText.Text = ParamsSummary();
         ShowEstimate();
-        var running = _host.Generator.IsRunning(_node.Id);
-        GenerateText.Text = CollapsedGenerateText.Text = running ? "停止" : "生成";
-        GenerateIcon.Glyph = CollapsedIcon.Glyph = running ? "\uE71A" : "\uE768";
-        ShowCollapsedText();
+        ShowButtons();
         _loading = false;
     }
 
-    private void ShowInputs(List<GenerationResource> inputs)
+    // ---------- References ----------
+
+    private string? Problem()
     {
-        InputThumbs.Children.Clear();
-        var images = inputs.Where(r => r.Type == NodeKind.Image).ToList();
-        foreach (var resource in images.Take(5))
-        {
-            var path = ProjectStore.AssetPath(_host.Doc.Id, resource.Node.Content!);
-            var source = Media.IsSvg(path) ? new SvgImageSource(new Uri(path)) : (Microsoft.UI.Xaml.Media.ImageSource)new BitmapImage { DecodePixelWidth = 56, UriSource = new Uri(path) };
-            var thumb = new Border { Width = 28, Height = 28, CornerRadius = new(4), Child = new Image { Stretch = Microsoft.UI.Xaml.Media.Stretch.UniformToFill, Source = source } };
-            ToolTipService.SetToolTip(thumb, $"图片{images.IndexOf(resource) + 1}：{resource.Node.Title}");
-            InputThumbs.Children.Add(thumb);
-        }
-        var others = inputs.Count - Math.Min(images.Count, 5);
-        InputsText.Text = inputs.Count == 0 ? "" : others > 0 ? $"+{others} 个输入" : $"{inputs.Count} 个输入";
+        var resolved = Settings.Resolve(_node!.Model);
+        // ProtectedKey avoids a DPAPI decrypt on every refresh.
+        return resolved is null ? $"还没有可用的{Labels.Name(Capability)}模型"
+            : string.IsNullOrEmpty(resolved.Value.Channel.ProtectedKey) ? $"服务商「{Settings.ChannelName(resolved.Value.Channel)}」还没有填写 API Key" : null;
     }
 
-    /// <summary>The marks left by local editing (shown only while there are some, with the way to clear them), plus any text the model returned.</summary>
-    private void ShowMarks()
+    private void ShowReferences()
     {
-        var node = _node!;
-        var parts = new List<string>();
-        if (node.Kind == NodeKind.Image && node.HasContent)
+        RefChips.Children.Clear();
+        // A 配方 or an empty node shows what is wired into it (read only: the wires are its history); a new generation shows the live references.
+        var shown = New ? _refs : _state.Bound is { } bound ? Composer.Wired(_host.Doc, bound) : [];
+        for (var i = 0; i < shown.Count; i++) RefChips.Children.Add(Chip(shown[i], i + 1, New));
+        AddButton.Visibility = New ? Visibility.Visible : Visibility.Collapsed;
+        TargetText.Text = _state.Mode switch
         {
-            if (node.Option(NodeKeys.Mask).Length > 0) parts.Add("涂抹重绘区域");
-            if (node.Option(NodeKeys.Markup).Length > 0) parts.Add("画圈标注");
-            if (NodeKeys.SelectionsOf(node).Count is > 0 and var count) parts.Add($"{count} 处位置");
+            ComposerMode.Recipe => $"结果放在配方右边",
+            ComposerMode.Fill => $"生成到「{_state.Bound!.Title}」",
+            ComposerMode.Stop => $"{_state.Nodes.Count} 个正在生成",
+            ComposerMode.Retry => $"{_state.Nodes.Count} 个失败，可重试",
+            _ => _refs.Count > 0 ? "结果放在参考右边" : "结果放在视图中央",
+        };
+        if (New && _refs.Count == 0) RefChips.Children.Add(new TextBlock { Text = "选中图片或文本即作为参考", VerticalAlignment = VerticalAlignment.Center, Style = (Style)Application.Current.Resources["SecondaryCaption"] });
+    }
+
+    /// <summary>One reference: its picture (or a text mark), 参考 N and its title, then pin and drop buttons when it can be changed.</summary>
+    private UIElement Chip(CanvasNode node, int number, bool editable)
+    {
+        UIElement thumb;
+        if (node.Kind == NodeKind.Image)
+        {
+            var path = ProjectStore.AssetPath(_host.Doc.Id, node.Content!);
+            var source = Media.IsSvg(path) ? new SvgImageSource(new Uri(path)) : (ImageSource)new BitmapImage { DecodePixelWidth = 48, UriSource = new Uri(path) };
+            thumb = new Border { Width = 22, Height = 22, CornerRadius = new(4), Child = new Image { Stretch = Stretch.UniformToFill, Source = source } };
+        }
+        else thumb = new Border { Width = 22, Height = 22, CornerRadius = new(4), Background = new SolidColorBrush(Palette.Kind(NodeKind.Text, ActualTheme)), Child = new FontIcon { Glyph = "", FontSize = 12, Foreground = new SolidColorBrush(Microsoft.UI.Colors.White) } };
+        var label = new TextBlock { Text = $"参考 {number} · {Stacks.OwnTitle(node)}", FontSize = 12, VerticalAlignment = VerticalAlignment.Center, MaxWidth = 140, TextTrimming = TextTrimming.CharacterEllipsis };
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, Children = { thumb, label } };
+        if (editable)
+        {
+            var pinned = _host.IsPinned(node);
+            row.Children.Add(ChipButton("", pinned ? $"取消固定参考 {number}" : $"固定参考 {number}", pinned ? "取消固定：选中其他节点时不再保留它" : "固定为参考：选中其他节点时也保留它", () => _host.TogglePin(node), pinned));
+            row.Children.Add(ChipButton("", $"移除参考 {number}", "不作为这次的参考（节点仍保持选中）", () => _host.DropReference(node), false));
+        }
+        var chip = new Border { Style = (Style)Application.Current.Resources["GlassChip"], Padding = new(3, 2, editable ? 2 : 8, 2), Child = row };
+        ToolTipService.SetToolTip(chip, Stacks.OwnTitle(node));
+        AutomationProperties.SetName(chip, $"参考 {number}：{Stacks.OwnTitle(node)}");
+        return chip;
+    }
+
+    private static Button ChipButton(string glyph, string name, string tip, Action click, bool active)
+    {
+        var button = new Button
+        {
+            Style = (Style)Application.Current.Resources["ToolbarButton"], Padding = new(0), MinHeight = 0, MinWidth = 0, Width = 22, Height = 22,
+            Content = new FontIcon { Glyph = glyph, FontSize = 11 },
+        };
+        if (active) ((FontIcon)button.Content).Foreground = (Brush)Application.Current.Resources["AccentTextFillColorPrimaryBrush"];
+        AutomationProperties.SetName(button, name);
+        ToolTipService.SetToolTip(button, tip);
+        button.Click += (_, _) => click();
+        return button;
+    }
+
+    private void AddMenu_Opening(object? sender, object e)
+    {
+        AddMenu.Items.Clear();
+        var library = new MenuFlyoutItem { Text = "从资料库选…", Icon = new FontIcon { Glyph = "" } };
+        library.Click += (_, _) => _host.RequestLibrary();
+        var import = new MenuFlyoutItem { Text = "导入文件…", Icon = new FontIcon { Glyph = "" } };
+        import.Click += async (_, _) => await _host.RunAsync("import");
+        AddMenu.Items.Add(library);
+        AddMenu.Items.Add(import);
+    }
+
+    /// <summary>The marks left by local editing on the first picture (with the way to clear them), and the notes the selected node carries (model text, recognised text, reference note).</summary>
+    private void ShowInfo()
+    {
+        var hint = Problem();
+        HintText.Text = hint ?? "";
+        HintRow.Visibility = hint is null ? Visibility.Collapsed : Visibility.Visible;
+        ToolTipService.SetToolTip(HintText, hint);
+        var first = New ? _refs.FirstOrDefault(r => r.Kind == NodeKind.Image) : null;
+        var parts = new List<string>();
+        if (first is not null && NodeKeys.HasMarks(first))
+        {
+            if (first.Option(NodeKeys.Mask).Length > 0) parts.Add("涂抹重绘区域");
+            if (first.Option(NodeKeys.Markup).Length > 0) parts.Add("画圈标注");
+            if (NodeKeys.SelectionsOf(first).Count is > 0 and var count) parts.Add($"{count} 处位置");
         }
         MarksRow.Visibility = parts.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
-        MarksText.Text = parts.Count > 0 ? "已标注 · " + string.Join(" · ", parts) : "";
-        var notes = new[] { (Label: "模型说明", Text: node.Option(NodeKeys.ModelText)), (Label: "识别文字", Text: NodeKeys.RecognizedText(node)), (Label: "参考图", Text: node.Option(NodeKeys.InputNote)) }.Where(n => n.Text.Length > 0).ToList();
+        MarksText.Text = parts.Count > 0 ? $"已标注 · {Stacks.OwnTitle(first!)} · " + string.Join(" · ", parts) : "";
+        InfoRow.Visibility = HintRow.Visibility == Visibility.Visible || MarksRow.Visibility == Visibility.Visible ? Visibility.Visible : Visibility.Collapsed;
+
+        var subject = _host.Subject();
+        var notes = subject is null ? [] : new[] { (Label: "模型说明", Text: subject.Option(NodeKeys.ModelText)), (Label: "识别文字", Text: NodeKeys.RecognizedText(subject)), (Label: "参考图", Text: subject.Option(NodeKeys.InputNote)) }.Where(n => n.Text.Length > 0).ToList();
         // Model notes, recognised text and the reference note sit behind the info icon.
         var info = string.Join("\n", notes.Select(n => $"{n.Label}：{n.Text}"));
         InfoButton.Visibility = notes.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -203,43 +258,38 @@ public sealed partial class PromptPanel : UserControl
         InfoButton.Flyout = notes.Count > 0 ? new Flyout { Content = new TextBlock { Text = info, TextWrapping = TextWrapping.Wrap, MaxWidth = 380, IsTextSelectionEnabled = true } } : null;
     }
 
-    /// <summary>The one-line form: the prompt's first line, or what to write when there is none.</summary>
-    private void ShowCollapsedText()
+    /// <summary>The button says what Enter will do for this selection; 存为配方 only where there is a draft to save.</summary>
+    private void ShowButtons()
     {
         if (_node is null) return;
-        var first = (_node.Prompt ?? "").Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).FirstOrDefault();
-        CollapsedText.Text = first ?? "描述要怎么改这张图…";
-        CollapsedText.Opacity = first is null ? 0.8 : 1;
+        var (text, glyph) = _state.Mode switch
+        {
+            ComposerMode.Stop => ("停止", ""),
+            ComposerMode.Retry => ("重试", ""),
+            ComposerMode.Recipe => ("运行配方", ""),
+            _ => ("生成", ""),
+        };
+        GenerateText.Text = text;
+        GenerateIcon.Glyph = glyph;
+        AutomationProperties.SetName(GenerateButton, text);
+        var hasInput = !string.IsNullOrWhiteSpace(_node.Prompt) || (_state.Bound is { } bound ? Composer.Wired(_host.Doc, bound).Count > 0 : _refs.Count > 0);
+        GenerateButton.IsEnabled = _state.Mode is ComposerMode.Stop or ComposerMode.Retry || hasInput && Problem() is null;
+        ToolTipService.SetToolTip(GenerateButton, Problem() is { } problem && _state.Mode is not (ComposerMode.Stop or ComposerMode.Retry) ? problem : $"{text}（Enter 或 Ctrl+Enter）");
+        RecipeButton.Visibility = New ? Visibility.Visible : Visibility.Collapsed;
+        RecipeButton.IsEnabled = CanSaveRecipe;
     }
 
-    /// <summary>A missing model or API key shows up front with a way to settings; the generator's dialogs still cover the menu and Ctrl+Enter.</summary>
-    private void ShowHint()
-    {
-        var node = _node!;
-        var running = _host.Generator.IsRunning(node.Id);
-        var resolved = Settings.Resolve(node.Model);
-        // ProtectedKey avoids a DPAPI decrypt on every refresh.
-        var hint = resolved is null ? $"还没有可用的{Labels.Name(Capability)}模型"
-            : string.IsNullOrEmpty(resolved.Value.Channel.ProtectedKey) ? $"服务商「{Settings.ChannelName(resolved.Value.Channel)}」还没有填写 API Key" : null;
-        HintText.Text = hint ?? "";
-        HintRow.Visibility = hint is null ? Visibility.Collapsed : Visibility.Visible;
-        ToolTipService.SetToolTip(HintText, hint);
-        GenerateButton.IsEnabled = CollapsedGenerate.IsEnabled = running || hint is null;
-        ToolTipService.SetToolTip(CollapsedGenerate, hint);
-    }
-
-    /// <summary>Expected cost of the next image run from the model, parameters, prompt and connected pictures; image runs only.</summary>
+    /// <summary>Expected cost of the next image run from the model, parameters, prompt and references; image runs only.</summary>
     private void ShowEstimate()
     {
-        var node = _node!;
-        var resolved = Settings.Resolve(node.Model);
-        var show = Capability == Capability.Image && resolved is not null;
+        var resolved = Settings.Resolve(_node!.Model);
+        var show = Capability == Capability.Image && resolved is not null && _state.Mode is not (ComposerMode.Stop or ComposerMode.Retry);
         EstimateText.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
         if (!show) return;
-        var references = CanvasGenerator.InputsOf(_host.Doc, node).Count(r => r.Type == NodeKind.Image);
+        var references = (New ? _refs : _state.Bound is { } bound ? Composer.Wired(_host.Doc, bound) : []).Count(r => r.Kind == NodeKind.Image);
         const string Caveat = "按官方价格或上次同样设置的实际用量估算，仅供参考：不含思考 token、免费额度和优惠";
         // Beside the generate button only the amount fits; the basis and the caveat are in the tooltip.
-        if (Prices.EstimateImage(resolved!.Value.Channel, resolved.Value.Model.Name, node, references) is { } estimate)
+        if (Prices.EstimateImage(resolved!.Value.Channel, resolved.Value.Model.Name, _node, references) is { } estimate)
         {
             EstimateText.Text = $"≈ {Prices.Money(estimate.Amount, estimate.Currency)}";
             ToolTipService.SetToolTip(EstimateText, $"预计花费 ≈ {estimate.Text}\n{Caveat}");
@@ -279,8 +329,8 @@ public sealed partial class PromptPanel : UserControl
 
     private void ClearMarks_Click(object sender, RoutedEventArgs e)
     {
-        if (_node is null) return;
-        _host.ClearMarks(_node);
+        if (_refs.FirstOrDefault(r => r.Kind == NodeKind.Image && NodeKeys.HasMarks(r)) is not { } marked) return;
+        _host.ClearMarks(marked);
         Refresh();
     }
 
@@ -289,43 +339,48 @@ public sealed partial class PromptPanel : UserControl
         if (_loading || _node is null || sender.SelectedItem?.Tag is not string tag || tag == _node.Mode.ToString()) return;
         var (node, mode) = (_node, Enum.Parse<Capability>(tag));
         SetParameter(() => node.Mode = mode);
-        Bind(node);
+        Update(_state, _refs);
     }
 
     private void PromptBox_TextChanged(object sender, TextChangedEventArgs e)
     {
-        // TextChanged arrives after Bind has cleared _loading, so only real edits are written.
-        if (_node is null || PromptBox.Text == NodeView.BoxText(_node.Prompt)) return;
-        _host.History.Record($"{_node.Id}/prompt");
+        // TextChanged arrives after the prompt was loaded, so only real edits are written.
+        if (_loading || _node is null || PromptBox.Text == NodeView.BoxText(_node.Prompt)) return;
+        // A bound node's prompt is part of the canvas (one undo point per typing run); the draft is not.
+        if (_state.Bound is not null) _host.History.Record($"{_node.Id}/prompt");
         _node.Prompt = PromptBox.Text.Replace('\r', '\n');
+        _host.DraftChanged(_state.Bound is null);
         ShowEstimate();
+        ShowButtons();
     }
+
+    private void PromptBox_CompositionStarted(TextBox sender, TextCompositionStartedEventArgs args) => _composing = true;
+
+    // The key that confirms the candidate arrives after the composition ends: clear the flag only once this key has been handled.
+    private void PromptBox_CompositionEnded(TextBox sender, TextCompositionEndedEventArgs args) => DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () => _composing = false);
 
     private void PromptBox_PreviewKeyDown(object sender, KeyRoutedEventArgs e)
     {
-        // Esc hands the keyboard back to the canvas, and a picture's panel folds into its line again.
+        // Esc hands the keyboard back to the canvas; the canvas then goes back one more level (the selection) on the next Esc.
         if (e.Key == VirtualKey.Escape)
         {
             e.Handled = true;
             _host.FocusCanvas();
-            if (_node is not null && Collapsible(_node))
-            {
-                _expanded = false;
-                ApplyExpanded();
-                ShowCollapsedText();
-            }
             return;
         }
-        var ctrl = Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Control).HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down);
-        if (e.Key != VirtualKey.Enter || !ctrl) return;
+        if (e.Key != VirtualKey.Enter || _composing) return;
+        var down = Windows.UI.Core.CoreVirtualKeyStates.Down;
+        var shift = Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Shift).HasFlag(down);
+        var ctrl = Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Control).HasFlag(down);
+        // Shift+Enter is a new line (the box inserts it); Enter and Ctrl+Enter generate.
+        if (shift && !ctrl) return;
         e.Handled = true;
-        // Holding the keys auto-repeats KeyDown; only the first press toggles generation.
-        if (!e.KeyStatus.WasKeyDown) Generate_Click(sender, e);
+        // Holding the keys auto-repeats KeyDown; only the first press acts.
+        if (!e.KeyStatus.WasKeyDown) _ = SubmitAsync();
     }
 
     public void FocusPrompt()
     {
-        Expand();
         PromptBox.UpdateLayout();
         PromptBox.Focus(FocusState.Keyboard);
         PromptBox.SelectionStart = PromptBox.Text.Length;
@@ -336,21 +391,60 @@ public sealed partial class PromptPanel : UserControl
         if (_loading || _node is null || ModelBox.SelectedIndex < 0 || _models[ModelBox.SelectedIndex] == _node.Model) return;
         var (node, model) = (_node, _models[ModelBox.SelectedIndex]);
         SetParameter(() => node.Model = model);
-        ShowMarks();
-        ShowHint();
+        ShowInfo();
+        ShowButtons();
     }
 
-    private async void Generate_Click(object sender, RoutedEventArgs e)
+    private async void Generate_Click(object sender, RoutedEventArgs e) => await SubmitAsync();
+
+    /// <summary>What the button and Enter do for this selection: stop, retry, run the bound node, or start a new generation from the references.</summary>
+    public async Task SubmitAsync()
     {
-        if (_node is null) return;
-        if (_host.Generator.IsRunning(_node.Id)) _host.Generator.Cancel(_node.Id);
-        else await _host.Generator.GenerateAsync(_node);
+        if (_node is null || _host.IsClosing) return;
+        var generator = _host.Generator;
+        switch (_state.Mode)
+        {
+            case ComposerMode.Stop:
+                foreach (var node in _state.Nodes.ToList()) generator.Cancel(node.Id);
+                break;
+            case ComposerMode.Retry:
+                // Failed outputs retry through the node that made them, which runs one request at a time: those of one source go one after the other, different sources side by side.
+                var doc = _host.Doc;
+                await Task.WhenAll(_state.Nodes.ToList().GroupBy(node => CanvasGenerator.RetrySource(doc, node)?.Id ?? node.Id)
+                    .Select(async group => { foreach (var node in group) await generator.GenerateAsync(node); }));
+                break;
+            case ComposerMode.Recipe or ComposerMode.Fill:
+                await generator.GenerateAsync(_state.Bound!);
+                break;
+            default:
+                if (!GenerateButton.IsEnabled) { FocusPrompt(); break; }
+                await _host.GenerateFromComposerAsync(_node, _refs);
+                break;
+        }
     }
 
-    /// <summary>The flyout hangs off the whole panel's right edge so it never covers the prompt.</summary>
-    private void Params_Click(object sender, RoutedEventArgs e) => FlyoutBase.ShowAttachedFlyout(Shell);
+    /// <summary>沿用这次的设置: the node's prompt, model and parameters go into the composer's draft, and the cursor into the prompt.</summary>
+    public void Reuse(CanvasNode node)
+    {
+        if (Composer.ReuseSource(_host.Doc, node) is not { } source) return;
+        Composer.Reuse(Composer.DraftOf(_host.Doc), source);
+        _host.DraftChanged(true);
+        // A bound composer keeps showing its node; the draft is what the next new generation uses.
+        if (_state.Bound is null) ShowPrompt();
+        Refresh();
+        FocusPrompt();
+    }
 
-    private PromptLibraryFlyout? _library;
+    private void SaveRecipe_Click(object sender, RoutedEventArgs e) => SaveRecipe();
+
+    public void SaveRecipe()
+    {
+        if (!CanSaveRecipe || _node is null) return;
+        _host.SaveRecipeFromComposer(_node, _refs);
+    }
+
+    /// <summary>The flyout hangs off the whole composer so it never covers the prompt.</summary>
+    private void Params_Click(object sender, RoutedEventArgs e) => FlyoutBase.ShowAttachedFlyout(Shell);
 
     private void PromptLibrary_Click(object sender, RoutedEventArgs e) => (_library ??= new PromptLibraryFlyout(() => PromptBox.Text, UsePrompt)).ShowAt(Shell);
 
@@ -547,19 +641,22 @@ public sealed partial class PromptPanel : UserControl
         _params.Children.Add(box);
     }
 
+
     /// <summary>
-    /// A change made in this panel: one undo point, written while <see cref="_loading"/> is set so <see cref="Node_PropertyChanged"/>
-    /// (which reloads the panel for outside edits) ignores it, then only the summary and estimate follow. Typing in a parameter box
+    /// A change made in this composer: one undo point when it belongs to a bound node (the draft is not part of undo), written while <see cref="_loading"/> is set so <see cref="Node_PropertyChanged"/>
+    /// (which reloads the composer for outside edits) ignores it, then only the summary and estimate follow. Typing in a parameter box
     /// must not reload the inputs or the model list on every key.
     /// </summary>
     private void SetParameter(Action apply, object? undoKey = null)
     {
-        _host.History.Record(undoKey);
+        if (_state.Bound is not null) _host.History.Record(undoKey);
         _loading = true;
         try { apply(); }
         finally { _loading = false; }
+        _host.DraftChanged(_state.Bound is null);
         ParamsText.Text = ParamsSummary();
         ShowEstimate();
+        ShowButtons();
     }
 
     private void Note(string text) => _params.Children.Add(new TextBlock

@@ -74,6 +74,11 @@
                 Background="{ThemeResource AccentFillColorDefaultBrush}" RenderTransformOrigin="1,1" Visibility="Collapsed" IsHitTestVisible="False">
             <TextBlock Text="基准" FontSize="12" FontWeight="SemiBold" Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}" />
         </Border>
+        <!-- 参考 N: the node is a reference of the composer's next generation (its number on the chip there). Inside the card's top-right corner, clear of 基准. -->
+        <Border x:Name="RefChip" VerticalAlignment="Top" HorizontalAlignment="Right" Margin="0,8,8,0" Height="20" Padding="8,2" CornerRadius="10"
+                Background="{ThemeResource AccentFillColorDefaultBrush}" RenderTransformOrigin="1,0" Visibility="Collapsed" IsHitTestVisible="False">
+            <TextBlock x:Name="RefText" FontSize="12" FontWeight="SemiBold" Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}" />
+        </Border>
         <!-- Batch stacks: the count on a collapsed stack (click the card to open it), 收起 on the lead of an opened one. -->
         <Border x:Name="StackBadge" Style="{StaticResource GlassChip}" Padding="0" VerticalAlignment="Top" HorizontalAlignment="Left" Margin="8,8,0,0"
                 RenderTransformOrigin="0,0" Visibility="Collapsed">

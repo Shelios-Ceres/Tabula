@@ -71,9 +71,9 @@ public sealed class CanvasOp
     public string? Id { get; set; }
     [Description("delete_nodes / select / group / ungroup / group_add / group_remove 的节点 ID 列表（ungroup 也可以直接给分组 ID）")]
     public List<string>? Ids { get; set; }
-    [Description("add_node 的类型：text、image、video、audio、config")]
+    [Description("add_node 的类型：text、image、video、audio、config（config 在界面里叫「配方」）")]
     public string? Kind { get; set; }
-    [Description("config 节点的生成类型：image、text、audio")]
+    [Description("config（界面里的「配方」）节点的生成类型：image、text、audio")]
     public string? Mode { get; set; }
     public string? Title { get; set; }
     [Description("左上角世界坐标；add_node 省略时放在可视区域中央附近的空位")]
@@ -124,6 +124,7 @@ public static class CanvasTools
         - 生成图片、文本或语音用 canvas_generate（这个版本不支持生成视频，视频节点只用来放导入的视频）：它会新建节点、连上参考节点并立刻开始生成。生成是异步的：开始后用 generation_wait 等结果，它在有节点失败时立刻返回，不用反复轮询 generation_get_status；返回 timedOut 说明还在生成，再调用一次即可。不要在没有结果时声称已经完成。
         - 同一服务商同时发出的图片请求超过设置里的上限时会自动排队（状态 queued，queueAhead 是前面还有几个），不用把批次拆小，排队不是失败。
         - 增删改节点、连线、选择和视口用 canvas_apply_ops，一次调用就是一步撤销。
+        - 界面里的「配方」就是 config 节点：汇总上游的文本和图片，统一设置提示词、模型和参数后生成；工具里仍叫 config。
         - 需要看图片内容时用 canvas_get_image；资料库（这个画布自己的常用素材）用 library_list / library_place / library_add；一次生成多张时用 layout=row 或 grid 直接排开，已有的一批用 stack_open / stack_close 展开或收起，挑定稿用 keep_one（留下一批里的一张）和 promote（让一张图取代另一张，占它的位置和连线）；编组用 canvas_apply_ops 的 group / ungroup，把节点加入或移出已有分组（分组 ID 和连线不变）用 group_add / group_remove。
         - 要把单独生成的多个视角拼成转面图、对比图时用 canvas_compose，不要自己在本地拼；人物大小不一时用 marks 按头顶和脚底对齐。
         - 要判断两张图变没变（脸有没有漂、改动落在哪）用 image_compare，它返回差异统计和变化区域，不必自己在本地比。
@@ -862,13 +863,6 @@ public static class CanvasTools
         }
         host.RecordHistory();
         var node = Place(host, NodeSpec.KindOf(capability), x, y);
-        if (x is null && inputs.Count > 0)
-        {
-            // Sit to the right of the inputs, like generation outputs do.
-            node.X = inputs.Max(i => i.Right) + 80;
-            node.Y = inputs.Min(i => i.Y);
-            node.X = CanvasGraph.FreeX(node, host.Document.Nodes.Where(n => n != node), avoidGroupsOf: host.Document);
-        }
         try
         {
             SetParams(node, prompt, model, ratio, size, quality, count);
@@ -880,19 +874,8 @@ public static class CanvasTools
             host.Document.Nodes.Remove(node);
             throw;
         }
-        if (x is null && Stacks.ParseLayout(layout) is { } spread and not StackLayout.Stack && node.Count > 1)
-        {
-            // A row or grid spreads right from this card: find a spot where all of it, not just one card, is free.
-            var batch = new List<CanvasNode> { node };
-            for (var i = 1; i < node.Count; i++)
-            {
-                var card = CanvasNode.Create(node.Kind, 0, 0);
-                card.Width = node.Width;
-                if (node.Kind == NodeKind.Image) card.Height = CanvasGraph.OutputHeight(node.Width, node.Ratio);
-                batch.Add(card);
-            }
-            node.X = CanvasGraph.FreeBatchX(batch, spread, Stacks.GapOf(node), host.Document.Nodes.Where(n => n != node), host.Document);
-        }
+        // Beside the inputs and clear of other nodes, with room for a whole row or grid: the rule the composer uses too.
+        if (x is null) CanvasGraph.PlaceGeneration(host.Document, node, inputs);
         foreach (var input in inputs) Connect(host.Document, input, node);
         host.Reveal([node]);
         if (host.CannotGenerate(node) is { } reason) throw new McpException($"节点已创建（{node.Id}），但无法开始生成：{reason}");

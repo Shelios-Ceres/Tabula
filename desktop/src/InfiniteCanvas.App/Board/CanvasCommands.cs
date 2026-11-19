@@ -21,7 +21,7 @@ public sealed partial class CanvasView
 
     internal CommandContext Context() => CommandContext.From(Doc, _selected,
         node => MarkSupport(node) is var (mask, points, markup) && (mask || points || markup), CanvasGenerator.CanGenerate, CanGroup, id => Generator?.IsRunning(id) == true)
-        with { CanUndo = History?.CanUndo == true, CanRedo = History?.CanRedo == true };
+        with { CanUndo = History?.CanUndo == true, CanRedo = History?.CanRedo == true, CanSaveRecipe = _composer.CanSaveRecipe };
 
     /// <summary>The one shown node that is selected (a collapsed batch counts as its cover), or null.</summary>
     internal CanvasNode? Subject()
@@ -76,9 +76,12 @@ public sealed partial class CanvasView
         ["match-height"] = Do(() => MatchSize(false, true)),
         ["match-both"] = Do(() => MatchSize(true, true)),
 
-        ["generate"] = Node(node => Generator.GenerateAsync(node)),
-        ["retry"] = Node(node => Generator.GenerateAsync(node)),
-        ["stop"] = Node(node => Generator.Cancel(node.Id)),
+        // Generate, retry and stop do what the composer's button does for this selection (the same path as pressing Enter there).
+        ["generate"] = () => _composer.SubmitAsync(),
+        ["retry"] = () => _composer.SubmitAsync(),
+        ["stop"] = () => _composer.SubmitAsync(),
+        ["reuse"] = Node(node => _composer.Reuse(node)),
+        ["save-recipe"] = Do(_composer.SaveRecipe),
 
         ["view"] = Node(node => { if (node is { Kind: NodeKind.Image, HasContent: true }) ShowPreview(node); }),
 
@@ -111,7 +114,7 @@ public sealed partial class CanvasView
         ["duplicate"] = Do(Duplicate),
         ["rename"] = Node(RenameAsync),
         ["free-resize"] = Do(ToggleFreeResize),
-        ["clear-marks"] = Node(node => { ClearMarks(node); _panel.Refresh(); }),
+        ["clear-marks"] = Node(node => { ClearMarks(node); UpdateComposer(); }),
 
         ["delete"] = Do(DeleteSelection),
     };
