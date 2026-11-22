@@ -11,14 +11,17 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
+using Windows.ApplicationModel.DataTransfer;
 using Windows.System;
 
 namespace Tabula.App.Board;
 
 /// <summary>
-/// The composer: one glass box at the bottom of the canvas where every generation starts. The selected pictures and texts are its references (chips, pinnable, droppable),
-/// and it adapts to the selection — a new generation, a bound 配方 or empty node, or stop / retry — saying where the result will go. The prompt, model and parameters
-/// belong to the bound node, or to the canvas's draft when nothing is bound. The rules (mode, references, placement) live in <see cref="Composer"/>.
+/// Bottom floating pill bar with two distinct states:
+/// (1) Post-generation info view (图片信息框): selecting an existing finished picture/text/media shows its own origin (prompt, model, specs, wired sources)
+/// and offers 沿用设置 / 以此图生图 without confusing it with the canvas draft.
+/// (2) Pre-generation composer (生成参数框): selecting a 配方, empty/running/failed node, calling up with / or Enter, or clicking 以此图生图 / 沿用设置
+/// shows the unified 36-DIP pill composer for configuring and running the next generation.
 /// </summary>
 public sealed partial class ComposerPanel : UserControl
 {
@@ -26,56 +29,102 @@ public sealed partial class ComposerPanel : UserControl
     private readonly CanvasView _host;
     private ComposerState _state = new(ComposerMode.New, []);
     private List<CanvasNode> _refs = [];
+    private List<CanvasNode> _selectedNodes = [];
     /// <summary>The node the prompt and parameters are read from and written to: the bound node, else the canvas's draft.</summary>
     private CanvasNode? _node;
     private List<string> _models = [];
     private bool _loading;
     /// <summary>An IME is composing: Enter then confirms the candidate and must not generate.</summary>
     private bool _composing;
+    private bool _called;
+    /// <summary>User explicitly switched from an inspected finished node into the pre-generation composer.</summary>
+    private bool _manualCompose;
     private Panel _params = null!;
     /// <summary>Set while rebuilding the open flyout, so the 高级 section the user is working in stays expanded.</summary>
     private bool _keepAdvanced;
     private PromptLibraryFlyout? _library;
+    private ThemeShadow? _shadow;
+    private CanvasNode? _inspectSubject;
+
+    /// <summary>Raised when toggling between post-generation info view and pre-generation composer so the board updates 参考 N badges.</summary>
+    public event Action? ViewModeChanged;
+
+    private Border[] FixedCapsules =>
+    [
+        InspectPromptCapsule, InspectTitleCapsule, InspectSpecCapsule, InspectNotesCapsule, InspectReuseCapsule, InspectComposeCapsule,
+        HintCapsule, MarksCapsule, BackInfoCapsule, AddCapsule, TargetCapsule, PromptCapsule,
+        ModeCapsule, ModelCapsule, ParamsCapsule, LibraryCapsule, InfoCapsule, RecipeCapsule, EstimateCapsule, GenerateCapsule,
+    ];
 
     public ComposerPanel(CanvasView host)
     {
         InitializeComponent();
         _host = host;
-        // Keep composer interaction from starting canvas gestures underneath.
-        Shell.PointerPressed += (_, e) => e.Handled = true;
-        Shell.PointerReleased += (_, e) => e.Handled = true;
-        Shell.PointerMoved += (_, e) => e.Handled = true;
-        Shell.PointerWheelChanged += (_, e) => e.Handled = true;
-        Shell.DoubleTapped += (_, e) => e.Handled = true;
-        Shell.RightTapped += (_, e) => e.Handled = true;
+        foreach (var capsule in FixedCapsules) BlockCanvas(capsule);
+        ActualThemeChanged += (_, _) => { if (_node is not null) Refresh(); };
         Unloaded += (_, _) => { if (_node is not null) _node.PropertyChanged -= Node_PropertyChanged; };
+    }
+
+    private static void BlockCanvas(UIElement element)
+    {
+        // Keep interaction on each capsule from starting canvas gestures, while open gaps between capsules remain transparent to the board.
+        element.PointerPressed += (_, e) => e.Handled = true;
+        element.PointerReleased += (_, e) => e.Handled = true;
+        element.PointerMoved += (_, e) => e.Handled = true;
+        element.PointerWheelChanged += (_, e) => e.Handled = true;
+        element.DoubleTapped += (_, e) => e.Handled = true;
+        element.RightTapped += (_, e) => e.Handled = true;
     }
 
     public ComposerState State => _state;
     public IReadOnlyList<CanvasNode> References => _refs;
     public bool HasFocus => PromptBox.FocusState != FocusState.Unfocused;
+    public bool IsComposing { get; private set; }
     private static AppSettings Settings => SettingsStore.Current;
     private Capability Capability => _node is null ? Capability.Image : CanvasGenerator.CapabilityOf(_node);
     private bool New => _state.Mode == ComposerMode.New;
 
     /// <summary>The draft counts as something to save as a 配方 when nothing is bound and there is a prompt or a reference.</summary>
-    public bool CanSaveRecipe => _state.Mode is ComposerMode.New && _node is not null && (!string.IsNullOrWhiteSpace(_node.Prompt) || _refs.Count > 0);
+    public bool CanSaveRecipe => IsComposing && _state.Mode is ComposerMode.New && _node is not null && (!string.IsNullOrWhiteSpace(_node.Prompt) || _refs.Count > 0);
 
-    /// <summary>The width of the box in layout units: the canvas decides, from the room between its panels.</summary>
+    /// <summary>The width of the group in layout units: the canvas decides, from the room between its panels.</summary>
     public void SetWidth(double width) => Shell.Width = width;
 
-    /// <summary>Shadow goes on the rounded shell, not the control, so it follows the corners.</summary>
+    /// <summary>Shadow goes on each rounded capsule, not the outer container, so it follows each capsule's corners and lets LiquidGlass swap it out.</summary>
     public void CastShadowOn(UIElement receiver)
     {
-        var shadow = new ThemeShadow();
-        shadow.Receivers.Add(receiver);
-        Shell.Shadow = shadow;
-        Shell.Translation = new System.Numerics.Vector3(0, 0, 32);
+        _shadow = new ThemeShadow();
+        _shadow.Receivers.Add(receiver);
+        foreach (var capsule in FixedCapsules)
+            ApplyShadow(capsule, 24);
     }
 
-    /// <summary>The selection (or what it holds) changed: take the new mode and references. Binding to another node reloads the prompt and closes the flyouts.</summary>
-    public void Update(ComposerState state, IReadOnlyList<CanvasNode> references)
+    private void ApplyShadow(Border capsule, float elevation = 24)
     {
+        if (_shadow is null) return;
+        capsule.Shadow = _shadow;
+        capsule.Translation = new System.Numerics.Vector3(0, 0, elevation);
+    }
+
+    /// <summary>Whether the current selection is a single finished node whose post-generation info view can be returned to.</summary>
+    private bool CanInspect => New && _selectedNodes.Count == 1 && (_selectedNodes[0].HasContent || _selectedNodes[0].Kind == NodeKind.Group);
+
+    private bool ShouldCompose()
+    {
+        if (!New) return true; // Recipe, empty Fill, Stop, Retry always use the pre-generation composer.
+        if (_called || _manualCompose || HasFocus) return true;
+        if (_selectedNodes.Count == 0) return true;
+        if (_selectedNodes.Count == 1) return !_selectedNodes[0].HasContent && _selectedNodes[0].Kind != NodeKind.Group;
+        // Multi-selection with usable references enters the pre-generation composer directly.
+        return _refs.Count > 0;
+    }
+
+    /// <summary>The selection (or what it holds) changed: take the new mode and references. Switching selection returns to info view for finished pictures.</summary>
+    public void Update(ComposerState state, IReadOnlyList<CanvasNode> references, IReadOnlyList<CanvasNode>? selectedNodes = null, bool called = false, bool selectionChanged = false)
+    {
+        if (selectionChanged) _manualCompose = false;
+        _called = called;
+        _selectedNodes = selectedNodes is not null ? [.. selectedNodes] : [];
         var node = state.Bound ?? Composer.DraftOf(_host.Doc);
         _state = state;
         _refs = [.. references];
@@ -104,14 +153,12 @@ public sealed partial class ComposerPanel : UserControl
         if (e.PropertyName is nameof(CanvasNode.Model) or nameof(CanvasNode.Mode) or nameof(CanvasNode.Count)
             or nameof(CanvasNode.Size) or nameof(CanvasNode.Ratio) or nameof(CanvasNode.Quality) or nameof(CanvasNode.Options))
         {
-            // External changes must not leave an open parameter editor bound to an old model or value.
             ParamsFlyout.Hide();
             Refresh();
             return;
         }
         if (e.PropertyName != nameof(CanvasNode.Prompt)) return;
         var text = NodeView.BoxText(_node.Prompt);
-        // Local typing already matches; only external edits replace the text, without moving the caret unnecessarily.
         if (PromptBox.Text == text) return;
         var start = Math.Min(PromptBox.SelectionStart, text.Length);
         var length = Math.Min(PromptBox.SelectionLength, text.Length - start);
@@ -126,32 +173,221 @@ public sealed partial class ComposerPanel : UserControl
     {
         if (_node is null) return;
         _loading = true;
-        var capability = Capability;
-        _node.Model = Settings.ModelFor(capability, _node.Model);
-        _models = Settings.ModelsFor(capability).ToList();
-        ModelBox.ItemsSource = _models.Select(Settings.Label).ToList();
-        ModelBox.SelectedIndex = _models.IndexOf(_node.Model);
-        // A bound empty node takes its output kind from itself; everything else lets the user pick it.
-        ModeBar.Visibility = _state.Mode == ComposerMode.Fill ? Visibility.Collapsed : Visibility.Visible;
-        ModeBar.SelectedItem = ModeBar.Items.FirstOrDefault(item => (string)item.Tag == _node.Mode.ToString());
-        PromptBox.PlaceholderText = _state.Mode switch
+        var composing = ShouldCompose();
+        var modeChanged = composing != IsComposing;
+        IsComposing = composing;
+        InspectView.Visibility = composing ? Visibility.Collapsed : Visibility.Visible;
+        ComposeView.Visibility = composing ? Visibility.Visible : Visibility.Collapsed;
+
+        if (!composing)
         {
-            ComposerMode.Recipe => "写下这个配方的提示词，Enter 运行配方，Shift+Enter 换行",
-            ComposerMode.Fill => "描述想要生成到这个节点里的内容，Enter 生成，Shift+Enter 换行",
-            _ when capability == Capability.Audio => "输入要朗读的文字，Enter 生成，Shift+Enter 换行",
-            _ when capability == Capability.Text => "输入要让模型完成的任务，Enter 生成，Shift+Enter 换行",
-            _ when _refs.Count > 0 => "描述要怎么用这些参考，例如：把她的外套换成红色，Enter 生成",
-            _ => "描述想要生成的画面，选中画布上的图片或文本可作为参考，Enter 生成",
-        };
-        ShowReferences();
-        ShowInfo();
-        ParamsText.Text = ParamsSummary();
-        ShowEstimate();
-        ShowButtons();
+            ShowInspect();
+        }
+        else
+        {
+            var capability = Capability;
+            _node.Model = Settings.ModelFor(capability, _node.Model);
+            _models = Settings.ModelsFor(capability).ToList();
+            ModelBox.ItemsSource = _models.Select(Settings.Label).ToList();
+            ModelBox.SelectedIndex = _models.IndexOf(_node.Model);
+            ModeCapsule.Visibility = _state.Mode == ComposerMode.Fill ? Visibility.Collapsed : Visibility.Visible;
+            UpdateModeButtons(_node.Mode);
+            PromptBox.PlaceholderText = _state.Mode switch
+            {
+                ComposerMode.Recipe => "写下这个配方的提示词，Enter 运行配方，Shift+Enter 换行",
+                ComposerMode.Fill => "描述想要生成到这个节点里的内容，Enter 生成，Shift+Enter 换行",
+                _ when capability == Capability.Audio => "输入要朗读的文字，Enter 生成，Shift+Enter 换行",
+                _ when capability == Capability.Text => "输入要让模型完成的任务，Enter 生成，Shift+Enter 换行",
+                _ when _refs.Count > 0 => "描述要怎么用这些参考，例如：把她的外套换成红色，Enter 生成",
+                _ => "描述想要生成的画面，选中画布上的图片或文本可作为参考，Enter 生成",
+            };
+            ShowReferences();
+            ShowInfo();
+            ParamsText.Text = ParamsSummary();
+            ShowEstimate();
+            ShowButtons();
+        }
         _loading = false;
+        if (modeChanged) ViewModeChanged?.Invoke();
     }
 
-    // ---------- References ----------
+    // ---------- Post-generation info view (图片信息框) ----------
+
+    private void ShowInspect()
+    {
+        InspectRefsRow.Children.Clear();
+        InspectRefsRow.Visibility = Visibility.Collapsed;
+        InspectPromptCapsule.Visibility = Visibility.Collapsed;
+        InspectSpecCapsule.Visibility = Visibility.Collapsed;
+        InspectNotesCapsule.Visibility = Visibility.Collapsed;
+        InspectReuseCapsule.Visibility = Visibility.Collapsed;
+        InspectComposeCapsule.Visibility = Visibility.Collapsed;
+        _inspectSubject = null;
+
+        if (_selectedNodes.Count >= 2)
+        {
+            InspectKindIcon.Glyph = "\uE762";
+            InspectKindIcon.Foreground = new SolidColorBrush(Palette.Kind(NodeKind.Image, ActualTheme));
+            InspectPrimaryText.Text = $"已选 {_selectedNodes.Count} 个节点";
+            var refCount = _refs.Count;
+            InspectSpecText.Text = refCount > 0 ? $"其中 {refCount} 项可作参考" : "未包含图片或文本参考";
+            InspectSpecCapsule.Visibility = Visibility.Visible;
+            if (refCount > 0)
+            {
+                InspectComposeText.Text = $"作为参考生成 ({refCount})";
+                AutomationProperties.SetName(InspectComposeButton, "作为参考生成");
+                InspectComposeCapsule.Visibility = Visibility.Visible;
+            }
+            return;
+        }
+
+        var subject = _selectedNodes.FirstOrDefault() ?? _host.Subject();
+        if (subject is null) return;
+        _inspectSubject = subject;
+        InspectKindIcon.Glyph = subject.Kind switch
+        {
+            NodeKind.Image => "\uEB9F",
+            NodeKind.Video => "\uE714",
+            NodeKind.Audio => "\uE8D6",
+            NodeKind.Text => "\uE8D2",
+            NodeKind.Group => "\uE8B7",
+            _ => "\uE945",
+        };
+        InspectKindIcon.Foreground = new SolidColorBrush(Palette.Kind(subject.Kind, ActualTheme));
+
+        var origin = Composer.OriginOf(_host.Doc, subject);
+        if (origin is not null)
+        {
+            // AI-generated output: show its real model, specs, original prompt, wired references, and notes.
+            InspectPrimaryText.Text = !string.IsNullOrWhiteSpace(origin.Model) ? Settings.Label(origin.Model) : Stacks.OwnTitle(subject);
+            var specs = new List<string>();
+            if (subject.Kind == NodeKind.Image)
+            {
+                if (origin.Size is { Length: > 0 } size && size != "auto") specs.Add(size);
+                if (origin.Ratio is { Length: > 0 } ratio && ratio != "auto") specs.Add(ratio);
+                if (origin.Quality is { Length: > 0 } quality && quality != "auto") specs.Add(quality);
+                if (subject.NaturalWidth > 0 && subject.NaturalHeight > 0) specs.Add($"{subject.NaturalWidth}×{subject.NaturalHeight}");
+                if (subject.Content is { Length: > 0 } file && Path.GetExtension(file) is { Length: > 1 } ext) specs.Add(ext[1..].ToUpperInvariant());
+            }
+            else if (subject.Kind == NodeKind.Text && subject.Content is { Length: > 0 } txt) specs.Add($"{txt.Length} 字");
+            if (specs.Count > 0)
+            {
+                InspectSpecText.Text = string.Join(" · ", specs);
+                InspectSpecCapsule.Visibility = Visibility.Visible;
+            }
+            if (!string.IsNullOrWhiteSpace(origin.Prompt))
+            {
+                InspectPromptText.Text = origin.Prompt.Trim();
+                InspectPromptCapsule.Visibility = Visibility.Visible;
+            }
+            var wired = Composer.Wired(_host.Doc, subject);
+            if (wired.Count == 0 && origin != subject) wired = Composer.Wired(_host.Doc, origin);
+            if (wired.Count > 0)
+            {
+                for (var i = 0; i < wired.Count; i++) InspectRefsRow.Children.Add(Chip(wired[i], i + 1, editable: false, prefix: "原参考"));
+                InspectRefsRow.Visibility = Visibility.Visible;
+            }
+            InspectReuseCapsule.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            // Locally imported file, plain typed note, or group: compact factual metadata only.
+            InspectPrimaryText.Text = Stacks.OwnTitle(subject);
+            var specs = new List<string>();
+            if (subject.Kind == NodeKind.Image)
+            {
+                if (subject.NaturalWidth > 0 && subject.NaturalHeight > 0) specs.Add($"{subject.NaturalWidth}×{subject.NaturalHeight}");
+                if (subject.Content is { Length: > 0 } file) specs.Add(Media.IsSvg(file) ? "SVG 矢量" : Path.GetExtension(file).TrimStart('.').ToUpperInvariant());
+                specs.Add("本地导入");
+            }
+            else if (subject.Kind == NodeKind.Text) specs.Add($"{(subject.Content ?? "").Length} 字");
+            else if (subject.Kind == NodeKind.Group) specs.Add($"{CanvasGraph.GroupMembers(_host.Doc, subject.Id).Count()} 个节点");
+            else if (subject.Content is { Length: > 0 } file) specs.Add(Path.GetExtension(file).TrimStart('.').ToUpperInvariant());
+            if (specs.Count > 0)
+            {
+                InspectSpecText.Text = string.Join(" · ", specs.Where(s => s.Length > 0));
+                InspectSpecCapsule.Visibility = Visibility.Visible;
+            }
+        }
+
+        // Model notes / recognised text on the inspected node.
+        var notes = new[] { (Label: "模型说明", Text: subject.Option(NodeKeys.ModelText)), (Label: "识别文字", Text: NodeKeys.RecognizedText(subject)), (Label: "参考图", Text: subject.Option(NodeKeys.InputNote)) }.Where(n => n.Text.Length > 0).ToList();
+        var info = string.Join("\n", notes.Select(n => $"{n.Label}：{n.Text}"));
+        InspectNotesCapsule.Visibility = notes.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        ToolTipService.SetToolTip(InspectNotesButton, info.Length > 0 ? info : null);
+        InspectNotesButton.Flyout = notes.Count > 0 ? new Flyout { Content = new TextBlock { Text = info, TextWrapping = TextWrapping.Wrap, MaxWidth = 380, IsTextSelectionEnabled = true } } : null;
+
+        if (_refs.Count > 0 || subject.Kind == NodeKind.Group)
+        {
+            InspectComposeText.Text = subject.Kind == NodeKind.Image ? "以此图生图" : "作为参考生成";
+            AutomationProperties.SetName(InspectComposeButton, InspectComposeText.Text);
+            InspectComposeCapsule.Visibility = _refs.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        }
+    }
+
+    private void CopyPrompt_Click(object sender, RoutedEventArgs e)
+    {
+        if (string.IsNullOrEmpty(InspectPromptText.Text)) return;
+        var pkg = new DataPackage();
+        pkg.SetText(InspectPromptText.Text);
+        Clipboard.SetContent(pkg);
+        CopyPromptIcon.Glyph = "\uE73E";
+        _ = ResetCopyIconAsync();
+    }
+
+    private async Task ResetCopyIconAsync()
+    {
+        await Task.Delay(1200);
+        CopyPromptIcon.Glyph = "\uE8C8";
+    }
+
+    private void StartCompose_Click(object sender, RoutedEventArgs e)
+    {
+        _manualCompose = true;
+        Refresh();
+        FocusPrompt();
+    }
+
+    private void BackToInfo_Click(object sender, RoutedEventArgs e)
+    {
+        _manualCompose = false;
+        _called = false;
+        Refresh();
+    }
+
+    private void InspectReuse_Click(object sender, RoutedEventArgs e)
+    {
+        if (_inspectSubject is null || Composer.OriginOf(_host.Doc, _inspectSubject) is not { } origin) return;
+        Composer.Reuse(Composer.DraftOf(_host.Doc), origin);
+        _host.DraftChanged(true);
+        _manualCompose = true;
+        if (_state.Bound is null) ShowPrompt();
+        Refresh();
+        FocusPrompt();
+    }
+
+    // ---------- Pre-generation composer (生成参数框) ----------
+
+    private void UpdateModeButtons(Capability current)
+    {
+        var activeBrush = (Brush)Application.Current.Resources["SubtleFillColorSecondaryBrush"];
+        foreach (var (button, cap) in new[] { (ModeImageButton, Capability.Image), (ModeTextButton, Capability.Text), (ModeAudioButton, Capability.Audio) })
+        {
+            var selected = cap == current;
+            if (selected) button.Background = activeBrush;
+            else button.ClearValue(BackgroundProperty);
+            if (button.Content is StackPanel panel && panel.Children.OfType<TextBlock>().FirstOrDefault() is { } text)
+                text.FontWeight = selected ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Normal;
+        }
+    }
+
+    private void ModeButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_loading || _node is null || sender is not Button { Tag: string tag } || tag == _node.Mode.ToString()) return;
+        var (node, mode) = (_node, Enum.Parse<Capability>(tag));
+        SetParameter(() => node.Mode = mode);
+        Refresh();
+    }
 
     private string? Problem()
     {
@@ -163,44 +399,60 @@ public sealed partial class ComposerPanel : UserControl
 
     private void ShowReferences()
     {
+        RefChips.Children.Remove(BackInfoCapsule);
+        RefChips.Children.Remove(AddCapsule);
+        RefChips.Children.Remove(TargetCapsule);
         RefChips.Children.Clear();
-        // A 配方 or an empty node shows what is wired into it (read only: the wires are its history); a new generation shows the live references.
+
+        BackInfoCapsule.Visibility = CanInspect && _manualCompose ? Visibility.Visible : Visibility.Collapsed;
+        if (BackInfoCapsule.Visibility == Visibility.Visible) RefChips.Children.Add(BackInfoCapsule);
+
         var shown = New ? _refs : _state.Bound is { } bound ? Composer.Wired(_host.Doc, bound) : [];
         for (var i = 0; i < shown.Count; i++) RefChips.Children.Add(Chip(shown[i], i + 1, New));
-        AddButton.Visibility = New ? Visibility.Visible : Visibility.Collapsed;
+        AddCapsule.Visibility = New ? Visibility.Visible : Visibility.Collapsed;
         TargetText.Text = _state.Mode switch
         {
-            ComposerMode.Recipe => $"结果放在配方右边",
+            ComposerMode.Recipe => "结果放在配方右边",
             ComposerMode.Fill => $"生成到「{_state.Bound!.Title}」",
             ComposerMode.Stop => $"{_state.Nodes.Count} 个正在生成",
             ComposerMode.Retry => $"{_state.Nodes.Count} 个失败，可重试",
             _ => _refs.Count > 0 ? "结果放在参考右边" : "结果放在视图中央",
         };
-        if (New && _refs.Count == 0) RefChips.Children.Add(new TextBlock { Text = "选中图片或文本即作为参考", VerticalAlignment = VerticalAlignment.Center, Style = (Style)Application.Current.Resources["SecondaryCaption"] });
+        RefChips.Children.Add(AddCapsule);
+        RefChips.Children.Add(TargetCapsule);
     }
 
-    /// <summary>One reference: its picture (or a text mark), 参考 N and its title, then pin and drop buttons when it can be changed.</summary>
-    private UIElement Chip(CanvasNode node, int number, bool editable)
+    /// <summary>One reference as a unified Height=36, CornerRadius=18 floating glass pill.</summary>
+    private UIElement Chip(CanvasNode node, int number, bool editable, string prefix = "参考")
     {
         UIElement thumb;
-        if (node.Kind == NodeKind.Image)
+        if (node.Kind == NodeKind.Image && node.HasContent)
         {
             var path = ProjectStore.AssetPath(_host.Doc.Id, node.Content!);
             var source = Media.IsSvg(path) ? new SvgImageSource(new Uri(path)) : (ImageSource)new BitmapImage { DecodePixelWidth = 48, UriSource = new Uri(path) };
-            thumb = new Border { Width = 22, Height = 22, CornerRadius = new(4), Child = new Image { Stretch = Stretch.UniformToFill, Source = source } };
+            thumb = new Border { Width = 24, Height = 24, CornerRadius = new(12), Child = new Image { Stretch = Stretch.UniformToFill, Source = source } };
         }
-        else thumb = new Border { Width = 22, Height = 22, CornerRadius = new(4), Background = new SolidColorBrush(Palette.Kind(NodeKind.Text, ActualTheme)), Child = new FontIcon { Glyph = "", FontSize = 12, Foreground = new SolidColorBrush(Microsoft.UI.Colors.White) } };
-        var label = new TextBlock { Text = $"参考 {number} · {Stacks.OwnTitle(node)}", FontSize = 12, VerticalAlignment = VerticalAlignment.Center, MaxWidth = 140, TextTrimming = TextTrimming.CharacterEllipsis };
-        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, Children = { thumb, label } };
+        else thumb = new Border { Width = 24, Height = 24, CornerRadius = new(12), Background = new SolidColorBrush(Palette.Kind(NodeKind.Text, ActualTheme)), Child = new FontIcon { Glyph = "\uE8D2", FontSize = 12, Foreground = new SolidColorBrush(Microsoft.UI.Colors.White) } };
+        var label = new TextBlock { Text = $"{prefix} {number} · {Stacks.OwnTitle(node)}", FontSize = 13, VerticalAlignment = VerticalAlignment.Center, MaxWidth = 152, TextTrimming = TextTrimming.CharacterEllipsis };
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center, Children = { thumb, label } };
         if (editable)
         {
             var pinned = _host.IsPinned(node);
-            row.Children.Add(ChipButton("", pinned ? $"取消固定参考 {number}" : $"固定参考 {number}", pinned ? "取消固定：选中其他节点时不再保留它" : "固定为参考：选中其他节点时也保留它", () => _host.TogglePin(node), pinned));
-            row.Children.Add(ChipButton("", $"移除参考 {number}", "不作为这次的参考（节点仍保持选中）", () => _host.DropReference(node), false));
+            row.Children.Add(ChipButton("\uE718", pinned ? $"取消固定参考 {number}" : $"固定参考 {number}", pinned ? "取消固定：选中其他节点时不再保留它" : "固定为参考：选中其他节点时也保留它", () => _host.TogglePin(node), pinned));
+            row.Children.Add(ChipButton("\uE711", $"移除参考 {number}", "不作为这次的参考（节点仍保持选中）", () => _host.DropReference(node), false));
         }
-        var chip = new Border { Style = (Style)Application.Current.Resources["GlassChip"], Padding = new(3, 2, editable ? 2 : 8, 2), Child = row };
+        var chip = new Border
+        {
+            Style = (Style)Application.Current.Resources["GlassCapsule"],
+            Height = 36,
+            CornerRadius = new(18),
+            Padding = new(6, 0, editable ? 4 : 12, 0),
+            Child = row,
+        };
+        BlockCanvas(chip);
+        ApplyShadow(chip, 24);
         ToolTipService.SetToolTip(chip, Stacks.OwnTitle(node));
-        AutomationProperties.SetName(chip, $"参考 {number}：{Stacks.OwnTitle(node)}");
+        AutomationProperties.SetName(chip, $"{prefix} {number}：{Stacks.OwnTitle(node)}");
         return chip;
     }
 
@@ -208,8 +460,8 @@ public sealed partial class ComposerPanel : UserControl
     {
         var button = new Button
         {
-            Style = (Style)Application.Current.Resources["ToolbarButton"], Padding = new(0), MinHeight = 0, MinWidth = 0, Width = 22, Height = 22,
-            Content = new FontIcon { Glyph = glyph, FontSize = 11 },
+            Style = (Style)Application.Current.Resources["ToolbarButton"], Padding = new(0), MinHeight = 0, MinWidth = 0, Width = 26, Height = 26, CornerRadius = new(13),
+            Content = new FontIcon { Glyph = glyph, FontSize = 12 },
         };
         if (active) ((FontIcon)button.Content).Foreground = (Brush)Application.Current.Resources["AccentTextFillColorPrimaryBrush"];
         AutomationProperties.SetName(button, name);
@@ -221,20 +473,20 @@ public sealed partial class ComposerPanel : UserControl
     private void AddMenu_Opening(object? sender, object e)
     {
         AddMenu.Items.Clear();
-        var library = new MenuFlyoutItem { Text = "从资料库选…", Icon = new FontIcon { Glyph = "" } };
+        var library = new MenuFlyoutItem { Text = "从资料库选…", Icon = new FontIcon { Glyph = "\uE8F1" } };
         library.Click += (_, _) => _host.RequestLibrary();
-        var import = new MenuFlyoutItem { Text = "导入文件…", Icon = new FontIcon { Glyph = "" } };
+        var import = new MenuFlyoutItem { Text = "导入文件…", Icon = new FontIcon { Glyph = "\uE8E5" } };
         import.Click += async (_, _) => await _host.RunAsync("import");
         AddMenu.Items.Add(library);
         AddMenu.Items.Add(import);
     }
 
-    /// <summary>The marks left by local editing on the first picture (with the way to clear them), and the notes the selected node carries (model text, recognised text, reference note).</summary>
+    /// <summary>Missing-key hints, local-edit marks, and model notes in the pre-generation composer.</summary>
     private void ShowInfo()
     {
         var hint = Problem();
         HintText.Text = hint ?? "";
-        HintRow.Visibility = hint is null ? Visibility.Collapsed : Visibility.Visible;
+        HintCapsule.Visibility = hint is null ? Visibility.Collapsed : Visibility.Visible;
         ToolTipService.SetToolTip(HintText, hint);
         var first = New ? _refs.FirstOrDefault(r => r.Kind == NodeKind.Image) : null;
         var parts = new List<string>();
@@ -244,15 +496,14 @@ public sealed partial class ComposerPanel : UserControl
             if (first.Option(NodeKeys.Markup).Length > 0) parts.Add("画圈标注");
             if (NodeKeys.SelectionsOf(first).Count is > 0 and var count) parts.Add($"{count} 处位置");
         }
-        MarksRow.Visibility = parts.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        MarksCapsule.Visibility = parts.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         MarksText.Text = parts.Count > 0 ? $"已标注 · {Stacks.OwnTitle(first!)} · " + string.Join(" · ", parts) : "";
-        InfoRow.Visibility = HintRow.Visibility == Visibility.Visible || MarksRow.Visibility == Visibility.Visible ? Visibility.Visible : Visibility.Collapsed;
+        InfoRow.Visibility = HintCapsule.Visibility == Visibility.Visible || MarksCapsule.Visibility == Visibility.Visible ? Visibility.Visible : Visibility.Collapsed;
 
         var subject = _host.Subject();
         var notes = subject is null ? [] : new[] { (Label: "模型说明", Text: subject.Option(NodeKeys.ModelText)), (Label: "识别文字", Text: NodeKeys.RecognizedText(subject)), (Label: "参考图", Text: subject.Option(NodeKeys.InputNote)) }.Where(n => n.Text.Length > 0).ToList();
-        // Model notes, recognised text and the reference note sit behind the info icon.
         var info = string.Join("\n", notes.Select(n => $"{n.Label}：{n.Text}"));
-        InfoButton.Visibility = notes.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        InfoCapsule.Visibility = notes.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         ToolTipService.SetToolTip(InfoButton, info.Length > 0 ? info : null);
         AutomationProperties.SetHelpText(InfoButton, info);
         InfoButton.Flyout = notes.Count > 0 ? new Flyout { Content = new TextBlock { Text = info, TextWrapping = TextWrapping.Wrap, MaxWidth = 380, IsTextSelectionEnabled = true } } : null;
@@ -264,18 +515,19 @@ public sealed partial class ComposerPanel : UserControl
         if (_node is null) return;
         var (text, glyph) = _state.Mode switch
         {
-            ComposerMode.Stop => ("停止", ""),
-            ComposerMode.Retry => ("重试", ""),
-            ComposerMode.Recipe => ("运行配方", ""),
-            _ => ("生成", ""),
+            ComposerMode.Stop => ("停止", "\uE71A"),
+            ComposerMode.Retry => ("重试", "\uE72C"),
+            ComposerMode.Recipe => ("运行配方", "\uE768"),
+            _ => ("生成", "\uE768"),
         };
         GenerateText.Text = text;
         GenerateIcon.Glyph = glyph;
         AutomationProperties.SetName(GenerateButton, text);
         var hasInput = !string.IsNullOrWhiteSpace(_node.Prompt) || (_state.Bound is { } bound ? Composer.Wired(_host.Doc, bound).Count > 0 : _refs.Count > 0);
         GenerateButton.IsEnabled = _state.Mode is ComposerMode.Stop or ComposerMode.Retry || hasInput && Problem() is null;
+        GenerateCapsule.Opacity = GenerateButton.IsEnabled ? 1 : 0.55;
         ToolTipService.SetToolTip(GenerateButton, Problem() is { } problem && _state.Mode is not (ComposerMode.Stop or ComposerMode.Retry) ? problem : $"{text}（Enter 或 Ctrl+Enter）");
-        RecipeButton.Visibility = New ? Visibility.Visible : Visibility.Collapsed;
+        RecipeCapsule.Visibility = New ? Visibility.Visible : Visibility.Collapsed;
         RecipeButton.IsEnabled = CanSaveRecipe;
     }
 
@@ -284,20 +536,19 @@ public sealed partial class ComposerPanel : UserControl
     {
         var resolved = Settings.Resolve(_node!.Model);
         var show = Capability == Capability.Image && resolved is not null && _state.Mode is not (ComposerMode.Stop or ComposerMode.Retry);
-        EstimateText.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+        EstimateCapsule.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
         if (!show) return;
         var references = (New ? _refs : _state.Bound is { } bound ? Composer.Wired(_host.Doc, bound) : []).Count(r => r.Kind == NodeKind.Image);
         const string Caveat = "按官方价格或上次同样设置的实际用量估算，仅供参考：不含思考 token、免费额度和优惠";
-        // Beside the generate button only the amount fits; the basis and the caveat are in the tooltip.
         if (Prices.EstimateImage(resolved!.Value.Channel, resolved.Value.Model.Name, _node, references) is { } estimate)
         {
             EstimateText.Text = $"≈ {Prices.Money(estimate.Amount, estimate.Currency)}";
-            ToolTipService.SetToolTip(EstimateText, $"预计花费 ≈ {estimate.Text}\n{Caveat}");
+            ToolTipService.SetToolTip(EstimateCapsule, $"预计花费 ≈ {estimate.Text}\n{Caveat}");
         }
         else
         {
             EstimateText.Text = "预计花费 —";
-            ToolTipService.SetToolTip(EstimateText, $"预计花费：这个模型和设置还没有官方单价，生成一次后按实际用量估算\n{Caveat}");
+            ToolTipService.SetToolTip(EstimateCapsule, $"预计花费：这个模型和设置还没有官方单价，生成一次后按实际用量估算\n{Caveat}");
         }
     }
 
@@ -320,7 +571,6 @@ public sealed partial class ComposerPanel : UserControl
             {
                 foreach (var value in new[] { image.Tiers.Contains(node.Size) ? node.Size : image.Tiers.FirstOrDefault(), image.Ratios.Contains(node.Ratio) ? node.Ratio : image.Ratios.FirstOrDefault() })
                     if (value is { Length: > 0 } && value != "auto") parts.Add(value);
-                // Animated and vector output change what comes back, so they show on the button too.
                 if (node.Option("outputFormat") is "gif" or "svg" && image.OutputFormats.Contains(node.Option("outputFormat"))) parts.Add(node.Option("outputFormat").ToUpperInvariant());
             }
         }
@@ -334,19 +584,9 @@ public sealed partial class ComposerPanel : UserControl
         Refresh();
     }
 
-    private void ModeBar_SelectionChanged(SelectorBar sender, SelectorBarSelectionChangedEventArgs args)
-    {
-        if (_loading || _node is null || sender.SelectedItem?.Tag is not string tag || tag == _node.Mode.ToString()) return;
-        var (node, mode) = (_node, Enum.Parse<Capability>(tag));
-        SetParameter(() => node.Mode = mode);
-        Update(_state, _refs);
-    }
-
     private void PromptBox_TextChanged(object sender, TextChangedEventArgs e)
     {
-        // TextChanged arrives after the prompt was loaded, so only real edits are written.
         if (_loading || _node is null || PromptBox.Text == NodeView.BoxText(_node.Prompt)) return;
-        // A bound node's prompt is part of the canvas (one undo point per typing run); the draft is not.
         if (_state.Bound is not null) _host.History.Record($"{_node.Id}/prompt");
         _node.Prompt = PromptBox.Text.Replace('\r', '\n');
         _host.DraftChanged(_state.Bound is null);
@@ -356,12 +596,10 @@ public sealed partial class ComposerPanel : UserControl
 
     private void PromptBox_CompositionStarted(TextBox sender, TextCompositionStartedEventArgs args) => _composing = true;
 
-    // The key that confirms the candidate arrives after the composition ends: clear the flag only once this key has been handled.
     private void PromptBox_CompositionEnded(TextBox sender, TextCompositionEndedEventArgs args) => DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () => _composing = false);
 
     private void PromptBox_PreviewKeyDown(object sender, KeyRoutedEventArgs e)
     {
-        // Esc hands the keyboard back to the canvas; the canvas then goes back one more level (the selection) on the next Esc.
         if (e.Key == VirtualKey.Escape)
         {
             e.Handled = true;
@@ -372,15 +610,18 @@ public sealed partial class ComposerPanel : UserControl
         var down = Windows.UI.Core.CoreVirtualKeyStates.Down;
         var shift = Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Shift).HasFlag(down);
         var ctrl = Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Control).HasFlag(down);
-        // Shift+Enter is a new line (the box inserts it); Enter and Ctrl+Enter generate.
         if (shift && !ctrl) return;
         e.Handled = true;
-        // Holding the keys auto-repeats KeyDown; only the first press acts.
         if (!e.KeyStatus.WasKeyDown) _ = SubmitAsync();
     }
 
     public void FocusPrompt()
     {
+        if (!IsComposing)
+        {
+            _manualCompose = true;
+            Refresh();
+        }
         PromptBox.UpdateLayout();
         PromptBox.Focus(FocusState.Keyboard);
         PromptBox.SelectionStart = PromptBox.Text.Length;
@@ -401,6 +642,7 @@ public sealed partial class ComposerPanel : UserControl
     public async Task SubmitAsync()
     {
         if (_node is null || _host.IsClosing) return;
+        if (!IsComposing) { FocusPrompt(); return; }
         var generator = _host.Generator;
         switch (_state.Mode)
         {
@@ -408,7 +650,6 @@ public sealed partial class ComposerPanel : UserControl
                 foreach (var node in _state.Nodes.ToList()) generator.Cancel(node.Id);
                 break;
             case ComposerMode.Retry:
-                // Failed outputs retry through the node that made them, which runs one request at a time: those of one source go one after the other, different sources side by side.
                 var doc = _host.Doc;
                 await Task.WhenAll(_state.Nodes.ToList().GroupBy(node => CanvasGenerator.RetrySource(doc, node)?.Id ?? node.Id)
                     .Select(async group => { foreach (var node in group) await generator.GenerateAsync(node); }));
@@ -429,7 +670,7 @@ public sealed partial class ComposerPanel : UserControl
         if (Composer.ReuseSource(_host.Doc, node) is not { } source) return;
         Composer.Reuse(Composer.DraftOf(_host.Doc), source);
         _host.DraftChanged(true);
-        // A bound composer keeps showing its node; the draft is what the next new generation uses.
+        _manualCompose = true;
         if (_state.Bound is null) ShowPrompt();
         Refresh();
         FocusPrompt();
@@ -443,10 +684,10 @@ public sealed partial class ComposerPanel : UserControl
         _host.SaveRecipeFromComposer(_node, _refs);
     }
 
-    /// <summary>The flyout hangs off the whole composer so it never covers the prompt.</summary>
-    private void Params_Click(object sender, RoutedEventArgs e) => FlyoutBase.ShowAttachedFlyout(Shell);
+    /// <summary>The flyout hangs off the prompt capsule so it opens above the input and never covers what the user is typing.</summary>
+    private void Params_Click(object sender, RoutedEventArgs e) => FlyoutBase.ShowAttachedFlyout(PromptCapsule);
 
-    private void PromptLibrary_Click(object sender, RoutedEventArgs e) => (_library ??= new PromptLibraryFlyout(() => PromptBox.Text, UsePrompt)).ShowAt(Shell);
+    private void PromptLibrary_Click(object sender, RoutedEventArgs e) => (_library ??= new PromptLibraryFlyout(() => PromptBox.Text, UsePrompt)).ShowAt(PromptCapsule);
 
     /// <summary>A library prompt replaces the selected text, or goes after what is already written; the edit is one undo step like typing.</summary>
     private void UsePrompt(string text)

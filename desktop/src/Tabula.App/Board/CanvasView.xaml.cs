@@ -127,6 +127,7 @@ public sealed partial class CanvasView : UserControl
         _commands.Rebuilt += () => PositionPanel();
         Motion.ShowHide(_bar, 0.5f, 1);
         _composer.SizeChanged += (_, _) => { PositionPanel(_roomPending); _roomPending = false; };
+        _composer.ViewModeChanged += () => { RefreshRefTags(); PositionPanel(); };
         Motion.ShowHide(_composer, 0.5f, 1);
         Motion.ShowHide(EmptyHint);
         // Text boxes and media controls inside nodes swallow pointer presses; still select the node they belong to.
@@ -669,15 +670,22 @@ public sealed partial class CanvasView : UserControl
         if (_gesture == Gesture.Box) { PositionPanel(); return; }
         var state = Composer.StateOf(Doc, _selected, id => Generator?.IsRunning(id) == true, CanGenerate);
         var ids = _order.Where(_selected.Contains).Concat(Doc.Nodes.Select(n => n.Id).Where(id => _selected.Contains(id) && !_order.Contains(id))).ToList();
+        var selectedNodes = ids.Select(id => Doc.Find(id)).OfType<CanvasNode>().Where(n => !Stacks.Hidden(Doc).Contains(n)).ToList();
         _dropped.IntersectWith(Composer.References(Doc, ids, Doc.Pins, []).Select(n => n.Id));
         var references = state.Mode == ComposerMode.New ? Composer.References(Doc, ids, Doc.Pins, _dropped) : [];
-        _composer.Update(state, references);
-        _refTags = references.Select((node, i) => (node.Id, Number: i + 1)).ToDictionary(pair => pair.Id, pair => pair.Number);
-        foreach (var (id, view) in _views) view.RefIndex = _refTags.GetValueOrDefault(id);
+        _composer.Update(state, references, selectedNodes, _called, selectionChanged);
+        RefreshRefTags();
         var show = _selected.Count > 0 || _called || _composer.HasFocus;
         _composer.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
         if (show && selectionChanged) AskForRoom();
         PositionPanel(show && selectionChanged);
+    }
+
+    private void RefreshRefTags()
+    {
+        var active = _composer.IsComposing ? _composer.References : [];
+        _refTags = active.Select((node, i) => (node.Id, Number: i + 1)).ToDictionary(pair => pair.Id, pair => pair.Number);
+        foreach (var (id, view) in _views) view.RefIndex = _refTags.GetValueOrDefault(id);
     }
 
     private bool _roomPending;

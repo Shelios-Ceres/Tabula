@@ -84,6 +84,18 @@ public static class Composer
         return node.Option(NodeKeys.SourceId) is { Length: > 0 } id && doc.Find(id) is { } source && !string.IsNullOrWhiteSpace(source.Prompt) ? source : null;
     }
 
+    /// <summary>
+    /// Where a finished node came from, for the composer's origin capsule: prefers <see cref="ReuseSource"/>, and falls back to a generated node
+    /// (or its source) that recorded a model without a prompt (for example an image edit with no text). Null for imported files or plain notes.
+    /// </summary>
+    public static CanvasNode? OriginOf(CanvasDocument doc, CanvasNode node)
+    {
+        if (!node.HasContent || node.Kind is not (NodeKind.Image or NodeKind.Text or NodeKind.Audio)) return null;
+        if (ReuseSource(doc, node) is { } reuse) return reuse;
+        if (!string.IsNullOrWhiteSpace(node.Model)) return node;
+        return node.Option(NodeKeys.SourceId) is { Length: > 0 } id && doc.Find(id) is { } source && !string.IsNullOrWhiteSpace(source.Model) ? source : null;
+    }
+
     /// <summary>Fill the draft with how a node was made (沿用这次的设置): its prompt, model and parameters, without the marks and batch bookkeeping of that one picture.</summary>
     public static void Reuse(CanvasNode draft, CanvasNode source)
     {

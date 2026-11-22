@@ -330,4 +330,22 @@ public class ComposerTests
         Assert.Equal("新建配方节点", CanvasCommands.Find("new-config").Name);
         Assert.DoesNotContain(CanvasCommands.All, c => c.Name.Contains("生成配置") || (c.Label ?? "").Contains("生成配置") || (c.Detail ?? "").Contains("生成配置"));
     }
+
+    [Fact]
+    public void Origin_reports_the_generating_node_even_without_a_prompt_and_ignores_imported_files()
+    {
+        var recipe = new CanvasNode { Kind = NodeKind.Config, Model = "渠道::gemini-2.1", Size = "2K", Ratio = "3:4" };
+        var fromRecipe = Picture(file: "图片-001.png");
+        fromRecipe.SetOption(NodeKeys.SourceId, recipe.Id);
+        var modelOnly = Picture(file: "图片-002.png");
+        modelOnly.Model = "渠道::seedream-5.5";
+        var imported = Picture(file: "图片-003.png");
+        var empty = new CanvasNode { Kind = NodeKind.Image, Model = "渠道::gemini-2.1", Prompt = "未完成" };
+        var doc = Doc(recipe, fromRecipe, modelOnly, imported, empty);
+
+        Assert.Same(recipe, Composer.OriginOf(doc, fromRecipe));
+        Assert.Same(modelOnly, Composer.OriginOf(doc, modelOnly));
+        Assert.Null(Composer.OriginOf(doc, imported));
+        Assert.Null(Composer.OriginOf(doc, empty));
+    }
 }
