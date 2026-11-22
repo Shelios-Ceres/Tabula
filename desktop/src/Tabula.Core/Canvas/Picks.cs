@@ -31,6 +31,31 @@ public static class Picks
     }
 
     /// <summary>
+    /// Keep one or more selected members of a batch and return the rest to delete (files stay; one undo restores everything).
+    /// Keeping a single card delegates to <see cref="KeepOne"/>; keeping two or more keeps them in the batch and promotes the first kept card if the lead goes.
+    /// </summary>
+    public static List<string> KeepSelected(CanvasDocument doc, string stackId, IReadOnlyCollection<string> keptIds)
+    {
+        var members = Stacks.Members(doc, stackId);
+        if (members.Count < 2) throw new ArgumentException("这一批少于两个成员");
+        var kept = members.Where(m => keptIds.Contains(m.Id)).ToList();
+        if (kept.Count == 0) throw new ArgumentException("请先在这一批里选中要保留的卡片");
+        if (kept.Count >= members.Count) throw new ArgumentException("已选中这一批的全部卡片，没有其余可移除的节点");
+        if (kept.Count == 1) return KeepOne(doc, kept[0].Id);
+        var lead = members[0];
+        var others = members.Where(m => !keptIds.Contains(m.Id)).ToList();
+        var nextLead = kept[0];
+        MoveConnections(doc, others.Select(m => m.Id).ToHashSet(), nextLead);
+        if (nextLead != lead)
+        {
+            if (lead.Title != Stacks.OwnTitle(lead)) nextLead.Title = lead.Title;
+            if (string.IsNullOrEmpty(nextLead.GroupId)) nextLead.GroupId = lead.GroupId;
+            foreach (var node in kept) node.SetOption(NodeKeys.Stack, nextLead.Id);
+        }
+        return others.Select(m => m.Id).ToList();
+    }
+
+    /// <summary>
     /// Let a picture take the place of another: it moves to the old node's position and width (its height follows its own ratio), takes its title and group
     /// and keeps its connections besides the new ones. Returns the old node's ID, to delete. The old node must not be one of several in a stack.
     /// </summary>

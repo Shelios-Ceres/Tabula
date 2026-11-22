@@ -322,6 +322,57 @@ public class CoreTests
     }
 
     [Fact]
+    public void Keep_selected_preserves_multiple_chosen_cards_and_promotes_new_lead_when_old_lead_goes()
+    {
+        var doc = new CanvasDocument();
+        var (a, b, c, d, src) = (Picture("角色方案"), Picture("图片-002"), Picture("图片-003"), Picture("图片-004"), new CanvasNode { Kind = NodeKind.Text, Title = "输入" });
+        a.Content = "图片-001.png";
+        foreach (var n in new[] { src, a, b, c, d }) doc.Nodes.Add(n);
+        Stacks.FormBatch([a, b, c, d], StackLayout.Row, 24);
+        Link(doc, src, a);
+        var removed = Picks.KeepSelected(doc, a.Id, [b.Id, d.Id]);
+        Assert.Equal([a.Id, c.Id], removed);
+        // The remaining two stay in one opened batch under b, carrying the custom batch name and external link.
+        Assert.Equal(b.Id, Stacks.Of(b));
+        Assert.Equal(b.Id, Stacks.Of(d));
+        Assert.True(Stacks.IsOpen(b));
+        Assert.Equal("角色方案", b.Title);
+        Assert.Contains(doc.Connections, link => link.From == src.Id && link.To == b.Id);
+        Assert.Throws<ArgumentException>(() => Picks.KeepSelected(doc, b.Id, [b.Id, d.Id]));
+        Assert.Throws<ArgumentException>(() => Picks.KeepSelected(doc, b.Id, []));
+    }
+
+    [Fact]
+    public void Open_batches_keeps_stable_round_numbers_and_formats_header_summary()
+    {
+        var doc = new CanvasDocument();
+        var (a1, a2) = (Picture("图片-001"), Picture("图片-002"));
+        var (b1, b2, b3, b4) = (Picture("图片-003"), Picture("图片-004"), Picture("图片-005"), Picture("图片-006"));
+        a1.Status = NodeStatus.Success; a1.Content = "图片-001.png";
+        a2.Status = NodeStatus.Success; a2.Content = "图片-002.png";
+        b1.Status = NodeStatus.Success; b1.Content = "图片-003.png";
+        b2.Status = NodeStatus.Success; b2.Content = "图片-004.png";
+        b3.Status = NodeStatus.Loading; b3.Content = null;
+        b4.Status = NodeStatus.Error; b4.Content = null;
+        foreach (var n in new[] { a1, a2, b1, b2, b3, b4 }) doc.Nodes.Add(n);
+        Stacks.Form([a1, a2]); // round 1 stays collapsed
+        Stacks.FormBatch([b1, b2, b3, b4], StackLayout.Row, 20); // round 2 is open
+
+        var open = Stacks.OpenBatches(doc);
+        var frame = Assert.Single(open);
+        Assert.Equal(2, frame.Round);
+        Assert.Equal((2, 1, 1), (frame.Completed, frame.Failed, frame.Running));
+        Assert.Equal("第 2 轮 · 4 张 · 2/4 完成 · 1 失败 · Gemini 2.1", Stacks.BatchHeader(frame, "Gemini 2.1"));
+
+        // Custom batch name replaces 第 N 轮; all completed omits 4/4 完成.
+        b1.Title = "封面精选";
+        b3.Status = NodeStatus.Success; b3.Content = "图片-005.png";
+        b4.Status = NodeStatus.Success; b4.Content = "图片-006.png";
+        var settled = Assert.Single(Stacks.OpenBatches(doc));
+        Assert.Equal("封面精选 · 4 张 · Gemini 2.1", Stacks.BatchHeader(settled, "Gemini 2.1"));
+    }
+
+    [Fact]
     public void Promote_puts_the_picture_in_the_old_ones_place_with_its_title_group_and_connections()
     {
         var doc = new CanvasDocument();

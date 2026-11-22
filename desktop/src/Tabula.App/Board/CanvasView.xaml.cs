@@ -272,12 +272,16 @@ public sealed partial class CanvasView : UserControl
         if (e.PropertyName is nameof(CanvasNode.X) or nameof(CanvasNode.Y) or nameof(CanvasNode.Width) or nameof(CanvasNode.Height))
         {
             Backdrop.Invalidate();
-            if (sender is CanvasNode moved && _selected.Contains(moved.Id)) PositionPanel();
+            if (sender is CanvasNode moved)
+            {
+                if (Stacks.Of(moved) is not null && Stacks.IsOpen(moved)) PositionBatchHeaders();
+                if (_selected.Contains(moved.Id)) PositionPanel();
+            }
         }
         if (e.PropertyName is nameof(CanvasNode.Content) or nameof(CanvasNode.Prompt))
             foreach (var view in _views.Values.Where(v => v.Node.Kind == NodeKind.Config)) view.SyncConfig();
-        // Opening, closing or forming a stack changes which cards exist; a member's status shows on its lead.
-        if (e.PropertyName is nameof(CanvasNode.Options) or nameof(CanvasNode.Status) && sender is CanvasNode changed && Stacks.Of(changed) is not null) Realize();
+        // Opening, closing or forming a stack changes which cards exist; a member's status, title or model shows on its lead / batch header.
+        if (e.PropertyName is nameof(CanvasNode.Options) or nameof(CanvasNode.Status) or nameof(CanvasNode.Title) or nameof(CanvasNode.Model) && sender is CanvasNode changed && Stacks.Of(changed) is not null) Realize();
         // The command bar follows the selected node's state (title, content, running, group, batch…), never its position.
         if (e.PropertyName is not (nameof(CanvasNode.X) or nameof(CanvasNode.Y) or nameof(CanvasNode.Width) or nameof(CanvasNode.Height) or nameof(CanvasNode.Preview))
             && sender is CanvasNode node && _selected.Contains(node.Id)) QueueCommands();
@@ -480,7 +484,21 @@ public sealed partial class CanvasView : UserControl
         RefreshStacks(hidden);
     }
 
-    /// <summary>Count and failures on each realized stack lead; every other card shows no stack chrome.</summary>
+    private const float BatchPad = 14f;
+    private static readonly CanvasStrokeStyle BatchDash = new() { CustomDashStyle = [5f, 4f], DashCap = CanvasCapStyle.Round };
+    private readonly Dictionary<string, BatchHeader> _batchHeaders = [];
+    private ThemeShadow? _batchShadow;
+
+    private sealed class BatchHeader
+    {
+        public required Border Host { get; init; }
+        public required TextBlock Label { get; init; }
+        public required Button KeepButton { get; init; }
+        public required TextBlock KeepText { get; init; }
+        public BatchFrame Frame { get; set; } = null!;
+    }
+
+    /// <summary>Count and failures on each realized stack lead, plus header bars for opened batches.</summary>
     private void RefreshStacks(HashSet<CanvasNode> hidden)
     {
         var stacks = Doc.Nodes.Where(n => Stacks.Of(n) is not null).GroupBy(n => Stacks.Of(n)!).ToDictionary(g => g.Key, g => g.ToList());
@@ -488,6 +506,102 @@ public sealed partial class CanvasView : UserControl
         {
             var members = Stacks.Of(view.Node) is { } id && stacks.TryGetValue(id, out var list) && list.Count > 1 && list[0] == view.Node ? list : null;
             view.SetStack(members?.Count ?? 0, Stacks.IsOpen(view.Node), members?.Count(n => n.Status == NodeStatus.Success && n.HasContent) ?? 0, members?.Count(n => n.Status == NodeStatus.Error) ?? 0);
+        }
+        SyncBatchHeaders();
+    }
+
+    /// <summary>Create, update and prune floating glass headers for every opened multi-member batch.</summary>
+    private void SyncBatchHeaders()
+    {
+        var open = Stacks.OpenBatches(Doc);
+        var alive = open.Select(f => f.StackId).ToHashSet();
+        foreach (var gone in _batchHeaders.Keys.Where(id => !alive.Contains(id)).ToList())
+        {
+            ScreenLayer.Children.Remove(_batchHeaders[gone].Host);
+            _batchHeaders.Remove(gone);
+        }
+        foreach (var frame in open)
+        {
+            if (!_batchHeaders.TryGetValue(frame.StackId, out var header))
+            {
+                header = MakeBatchHeader(frame.StackId);
+                _batchHeaders[frame.StackId] = header;
+                ScreenLayer.Children.Insert(0, header.Host);
+            }
+            header.Frame = frame;
+            var modelKey = frame.Members.Select(m => m.Model).FirstOrDefault(m => !string.IsNullOrWhiteSpace(m))
+                ?? (frame.Lead.Option(NodeKeys.SourceId) is { Length: > 0 } srcId && Doc.Find(srcId) is { } src ? src.Model : null);
+            var modelLabel = !string.IsNullOrWhiteSpace(modelKey) ? SettingsStore.Current.Label(modelKey) : null;
+            var text = Stacks.BatchHeader(frame, modelLabel);
+            header.Label.Text = text;
+            ToolTipService.SetToolTip(header.Label, text);
+            var selectedInBatch = frame.Members.Count(m => _selected.Contains(m.Id));
+            var canKeep = selectedInBatch > 0 && selectedInBatch < frame.Members.Count;
+            header.KeepButton.Visibility = canKeep ? Visibility.Visible : Visibility.Collapsed;
+            header.KeepText.Text = selectedInBatch == 1 ? "只留这张" : $"只留选中的 ({selectedInBatch})";
+            AutomationProperties.SetName(header.KeepButton, header.KeepText.Text);
+        }
+        PositionBatchHeaders();
+        Backdrop.Invalidate();
+    }
+
+    private BatchHeader MakeBatchHeader(string stackId)
+    {
+        var label = new TextBlock { Style = (Style)Application.Current.Resources["SecondaryCaption"], FontSize = 12.5, VerticalAlignment = VerticalAlignment.Center, MaxWidth = 360, TextTrimming = TextTrimming.CharacterEllipsis };
+        var collapse = new Button
+        {
+            Style = (Style)Application.Current.Resources["ToolbarButton"], Height = 26, MinHeight = 0, Padding = new(9, 0, 9, 0), CornerRadius = new(13),
+            Content = new TextBlock { Text = "收起", FontSize = 12 },
+        };
+        AutomationProperties.SetName(collapse, "收起这一批");
+        ToolTipService.SetToolTip(collapse, "收起这一批（若已选中其中一张，收起后保留它作封面）");
+        collapse.Click += (_, _) => { if (_batchHeaders.TryGetValue(stackId, out var h)) ToggleStack(h.Frame.Lead); };
+
+        var keepText = new TextBlock { Text = "只留选中的", FontSize = 12, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Foreground = (Brush)Application.Current.Resources["AccentTextFillColorPrimaryBrush"] };
+        var keep = new Button
+        {
+            Style = (Style)Application.Current.Resources["ToolbarButton"], Height = 26, MinHeight = 0, Padding = new(9, 0, 9, 0), CornerRadius = new(13),
+            Content = keepText, Visibility = Visibility.Collapsed,
+        };
+        ToolTipService.SetToolTip(keep, "保留当前选中的卡片，移除同批其余节点（不删文件，可撤销）");
+        keep.Click += async (_, _) => await KeepSelectedAsync(stackId);
+
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, VerticalAlignment = VerticalAlignment.Center, Children = { label, collapse, keep } };
+        var capsule = new Border
+        {
+            Style = (Style)Application.Current.Resources["GlassCapsule"], Height = 32, CornerRadius = new(16), Padding = new(12, 0, 4, 0),
+            Child = row,
+        };
+        _batchShadow ??= new ThemeShadow { Receivers = { Backdrop } };
+        capsule.Shadow = _batchShadow;
+        capsule.Translation = new Vector3(0, 0, 24);
+        var host = new Border { Child = new GlassScale { Child = capsule } };
+        host.PointerPressed += (_, e) => e.Handled = true;
+        host.PointerReleased += (_, e) => e.Handled = true;
+        host.PointerMoved += (_, e) => e.Handled = true;
+        host.PointerWheelChanged += (_, e) => e.Handled = true;
+        host.DoubleTapped += (_, e) => e.Handled = true;
+        host.RightTapped += (_, e) => e.Handled = true;
+        return new BatchHeader { Host = host, Label = label, KeepButton = keep, KeepText = keepText };
+    }
+
+    private void PositionBatchHeaders()
+    {
+        if (_batchHeaders.Count == 0 || Root.ActualWidth <= 0) return;
+        var scale = GlassSettings.Current.UiScale;
+        var headerHeight = 32 * scale;
+        foreach (var (stackId, header) in _batchHeaders)
+        {
+            var members = Stacks.Members(Doc, stackId);
+            if (members.Count < 2 || !Stacks.IsOpen(members[0]) || V.K < 0.25) { header.Host.Visibility = Visibility.Collapsed; continue; }
+            var bounds = CanvasGraph.Bounds(members);
+            var tl = ToScreen(bounds.Left - BatchPad, bounds.Top - BatchPad);
+            var br = ToScreen(bounds.Right + BatchPad, bounds.Bottom + BatchPad);
+            var inView = br.X > 0 && tl.X < Root.ActualWidth && br.Y > 0 && tl.Y < Root.ActualHeight;
+            header.Host.Visibility = inView ? Visibility.Visible : Visibility.Collapsed;
+            if (!inView) continue;
+            Canvas.SetLeft(header.Host, tl.X);
+            Canvas.SetTop(header.Host, tl.Y - headerHeight - 6);
         }
     }
 
@@ -647,6 +761,9 @@ public sealed partial class CanvasView : UserControl
         var (minLeft, maxRight, maxBottom) = (_safe.Left + 8, Root.ActualWidth - _safe.Right - 8, BarFloor);
         var centered = Math.Clamp((topLeft.X + bottomRight.X) / 2 - width / 2, minLeft, Math.Max(minLeft, maxRight - width));
         var gap = GapAbove(nodes);
+        // Keep the floating command bar clear of an opened batch frame's header when selecting cards in its top row.
+        if (nodes.Any(n => Stacks.Of(n) is { } sid && _batchHeaders.TryGetValue(sid, out var h) && h.Host.Visibility == Visibility.Visible && Math.Abs(n.Y - h.Frame.Bounds.Top) < 8))
+            gap = Math.Max(gap, BatchPad * V.K + 32 * GlassSettings.Current.UiScale + 14);
         bool below = false;
         Point at;
         if (topLeft.Y - height - gap >= _safe.Top) at = new(centered, topLeft.Y - height - gap);
@@ -675,6 +792,7 @@ public sealed partial class CanvasView : UserControl
         var references = state.Mode == ComposerMode.New ? Composer.References(Doc, ids, Doc.Pins, _dropped) : [];
         _composer.Update(state, references, selectedNodes, _called, selectionChanged);
         RefreshRefTags();
+        SyncBatchHeaders();
         var show = _selected.Count > 0 || _called || _composer.HasFocus;
         _composer.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
         if (show && selectionChanged) AskForRoom();
@@ -705,6 +823,7 @@ public sealed partial class CanvasView : UserControl
     /// </summary>
     private void PositionPanel(bool makeRoom = false)
     {
+        PositionBatchHeaders();
         PositionComposer(makeRoom);
         PositionBar();
     }
@@ -843,7 +962,7 @@ public sealed partial class CanvasView : UserControl
         string? part = null;
         for (var element = source as DependencyObject; element is not null; element = VisualTreeHelper.GetParent(element))
         {
-            if (element == _composer) return (null, "panel");
+            if (element == _composer || _batchHeaders.Values.Any(h => h.Host == element)) return (null, "panel");
             if (element is FrameworkElement { Tag: string tag } && tag is "source" or "target" or "resize") part ??= tag;
             if (element is NodeView view) return (view, part);
             if (element == Root) break;
@@ -961,14 +1080,15 @@ public sealed partial class CanvasView : UserControl
             ds.FillCircle((float)x, (float)y, 1.1f, dot);
 
         ds.Transform = Matrix3x2.CreateScale((float)V.K) * Matrix3x2.CreateTranslation((float)V.X, (float)V.Y);
+        var visible = new Rect(-V.X / V.K, -V.Y / V.K, (sender.ActualWidth - V.X) / V.K, (sender.ActualHeight - V.Y) / V.K);
+        // A batch's shared inputs end at its lead, so selecting any member lights them up too.
+        var selectedStacks = Doc.Nodes.Where(n => _selected.Contains(n.Id)).Select(Stacks.Of).OfType<string>().ToHashSet();
+        DrawBatchFrames(ds, visible, selectedStacks);
         DrawCardShadows(sender, ds);
         var stroke = (float)(1.6 / V.K);
         // Each link runs from its source's kind colour to its target's, so the flow of images, text and video reads at a glance.
         var colors = new Dictionary<NodeKind, Color>();
         Color KindColor(NodeKind kind) => colors.TryGetValue(kind, out var c) ? c : colors[kind] = Alpha(Palette.Kind(kind, ActualTheme), 190);
-        var visible = new Rect(-V.X / V.K, -V.Y / V.K, (sender.ActualWidth - V.X) / V.K, (sender.ActualHeight - V.Y) / V.K);
-        // A batch's shared inputs end at its lead, so selecting any member lights them up too.
-        var selectedStacks = Doc.Nodes.Where(n => _selected.Contains(n.Id)).Select(Stacks.Of).OfType<string>().ToHashSet();
         foreach (var (connection, from, to) in Links())
         {
             if (!visible.Intersects(Hull(Out(from), In(to), stroke * 2))) continue;
@@ -987,6 +1107,21 @@ public sealed partial class CanvasView : UserControl
             }
         }
         GlassTrace.Write("b");
+    }
+
+    /// <summary>Dashed rounded frame behind every visible opened batch so its members read as one round.</summary>
+    private void DrawBatchFrames(CanvasDrawingSession ds, Rect visible, HashSet<string> selectedStacks)
+    {
+        var strokeWidth = (float)(1.4 / V.K);
+        foreach (var frame in Stacks.OpenBatches(Doc))
+        {
+            var r = new Rect(frame.Bounds.Left - BatchPad, frame.Bounds.Top - BatchPad, frame.Bounds.Right + BatchPad, frame.Bounds.Bottom + BatchPad);
+            if (!visible.Intersects(r)) continue;
+            var active = selectedStacks.Contains(frame.StackId);
+            var rect = new Windows.Foundation.Rect(r.Left, r.Top, r.Width, r.Height);
+            ds.FillRoundedRectangle(rect, 18, 18, Alpha(active ? _accent : _ink, active ? (byte)14 : (byte)8));
+            ds.DrawRoundedRectangle(rect, 18, 18, Alpha(active ? _accent : _ink, active ? (byte)155 : (byte)76), strokeWidth, BatchDash);
+        }
     }
 
     /// <summary>
@@ -1821,6 +1956,24 @@ public sealed partial class CanvasView : UserControl
         Batch(() => removed = Picks.KeepOne(Doc, node.Id));
         DeleteNodes(removed, wholeStacks: false);
         Select([node.Id]);
+    }
+
+    /// <summary>Keep one or more selected members of an opened batch and remove the rest (files stay; one undo step).</summary>
+    private async Task KeepSelectedAsync(string stackId)
+    {
+        var members = Stacks.Members(Doc, stackId);
+        var kept = members.Where(m => _selected.Contains(m.Id)).ToList();
+        if (kept.Count == 0 || kept.Count >= members.Count) return;
+        if (kept.Count == 1) { await KeepOneAsync(kept[0]); return; }
+        var others = members.Count - kept.Count;
+        if (!await Dialogs.ConfirmAsync($"只留选中的 {kept.Count} 张？", $"将从画布移除这一批的另外 {others} 个节点，它们的文件不会被删除，仍能在资料库的「画布文件」里找到。可以撤销。", "删掉其余", destructive: true)) return;
+        var keptIds = kept.Select(m => m.Id).Where(id => Doc.Find(id) is not null).ToList();
+        if (keptIds.Count == 0 || Stacks.Members(Doc, stackId).Count <= keptIds.Count) return;
+        History.Record();
+        var removed = new List<string>();
+        Batch(() => removed = Picks.KeepSelected(Doc, stackId, keptIds));
+        DeleteNodes(removed, wholeStacks: false);
+        Select(keptIds);
     }
 
     /// <summary>

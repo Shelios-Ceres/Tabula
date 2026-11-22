@@ -66,7 +66,7 @@ public sealed partial class NodeView : UserControl
         PlaceholderIcon.Foreground = brush;
     }
 
-    /// <summary>Batch stack chrome: the deck and member count on a collapsed lead, 收起 on an opened lead, nothing on other cards.</summary>
+    /// <summary>Batch stack chrome: the deck and member count on a collapsed lead; an opened batch uses the batch frame header instead.</summary>
     public void SetStack(int count, bool open, int completed, int failed)
     {
         // Called on every realize (each pan frame); only real changes touch the visuals.
@@ -75,11 +75,11 @@ public sealed partial class NodeView : UserControl
         var collapsed = count > 1 && !open;
         DeckBack1.Visibility = collapsed ? Visibility.Visible : Visibility.Collapsed;
         DeckBack2.Visibility = collapsed && count > 2 ? Visibility.Visible : Visibility.Collapsed;
-        StackBadge.Visibility = count > 1 ? Visibility.Visible : Visibility.Collapsed;
-        StackIcon.Glyph = failed > 0 ? "" : collapsed ? "" : "";
-        StackText.Text = collapsed ? $"{completed}/{count} 完成" + (failed > 0 ? $" · {failed} 失败" : "") : "收起";
+        StackBadge.Visibility = collapsed ? Visibility.Visible : Visibility.Collapsed;
+        StackIcon.Glyph = failed > 0 ? "\uE7BA" : "\uE81E";
+        StackText.Text = $"{completed}/{count} 完成" + (failed > 0 ? $" · {failed} 失败" : "");
         SyncTitle();
-        var tip = $"这一批共 {count} 个结果，已完成 {completed} 个，失败 {failed} 个；" + (collapsed ? "点击卡片展开" : "点击收起这一批");
+        var tip = $"这一批共 {count} 个结果，已完成 {completed} 个，失败 {failed} 个；点击卡片展开";
         ToolTipService.SetToolTip(StackButton, tip);
         AutomationProperties.SetName(StackButton, tip);
     }

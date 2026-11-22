@@ -3,6 +3,9 @@ namespace Tabula.Core.Canvas;
 /// <summary>How the outputs of a batch sit once generated: gathered on one spot as a stack, or spread out in a row or a grid.</summary>
 public enum StackLayout { Stack, Row, Grid }
 
+/// <summary>An opened batch of two or more outputs: its order among the canvas's batches, its members, bounds and completion counts.</summary>
+public sealed record BatchFrame(string StackId, int Round, CanvasNode Lead, IReadOnlyList<CanvasNode> Members, Rect Bounds, int Completed, int Failed, int Running);
+
 /// <summary>
 /// Outputs of one batch generation share a stack ID. Collapsed (the default) they sit on one spot and only the lead card,
 /// the first member in document order, is shown; opened they spread into a grid from the lead's position.
@@ -126,5 +129,46 @@ public static class Stacks
         if (layout == StackLayout.Stack || members.Count < 2) return;
         var positions = Open(members, layout, gap);
         for (var i = 0; i < members.Count; i++) (members[i].X, members[i].Y) = positions[i];
+    }
+
+    /// <summary>
+    /// Every opened batch of two or more outputs in document order. Round numbers count all multi-member batches on the canvas
+    /// (collapsed or open) in first-appearance order so expanding or collapsing one never renumbers the rest.
+    /// </summary>
+    public static List<BatchFrame> OpenBatches(CanvasDocument doc)
+    {
+        var order = new List<string>();
+        var groups = new Dictionary<string, List<CanvasNode>>();
+        foreach (var node in doc.Nodes)
+        {
+            if (Of(node) is not { } id) continue;
+            if (!groups.TryGetValue(id, out var list)) { list = []; groups[id] = list; order.Add(id); }
+            list.Add(node);
+        }
+        var frames = new List<BatchFrame>();
+        var round = 0;
+        foreach (var id in order)
+        {
+            var members = groups[id];
+            if (members.Count < 2) continue;
+            round++;
+            if (!IsOpen(members[0])) continue;
+            var completed = members.Count(n => n.Status == NodeStatus.Success && n.HasContent);
+            var failed = members.Count(n => n.Status == NodeStatus.Error);
+            var running = members.Count(n => n.Status == NodeStatus.Loading);
+            frames.Add(new(id, round, members[0], members, CanvasGraph.Bounds(members), completed, failed, running));
+        }
+        return frames;
+    }
+
+    /// <summary>Header text for an opened batch frame: batch name (or 第 N 轮), total count, progress / failures when applicable, and model label.</summary>
+    public static string BatchHeader(BatchFrame frame, string? modelLabel)
+    {
+        var named = frame.Lead.Title is { Length: > 0 } title && title != OwnTitle(frame.Lead) ? title : $"第 {frame.Round} 轮";
+        var parts = new List<string> { named, $"{frame.Members.Count} 张" };
+        if (frame.Completed < frame.Members.Count) parts.Add($"{frame.Completed}/{frame.Members.Count} 完成");
+        if (frame.Failed > 0) parts.Add($"{frame.Failed} 失败");
+        if (!string.IsNullOrWhiteSpace(modelLabel)) parts.Add(modelLabel);
+        return string.Join(" · ", parts);
     }
 }
