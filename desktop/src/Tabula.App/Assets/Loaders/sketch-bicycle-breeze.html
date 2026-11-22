@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>骑行微风</title>
+<style>
+  html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #f8f3e7; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<div role="img" aria-label="钢笔淡彩与彩铅手绘的海岸草坡上，一辆载着雏菊的薄荷绿单车迎着海风轻快前行，红白围巾随风飘扬。">
+<canvas aria-hidden="true" id="paper"></canvas>
+<canvas aria-hidden="true" id="sketch"></canvas>
+</div>
+<script>
+'use strict';
+const paper = document.getElementById('paper').getContext('2d');
+const sketch = document.getElementById('sketch').getContext('2d');
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+const tau = Math.PI * 2;
+let left, topEdge, right, bottom, frame;
+
+function rng(seed) {
+  let s = seed | 0;
+  return () => {
+    s = (s + 0x6D2B79F5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const paperTile = document.createElement('canvas');
+paperTile.width = paperTile.height = 128;
+const pt = paperTile.getContext('2d');
+const pr = rng(91);
+for (let i = 0; i < 2500; i++) {
+  pt.fillStyle = i % 3 ? 'rgba(132,110,84,0.042)' : 'rgba(255,253,245,0.085)';
+  pt.fillRect(pr() * 128, pr() * 128, .7 + pr() * 1.5, .6 + pr() * 1.1);
+}
+
+function inkLine(c, pts, color = '#3c3631', width = 1.4, seed = 1, jitter = .8, passes = 2) {
+  const r = rng(seed);
+  for (let p = 0; p < passes; p++) {
+    c.beginPath();
+    pts.forEach(([x, y], idx) => {
+      const jx = (r() - .5) * jitter * (p ? 1.3 : 1);
+      const jy = (r() - .5) * jitter * (p ? 1.3 : 1);
+      if (idx === 0) c.moveTo(x + jx, y + jy);
+      else c.lineTo(x + jx, y + jy);
+    });
+    c.strokeStyle = color;
+    c.globalAlpha = p === 0 ? .88 : .32;
+    c.lineWidth = p === 0 ? width : width * .62;
+    c.stroke();
+  }
+  c.globalAlpha = 1;
+}
+
+function waterBlob(c, pts, color, seed = 7, alpha = .26, layers = 3) {
+  const r = rng(seed);
+  for (let l = 0; l < layers; l++) {
+    c.beginPath();
+    pts.forEach(([x, y], i) => {
+      const dx = (r() - .5) * 3.5, dy = (r() - .5) * 3.2;
+      if (i === 0) c.moveTo(x + dx, y + dy);
+      else c.lineTo(x + dx, y + dy);
+    });
+    c.closePath();
+    c.fillStyle = color;
+    c.globalAlpha = alpha * (1 - l * .16);
+    c.fill();
+    if (l === 0) {
+      c.strokeStyle = color;
+      c.globalAlpha = alpha * .5;
+      c.lineWidth = 1.5;
+      c.stroke();
+    }
+  }
+  c.globalAlpha = 1;
+}
+
+function sampleEllipse(cx, cy, rx, ry, n = 20, rot = 0) {
+  const out = [], cr = Math.cos(rot), sr = Math.sin(rot);
+  for (let i = 0; i <= n; i++) {
+    const a = (i / n) * tau;
+    const lx = Math.cos(a) * rx, ly = Math.sin(a) * ry;
+    out.push([cx + lx * cr - ly * sr, cy + lx * sr + ly * cr]);
+  }
+  return out;
+}
+
+function drawPaperScene() {
+  const c = paper;
+  // Warm sketchbook paper base.
+  const bg = c.createLinearGradient(0, topEdge, 0, bottom);
+  bg.addColorStop(0, '#faf6ec');
+  bg.addColorStop(.55, '#f6efe0');
+  bg.addColorStop(1, '#ede3ce');
+  c.fillStyle = bg;
+  c.fillRect(left, topEdge, right - left, bottom - topEdge);
+
+  // Soft pastel blue sky wash stopping lightly above the horizon.
+  waterBlob(c, [
+    [left - 20, topEdge - 12], [right + 20, topEdge - 12],
+    [right + 20, 146], [260, 152], [120, 144], [left - 20, 150]
+  ], '#9cc6df', 301, .26, 3);
+  waterBlob(c, [
+    [left - 20, topEdge - 12], [right + 20, topEdge - 12],
+    [right + 20, 82], [left - 20, 90]
+  ], '#78aed3', 303, .16, 2);
+
+  // Distant sparkling cobalt sea band with colored-pencil horizontal strokes.
+  const seaY = 148;
+  waterBlob(c, [[left - 20, seaY], [right + 20, seaY], [right + 20, 198], [left - 20, 198]], '#6b9fc4', 310, .38, 3);
+  inkLine(c, [[left, seaY], [180, seaY - .5], [right, seaY + .4]], '#4d7391', 1.1, 312, .7, 1);
+  // Colored-pencil shimmer hatches on the water.
+  const sr = rng(315);
+  for (let i = 0; i < 36; i++) {
+    const x = left + sr() * (right - left);
+    const y = seaY + 5 + sr() * 38;
+    inkLine(c, [[x, y], [x + 12 + sr() * 18, y + (sr() - .5) * 1.4]], i % 3 ? '#fffcf2' : '#4a7ea8', .95, 320 + i, .35, 1);
+  }
+  // Tiny distant white sailboat on the right horizon.
+  waterBlob(c, [[306, 146], [312, 130], [316, 146]], '#fffdf6', 358, .85, 1);
+  inkLine(c, [[304, 147], [318, 147], [315, 150], [306, 150], [304, 147]], '#495866', .95, 359, .35, 1);
+  inkLine(c, [[307, 146], [312, 130], [316, 146]], '#495866', .9, 360, .35, 1);
+
+  // Gentle coastal meadow hill & sandy path under the bicycle.
+  const roadY = 224;
+  waterBlob(c, [
+    [left - 20, 188], [92, 182], [202, 190], [312, 180], [right + 20, 186],
+    [right + 20, roadY + 4], [left - 20, roadY + 4]
+  ], '#9ac182', 365, .36, 3);
+  waterBlob(c, [[left - 20, roadY - 4], [right + 20, roadY - 4], [right + 20, bottom + 12], [left - 20, bottom + 12]], '#e6d3b1', 370, .42, 3);
+  // Hand-sketched wooden coastal guardrail posts in the midground.
+  inkLine(c, [[left, 194], [190, 192], [right, 195]], '#786352', 1.35, 375, .75, 2);
+  inkLine(c, [[left, 203], [190, 201], [right, 204]], '#786352', 1.15, 376, .75, 1);
+  for (let x = left + 18; x < right; x += 48) {
+    inkLine(c, [[x, 188], [x, 212]], '#6b5647', 1.5, 380 + Math.round(x), .65, 2);
+  }
+  // Road edge sketch line & a few roadside pebble/clover sketches along the foreground margin.
+  inkLine(c, [[left, roadY], [180, roadY + .8], [right, roadY - .5]], '#5e4f41', 1.35, 390, .85, 2);
+  const tufts = [[72, 258], [142, 266], [268, 262], [326, 254]];
+  tufts.forEach(([tx, ty], i) => {
+    inkLine(c, [[tx, ty], [tx - 3, ty - 7]], '#6b8a5b', 1.0, 392 + i * 3, .3, 1);
+    inkLine(c, [[tx, ty], [tx + 2.5, ty - 8]], '#6b8a5b', 1.0, 393 + i * 3, .3, 1);
+    waterBlob(c, sampleEllipse(tx + 9, ty - 1, 3.6, 2.1, 8), '#b8a58a', 394 + i * 3, .45, 1);
+  });
+
+  c.fillStyle = c.createPattern(paperTile, 'repeat');
+  c.fillRect(left, topEdge, right - left, bottom - topEdge);
+}
+
+function drawCloud(c, x, y, s, seed) {
+  c.save(); c.translate(x, y); c.scale(s, s);
+  waterBlob(c, sampleEllipse(0, 0, 24, 11, 14), '#fffef9', seed, .68, 2);
+  waterBlob(c, sampleEllipse(-16, 4, 15, 9, 12), '#fffef9', seed + 1, .68, 2);
+  waterBlob(c, sampleEllipse(17, 4, 16, 9, 12), '#fffef9', seed + 2, .68, 2);
+  inkLine(c, [[-28, 8], [-18, -4], [-4, -10], [10, -8], [22, -2], [30, 8]], '#7ea3bd', .9, seed + 5, .7, 1);
+  c.restore();
+}
+
+function drawWheel(c, cx, cy, r, spin, boil, seed) {
+  // Loose tire rim.
+  inkLine(c, sampleEllipse(cx, cy, r, r, 24), '#3b342f', 2.2, seed + boil * 5, .65, 2);
+  inkLine(c, sampleEllipse(cx, cy, r - 3, r - 3, 20), '#7a7268', .9, seed + 2 + boil * 3, .45, 1);
+  // Rotating spokes.
+  for (let i = 0; i < 8; i++) {
+    const a = spin + i * tau / 8;
+    inkLine(c, [[cx, cy], [cx + Math.cos(a) * (r - 3), cy + Math.sin(a) * (r - 3)]], '#5c554f', .85, seed + 10 + i, .3, 1);
+  }
+  waterBlob(c, sampleEllipse(cx, cy, 3.2, 3.2, 8), '#c7a46b', seed + 20, .85, 1);
+}
+
+function drawBicycle(c, t, boil) {
+  const bob = Math.sin(t * 5.2) * 1.1;
+  const spin = t * 3.1;
+  const rear = { x: 152, y: 202 + bob * .35 };
+  const front = { x: 246, y: 202 + bob * .35 };
+  const crank = { x: 192, y: 202 + bob };
+  const seatTop = { x: 176, y: 156 + bob };
+  const headTop = { x: 229, y: 154 + bob };
+  const r = 24;
+
+  // Soft pencil-watercolor ground shadow.
+  waterBlob(c, sampleEllipse(199, 227, 68, 5.5, 16), '#6b5c49', 701, .24, 2);
+
+  // Wheels.
+  drawWheel(c, rear.x, rear.y, r, spin, boil, 710);
+  drawWheel(c, front.x, front.y, r, spin, boil, 740);
+
+  // Rear & front mint-green mudguards.
+  const fenderR = [];
+  for (let i = 0; i <= 10; i++) {
+    const a = -Math.PI * .9 + (i / 10) * Math.PI * .78;
+    fenderR.push([rear.x + Math.cos(a) * (r + 3.5), rear.y + Math.sin(a) * (r + 3.5)]);
+  }
+  inkLine(c, fenderR, '#589480', 2.4, 760 + boil, .45, 2);
+
+  // Vintage mint-green step-through frame.
+  const frameCol = '#5c9c87';
+  inkLine(c, [[rear.x, rear.y], [crank.x, crank.y]], frameCol, 2.3, 770 + boil, .5, 2);
+  inkLine(c, [[rear.x, rear.y], [seatTop.x + 2, seatTop.y + 8]], frameCol, 2.2, 771 + boil, .5, 2);
+  inkLine(c, [[crank.x, crank.y], [seatTop.x, seatTop.y]], frameCol, 2.6, 772 + boil, .5, 2);
+  inkLine(c, [[crank.x, crank.y], [headTop.x + 3, headTop.y + 10]], frameCol, 2.6, 773 + boil, .5, 2);
+  inkLine(c, [[seatTop.x + 2, seatTop.y + 11], [headTop.x + 2, headTop.y + 8]], frameCol, 2.2, 774 + boil, .5, 2);
+  // Fork & handlebar stem.
+  inkLine(c, [[front.x, front.y], [headTop.x, headTop.y], [headTop.x - 10, headTop.y - 8], [headTop.x - 18, headTop.y - 6]], '#4a433d', 2.2, 775 + boil, .5, 2);
+
+  // Warm tan leather saddle & handlebar grip.
+  waterBlob(c, [[seatTop.x - 11, seatTop.y - 2], [seatTop.x + 9, seatTop.y - 4], [seatTop.x + 6, seatTop.y + 3], [seatTop.x - 10, seatTop.y + 2]], '#b87648', 780, .82, 2);
+  inkLine(c, [[seatTop.x - 11, seatTop.y - 2], [seatTop.x + 9, seatTop.y - 4], [seatTop.x + 6, seatTop.y + 3], [seatTop.x - 10, seatTop.y + 2], [seatTop.x - 11, seatTop.y - 2]], '#3c2e26', 1.35, 781 + boil * 3, .5, 2);
+  inkLine(c, [[headTop.x - 13, headTop.y - 7], [headTop.x - 20, headTop.y - 5.5]], '#a8653e', 3.4, 782, .3, 1);
+
+  // Rotating pedal crank.
+  const px = crank.x + Math.cos(spin) * 10, py = crank.y + Math.sin(spin) * 10;
+  inkLine(c, [[crank.x, crank.y], [px, py]], '#49423c', 1.8, 785, .3, 1);
+  inkLine(c, [[px - 4, py], [px + 4, py]], '#3a332d', 2.4, 786, .3, 1);
+
+  // Woven wicker basket on the front carrying a bunch of yellow daisies.
+  const bx = headTop.x + 8, by = headTop.y + 3;
+  const basket = [[bx - 2, by], [bx + 21, by + 1], [bx + 18, by + 18], [bx + 1, by + 17]];
+  waterBlob(c, basket, '#d9b277', 790, .74, 2);
+  inkLine(c, [...basket, basket[0]], '#59422f', 1.35, 791 + boil * 3, .55, 2);
+  inkLine(c, [[bx, by + 6], [bx + 19, by + 7]], '#876546', .9, 792, .4, 1);
+  inkLine(c, [[bx + 1, by + 12], [bx + 18, by + 13]], '#876546', .9, 793, .4, 1);
+  // Bobbing yellow daisies tucked in the basket.
+  const flowerSway = Math.sin(t * 4.2) * 2.2;
+  const blooms = [[bx + 5, by - 8], [bx + 12, by - 11], [bx + 18, by - 6]];
+  blooms.forEach(([fx, fy], idx) => {
+    const sx = fx + flowerSway * (.7 + idx * .2);
+    inkLine(c, [[fx, by + 1], [sx, fy]], '#4c754d', 1.1, 795 + idx, .4, 1);
+    waterBlob(c, sampleEllipse(sx, fy, 4.6, 4.2, 8), '#fffdf5', 800 + idx, .88, 1);
+    waterBlob(c, sampleEllipse(sx, fy, 2.2, 2.2, 8), '#f0b846', 805 + idx, .92, 1);
+  });
+
+  // Fluttering crimson-and-cream scarf tied to the handlebar streaming back in the sea breeze!
+  const sx0 = headTop.x - 10, sy0 = headTop.y - 4;
+  const upper = [], lower = [];
+  for (let i = 0; i <= 10; i++) {
+    const u = i / 10;
+    const x = sx0 - u * 56;
+    const wave = Math.sin(t * 6.5 - u * 4.8) * (2.5 + u * 6.5) - u * 6;
+    const y = sy0 + wave;
+    const halfW = 2.6 + u * 2.2;
+    upper.push([x, y - halfW]);
+    lower.unshift([x, y + halfW]);
+  }
+  const ribbon = [...upper, ...lower];
+  waterBlob(c, ribbon, '#dd5947', 820, .74, 2);
+  // Cream stripe running through the fluttering scarf.
+  inkLine(c, upper.map((p, i) => [p[0], (p[1] + lower[lower.length - 1 - i][1]) * .5]), '#fbf2df', 1.6, 822 + boil, .4, 1);
+  inkLine(c, [...ribbon, ribbon[0]], '#5c2620', 1.15, 824 + boil * 5, .5, 1);
+}
+
+function drawMotion(t) {
+  const c = sketch;
+  const boil = reducedMotion.matches ? 0 : Math.floor(t * 5) % 4;
+
+  // Drifting sketchbook clouds gliding slowly across the sky.
+  const c1 = left - 50 + ((t * 5.2 + 90) % (right - left + 110));
+  const c2 = left - 50 + ((t * 3.8 + 260) % (right - left + 110));
+  drawCloud(c, c1, 74, 1.0, 900);
+  drawCloud(c, c2, 54, .78, 910);
+
+  // Two hand-drawn coastal seagulls wheeling gently above the sea.
+  for (let i = 0; i < 2; i++) {
+    const gp = (t / (9.5 + i * 2.4) + i * .45) % 1;
+    const gx = right + 20 - gp * (right - left + 40);
+    const gy = 86 + i * 24 + Math.sin(t * 2.2 + i * 2) * 5;
+    const flap = Math.sin(t * 5.2 + i * 1.9) * 3.2;
+    inkLine(c, [[gx - 8, gy + flap], [gx - 3, gy - 2.5], [gx, gy + .8], [gx + 3, gy - 2.5], [gx + 8, gy + flap]], '#495a69', 1.25, 920 + i + boil, .35, 1);
+  }
+
+  // Passing roadside road dashes & tiny clover tufts scrolling left to convey breezy riding motion.
+  for (let i = 0; i < 7; i++) {
+    const p = (t / 2.2 + i / 7) % 1;
+    const rx = right + 20 - p * (right - left + 40);
+    const ry = 236 + (i % 3) * 10;
+    inkLine(c, [[rx, ry], [rx + 18, ry]], '#9e8868', 1.15, 940 + i, .35, 1);
+  }
+  // Breeze lines trailing behind the bike.
+  for (let i = 0; i < 3; i++) {
+    const p = (t / 1.9 + i * .33) % 1;
+    const bx = 285 - p * 230;
+    const by = 132 + i * 28;
+    c.save();
+    c.globalAlpha = Math.sin(p * Math.PI) * .42;
+    inkLine(c, [[bx, by], [bx + 26, by - 1.5], [bx + 44, by + .5]], '#ffffff', 1.35, 950 + i, .3, 1);
+    c.restore();
+  }
+
+  drawBicycle(c, t, boil);
+}
+
+function redraw(now) {
+  sketch.clearRect(left - 1, topEdge - 1, right - left + 2, bottom - topEdge + 2);
+  drawMotion(reducedMotion.matches ? 1.8 : now / 1000);
+  if (!document.hidden && !reducedMotion.matches) frame = requestAnimationFrame(redraw);
+}
+
+function refresh() {
+  cancelAnimationFrame(frame);
+  if (!innerWidth || !innerHeight) return;
+  const density = Math.min(devicePixelRatio || 1, 2);
+  const scale = Math.min(innerWidth / 328, innerHeight / 258);
+  const halfWidth = innerWidth / (2 * scale), halfHeight = innerHeight / (2 * scale);
+  left = 200 - halfWidth; right = 200 + halfWidth;
+  topEdge = 150 - halfHeight; bottom = 150 + halfHeight;
+  for (const ctx of [paper, sketch]) {
+    ctx.canvas.width = Math.round(innerWidth * density);
+    ctx.canvas.height = Math.round(innerHeight * density);
+    const sx = ctx.canvas.width / (right - left), sy = ctx.canvas.height / (bottom - topEdge);
+    ctx.setTransform(sx, 0, 0, sy, -left * sx, -topEdge * sy);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+  }
+  drawPaperScene();
+  redraw(performance.now());
+}
+addEventListener('resize', refresh);
+document.addEventListener('visibilitychange', refresh);
+reducedMotion.addEventListener('change', refresh);
+refresh();
+</script>
+</body>
+</html>

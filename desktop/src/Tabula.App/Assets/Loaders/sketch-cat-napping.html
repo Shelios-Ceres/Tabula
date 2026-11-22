@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>窗边眠猫</title>
+<style>
+  html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #f6efe0; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<div role="img" aria-label="水彩手绘的暖阳窗台上，一只橘白花猫蜷在旧书与绿萝旁安稳打盹，尾尖随呼吸轻轻摆动。">
+<canvas aria-hidden="true" id="paper"></canvas>
+<canvas aria-hidden="true" id="sketch"></canvas>
+</div>
+<script>
+'use strict';
+const paper = document.getElementById('paper').getContext('2d');
+const sketch = document.getElementById('sketch').getContext('2d');
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+const tau = Math.PI * 2;
+let left, topEdge, right, bottom, frame;
+
+// Deterministic PRNG for repeatable organic hand-drawn wobble.
+function rng(seed) {
+  let s = seed | 0;
+  return () => {
+    s = (s + 0x6D2B79F5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// Cold-pressed watercolor paper grain tile.
+const paperTile = document.createElement('canvas');
+paperTile.width = paperTile.height = 128;
+const pt = paperTile.getContext('2d');
+const pr = rng(42);
+for (let i = 0; i < 2600; i++) {
+  const x = pr() * 128, y = pr() * 128;
+  pt.fillStyle = i % 3 ? 'rgba(130,104,76,0.045)' : 'rgba(255,252,244,0.08)';
+  pt.fillRect(x, y, .7 + pr() * 1.6, .6 + pr() * 1.1);
+}
+for (let i = 0; i < 45; i++) {
+  pt.strokeStyle = 'rgba(148,124,96,0.035)';
+  pt.lineWidth = .6;
+  pt.beginPath();
+  const x = pr() * 128, y = pr() * 128;
+  pt.moveTo(x, y);
+  pt.lineTo(x + (pr() - .5) * 18, y + (pr() - .5) * 6);
+  pt.stroke();
+}
+
+// Hand-drawn wobbly stroke along sampled points (two light passes like fountain pen).
+function inkLine(c, pts, color = '#3f332c', width = 1.45, seed = 1, jitter = .9, passes = 2) {
+  const r = rng(seed);
+  for (let p = 0; p < passes; p++) {
+    c.beginPath();
+    pts.forEach(([x, y], idx) => {
+      const jx = (r() - .5) * jitter * (p ? 1.35 : 1);
+      const jy = (r() - .5) * jitter * (p ? 1.35 : 1);
+      if (idx === 0) c.moveTo(x + jx, y + jy);
+      else c.lineTo(x + jx, y + jy);
+    });
+    c.strokeStyle = color;
+    c.globalAlpha = p === 0 ? .88 : .34;
+    c.lineWidth = p === 0 ? width : width * .65;
+    c.stroke();
+  }
+  c.globalAlpha = 1;
+}
+
+function sampleQuad(x0, y0, cx, cy, x1, y1, n = 10) {
+  const out = [];
+  for (let i = 0; i <= n; i++) {
+    const u = i / n, m = 1 - u;
+    out.push([m * m * x0 + 2 * m * u * cx + u * u * x1, m * m * y0 + 2 * m * u * cy + u * u * y1]);
+  }
+  return out;
+}
+
+function sampleEllipse(cx, cy, rx, ry, a0 = 0, a1 = tau, n = 22, rot = 0) {
+  const out = [], cr = Math.cos(rot), sr = Math.sin(rot);
+  for (let i = 0; i <= n; i++) {
+    const a = a0 + (i / n) * (a1 - a0);
+    const lx = Math.cos(a) * rx, ly = Math.sin(a) * ry;
+    out.push([cx + lx * cr - ly * sr, cy + lx * sr + ly * cr]);
+  }
+  return out;
+}
+
+// Layered translucent watercolor blob with organic wet edge.
+function waterBlob(c, pts, color, seed = 7, alpha = .26, layers = 3) {
+  const r = rng(seed);
+  for (let l = 0; l < layers; l++) {
+    c.beginPath();
+    pts.forEach(([x, y], i) => {
+      const dx = (r() - .5) * 3.4, dy = (r() - .5) * 3.2;
+      if (i === 0) c.moveTo(x + dx, y + dy);
+      else c.lineTo(x + dx, y + dy);
+    });
+    c.closePath();
+    c.fillStyle = color;
+    c.globalAlpha = alpha * (1 - l * .16);
+    c.fill();
+    if (l === 0) {
+      c.strokeStyle = color;
+      c.globalAlpha = alpha * .55;
+      c.lineWidth = 1.4;
+      c.stroke();
+    }
+  }
+  c.globalAlpha = 1;
+}
+
+// Pencil cross-hatching inside an area.
+function hatch(c, x0, y0, w, h, step = 5, angle = -.55, color = 'rgba(72,58,48,0.22)', seed = 19) {
+  const r = rng(seed);
+  c.save();
+  c.beginPath(); c.rect(x0, y0, w, h); c.clip();
+  c.strokeStyle = color;
+  c.lineWidth = .75;
+  const diag = Math.hypot(w, h);
+  for (let d = -diag; d < diag; d += step) {
+    const x = x0 + w * .5 + d * Math.cos(angle + Math.PI / 2);
+    const y = y0 + h * .5 + d * Math.sin(angle + Math.PI / 2);
+    const dx = Math.cos(angle) * diag, dy = Math.sin(angle) * diag;
+    c.beginPath();
+    c.moveTo(x - dx + (r() - .5) * 2, y - dy + (r() - .5) * 2);
+    c.lineTo(x + dx + (r() - .5) * 2, y + dy + (r() - .5) * 2);
+    c.stroke();
+  }
+  c.restore();
+}
+
+function drawLeaf(c, x, y, angle, s, seed) {
+  c.save(); c.translate(x, y); c.rotate(angle); c.scale(s, s);
+  const leafPts = [
+    [0, 0], [5, -7], [15, -10], [26, -5], [30, 0], [24, 6], [13, 9], [4, 5], [0, 0]
+  ];
+  waterBlob(c, leafPts, '#7aa978', seed, .34, 3);
+  waterBlob(c, leafPts.slice(0, 6), '#a8c98e', seed + 9, .24, 2);
+  inkLine(c, leafPts, '#3a4a39', 1.15, seed + 2, .65, 2);
+  inkLine(c, [[2, 0], [14, -.5], [26, 0]], '#485d44', .85, seed + 5, .45, 1);
+  c.restore();
+}
+
+function drawPaperScene() {
+  const c = paper;
+  // Warm cream watercolor paper ground.
+  const bg = c.createLinearGradient(0, topEdge, 0, bottom);
+  bg.addColorStop(0, '#f9f4e8');
+  bg.addColorStop(.65, '#f4ebd7');
+  bg.addColorStop(1, '#ebdfc6');
+  c.fillStyle = bg;
+  c.fillRect(left, topEdge, right - left, bottom - topEdge);
+
+  // Soft loose sky-blue watercolor wash outside the sunlit window.
+  const win = { x: 56, y: 24, w: 288, h: 162 };
+  waterBlob(c, [
+    [win.x + 2, win.y + 4], [win.x + win.w - 4, win.y + 2],
+    [win.x + win.w - 2, win.y + win.h - 2], [win.x + 3, win.y + win.h - 3]
+  ], '#9dc6df', 101, .28, 3);
+  waterBlob(c, [
+    [win.x + 6, win.y + 6], [win.x + win.w - 6, win.y + 5],
+    [win.x + win.w - 4, win.y + 84], [win.x + 6, win.y + 92]
+  ], '#7eb1d4', 105, .18, 2);
+  // Soft white gouache clouds painted loosely inside the pane.
+  waterBlob(c, sampleEllipse(145, 92, 34, 15, 0, tau, 14), '#fffdf7', 110, .42, 2);
+  waterBlob(c, sampleEllipse(174, 96, 26, 13, 0, tau, 14), '#fffdf7', 112, .42, 2);
+  waterBlob(c, sampleEllipse(276, 76, 30, 12, 0, tau, 14), '#fffdf7', 114, .38, 2);
+  // Distant pastel hills outside the window.
+  waterBlob(c, [[win.x, 186], [win.x, 154], [128, 138], [216, 152], [302, 134], [win.x + win.w, 148], [win.x + win.w, 186]], '#9bb8a8', 120, .3, 2);
+
+  // Hand-sketched wooden window frame & mullions.
+  const sillY = 188;
+  waterBlob(c, [[win.x - 10, win.y - 8], [win.x + win.w + 10, win.y - 8], [win.x + win.w + 10, win.y + 2], [win.x - 10, win.y + 2]], '#b58d67', 125, .28, 2);
+  inkLine(c, [[win.x, win.y], [win.x + win.w, win.y], [win.x + win.w, sillY], [win.x, sillY], [win.x, win.y]], '#4a3a30', 1.65, 130, 1.0, 2);
+  inkLine(c, [[win.x - 8, win.y - 8], [win.x + win.w + 8, win.y - 8], [win.x + win.w + 8, sillY], [win.x - 8, sillY], [win.x - 8, win.y - 8]], '#4a3a30', 1.2, 132, 1.0, 2);
+  // Window vertical bar & horizontal bar.
+  inkLine(c, [[196, win.y], [196, sillY]], '#524136', 1.4, 134, .9, 2);
+  inkLine(c, [[202, win.y], [202, sillY]], '#524136', 1.1, 135, .8, 1);
+  inkLine(c, [[win.x, 108], [win.x + win.w, 108]], '#524136', 1.3, 136, .9, 2);
+
+  // Slanted golden afternoon sunbeam falling across the sill.
+  c.save();
+  const beam = [[116, win.y], [248, win.y], [312, bottom], [150, bottom]];
+  waterBlob(c, beam, '#fae08c', 140, .18, 2);
+  c.restore();
+
+  // Warm wooden windowsill stretching across full width.
+  waterBlob(c, [[left - 8, sillY], [right + 8, sillY], [right + 8, sillY + 26], [left - 8, sillY + 26]], '#cfa578', 145, .36, 3);
+  waterBlob(c, [[left - 8, sillY + 26], [right + 8, sillY + 26], [right + 8, bottom + 8], [left - 8, bottom + 8]], '#e0cca9', 148, .22, 2);
+  hatch(c, left, sillY + 25, right - left, 18, 6.5, -.42, 'rgba(92,70,52,0.18)', 151);
+  inkLine(c, [[left - 4, sillY], [140, sillY - .4], [260, sillY + .5], [right + 4, sillY]], '#47362c', 1.7, 152, .85, 2);
+  inkLine(c, [[left - 4, sillY + 24], [180, sillY + 24.4], [right + 4, sillY + 23.8]], '#47362c', 1.5, 154, .85, 2);
+
+  // Stack of two hand-sketched vintage books on the left of the sill.
+  const b1 = [[72, 198], [136, 196], [138, 211], [74, 213]];
+  waterBlob(c, b1, '#c97663', 160, .44, 3);
+  inkLine(c, [...b1, b1[0]], '#42322b', 1.35, 161, .75, 2);
+  inkLine(c, [[76, 205], [134, 204]], '#f7ecd8', 1.1, 162, .5, 1);
+  const b2 = [[80, 184], [132, 183], [134, 196], [81, 197]];
+  waterBlob(c, b2, '#698ea3', 164, .44, 3);
+  inkLine(c, [...b2, b2[0]], '#42322b', 1.3, 165, .75, 2);
+
+  // Terracotta potted pothos plant on the right sill.
+  const pot = [[280, 174], [316, 174], [311, 208], [285, 208]];
+  waterBlob(c, pot, '#cc7d59', 170, .48, 3);
+  hatch(c, 297, 176, 16, 30, 4.5, -.6, 'rgba(84,46,32,0.22)', 171);
+  inkLine(c, [[277, 174], [319, 174], [318, 181], [278, 181], [277, 174]], '#47332a', 1.35, 172, .75, 2);
+  inkLine(c, [[281, 181], [285, 208], [311, 208], [315, 181]], '#47332a', 1.35, 173, .75, 2);
+  // Trailing hand-drawn leafy stems.
+  inkLine(c, sampleQuad(296, 173, 286, 150, 274, 144, 8), '#43583f', 1.25, 175, .7, 2);
+  inkLine(c, sampleQuad(302, 173, 314, 148, 326, 142, 8), '#43583f', 1.25, 176, .7, 2);
+  inkLine(c, sampleQuad(308, 176, 324, 186, 330, 214, 8), '#43583f', 1.2, 177, .7, 2);
+  drawLeaf(c, 284, 155, -2.5, .72, 180);
+  drawLeaf(c, 296, 156, -1.6, .78, 182);
+  drawLeaf(c, 308, 154, -.65, .74, 184);
+  drawLeaf(c, 320, 148, -.25, .64, 186);
+  drawLeaf(c, 324, 192, .85, .66, 188);
+  drawLeaf(c, 329, 208, 1.35, .58, 190);
+
+  // Soft pencil shadow under the sleeping cat.
+  hatch(c, 152, 204, 108, 10, 4.5, -.28, 'rgba(72,56,42,0.22)', 195);
+
+  // Cold-pressed paper texture overlay.
+  c.fillStyle = c.createPattern(paperTile, 'repeat');
+  c.fillRect(left, topEdge, right - left, bottom - topEdge);
+}
+
+function drawCat(c, t, boil) {
+  const breath = Math.sin(t * 1.65);
+  const rise = breath * 2.4;
+  // Soft ginger-cream watercolor body curled in a warm loaf.
+  const body = [];
+  for (let i = 0; i <= 24; i++) {
+    const a = (i / 24) * tau;
+    const rx = 44 + breath * .8;
+    const ry = 25 + (Math.sin(a) < 0 ? rise : 0);
+    body.push([205 + Math.cos(a) * rx, 189 + Math.sin(a) * ry * (Math.sin(a) > 0 ? .76 : 1.06)]);
+  }
+  waterBlob(c, body, '#fff7e8', 300, .62, 2);
+  // Warm ginger watercolor patches loosely painted onto the back & hip.
+  waterBlob(c, sampleEllipse(214, 176 - rise * .5, 28, 16, 0, tau, 14, -.12), '#e69854', 302, .42, 3);
+  waterBlob(c, sampleEllipse(184, 179 - rise * .3, 18, 12, 0, tau, 12, .2), '#d98142', 304, .34, 2);
+  // Subtle tabby stripes painted in loose dry-brush strokes.
+  for (let i = 0; i < 4; i++) {
+    const sx = 198 + i * 9.5;
+    inkLine(c, sampleQuad(sx, 165 - rise * .7, sx + 2, 173 - rise * .4, sx - 1, 180 - rise * .2, 6), '#9f522c', 1.8, 310 + i + boil * 7, .7, 1);
+  }
+  // Fountain pen contour with gentle hand-drawn line boil.
+  inkLine(c, body, '#3e3028', 1.55, 320 + boil * 13, .85, 2);
+
+  // Tucked sleeping head resting on front paws (left side of the loaf).
+  const hx = 171, hy = 186 - rise * .22;
+  const head = sampleEllipse(hx, hy, 19.5, 16.5, 0, tau, 18, .08);
+  waterBlob(c, head, '#fff8eb', 330, .75, 2);
+  waterBlob(c, sampleEllipse(hx - 2, hy - 6, 15, 9, 0, tau, 12, -.1), '#e59652', 332, .42, 2);
+  // Two triangular ears.
+  const earL = [[hx - 14, hy - 9], [hx - 18, hy - 24], [hx - 5, hy - 15]];
+  const earR = [[hx + 3, hy - 15], [hx + 11, hy - 25], [hx + 14, hy - 10]];
+  waterBlob(c, earL, '#e49450', 334, .48, 2);
+  waterBlob(c, earR, '#e49450', 336, .48, 2);
+  waterBlob(c, [[hx - 13, hy - 11], [hx - 15, hy - 19], [hx - 8, hy - 14]], '#eab0a4', 338, .42, 1);
+  waterBlob(c, [[hx + 5, hy - 14], [hx + 10, hy - 20], [hx + 12, hy - 12]], '#eab0a4', 339, .42, 1);
+  inkLine(c, earL, '#3e3028', 1.4, 340 + boil * 5, .65, 2);
+  inkLine(c, earR, '#3e3028', 1.4, 341 + boil * 5, .65, 2);
+  inkLine(c, head, '#3e3028', 1.5, 342 + boil * 11, .75, 2);
+
+  // Closed peaceful curved eyes, pink nose & tiny whiskers.
+  inkLine(c, sampleQuad(hx - 10, hy - 1, hx - 6.5, hy + 2.6, hx - 3, hy - .5, 6), '#3d2e26', 1.3, 350 + boil * 3, .45, 1);
+  inkLine(c, sampleQuad(hx + 2.5, hy - .5, hx + 6, hy + 2.6, hx + 9.5, hy - 1, 6), '#3d2e26', 1.3, 351 + boil * 3, .45, 1);
+  waterBlob(c, [[hx - 1.8, hy + 3.5], [hx + 1.8, hy + 3.5], [hx, hy + 5.6]], '#d98980', 352, .75, 1);
+  // Whiskers flicking faintly.
+  inkLine(c, [[hx - 14, hy + 2], [hx - 25, hy + 1]], '#4a3b32', .95, 354 + boil, .4, 1);
+  inkLine(c, [[hx - 14, hy + 5], [hx - 24, hy + 6.5]], '#4a3b32', .95, 355 + boil, .4, 1);
+  inkLine(c, [[hx + 14, hy + 2], [hx + 24, hy + 1]], '#4a3b32', .95, 356 + boil, .4, 1);
+  inkLine(c, [[hx + 14, hy + 5], [hx + 23, hy + 6.5]], '#4a3b32', .95, 357 + boil, .4, 1);
+  // Tucked front paw.
+  const paw = sampleEllipse(hx - 6, 204, 10.5, 5.5, 0, tau, 12, -.05);
+  waterBlob(c, paw, '#fff8ec', 360, .82, 2);
+  inkLine(c, paw, '#3e3028', 1.35, 361 + boil * 3, .55, 2);
+
+  // Gently swishing ginger tail curling around the right side of the sill.
+  const wag = Math.sin(t * 1.15) * 9 + Math.sin(t * 2.3) * 2.5;
+  const tailCenter = sampleQuad(243, 198, 265 + wag * .35, 206, 262 + wag, 186 + Math.cos(t * 1.15) * 4, 12);
+  // Soft wide watercolor fill along the tail curve.
+  c.save();
+  c.beginPath();
+  tailCenter.forEach(([x, y], i) => i ? c.lineTo(x, y) : c.moveTo(x, y));
+  c.strokeStyle = 'rgba(229,150,82,0.72)';
+  c.lineWidth = 8.5;
+  c.stroke();
+  c.strokeStyle = 'rgba(255,248,236,0.85)';
+  c.lineWidth = 6.5;
+  c.beginPath();
+  c.moveTo(tailCenter[9][0], tailCenter[9][1]);
+  c.lineTo(tailCenter[12][0], tailCenter[12][1]);
+  c.stroke();
+  c.restore();
+  // Ink outline hugging both sides of the curling tail.
+  const tOut = [], tIn = [];
+  for (let i = 0; i < tailCenter.length; i++) {
+    const p = tailCenter[i], q = tailCenter[Math.min(tailCenter.length - 1, i + 1)];
+    const ang = Math.atan2(q[1] - p[1], q[0] - p[0]);
+    const nx = -Math.sin(ang) * 4.2, ny = Math.cos(ang) * 4.2;
+    tOut.push([p[0] + nx, p[1] + ny]);
+    tIn.unshift([p[0] - nx, p[1] - ny]);
+  }
+  inkLine(c, [...tOut, ...tIn], '#3e3028', 1.35, 370 + boil * 9, .65, 2);
+}
+
+function drawMotion(t) {
+  const c = sketch;
+  // Gentle 5fps hand-drawn line boil index (frozen in reduced-motion).
+  const boil = reducedMotion.matches ? 0 : Math.floor(t * 5) % 4;
+  drawCat(c, t, boil);
+
+  // Hand-sketched floating "z" sleep doodles drifting up from the cat.
+  for (let i = 0; i < 3; i++) {
+    const p = (t / 4.8 + i / 3) % 1;
+    const x = 148 - p * 22 + Math.sin(p * 4.5 + i * 2) * 5;
+    const y = 154 - p * 52;
+    const s = 3.2 + p * 3.8;
+    const alpha = Math.sin(p * Math.PI) * .64;
+    c.save();
+    c.globalAlpha = alpha;
+    c.translate(x, y);
+    c.rotate(-.18 + Math.sin(p * 3 + i) * .12);
+    inkLine(c, [[-s, -s], [s, -s], [-s, s], [s, s]], '#5c4b40', 1.2, 410 + i * 5 + boil * 3, .38, 1);
+    c.restore();
+  }
+
+  // Sunlit dust motes floating lazily inside the window light beam.
+  for (let i = 0; i < 14; i++) {
+    const p = (t / (7.5 + (i % 4) * 1.6) + i * .17) % 1;
+    const x = 132 + ((i * 47) % 136) + Math.sin(t * .9 + i * 2) * 8;
+    const y = 46 + p * 168;
+    const alpha = Math.sin(p * Math.PI) * .45;
+    c.beginPath();
+    c.arc(x, y, i % 3 ? 1.1 : 1.7, 0, tau);
+    c.fillStyle = `rgba(255,244,200,${alpha})`;
+    c.fill();
+  }
+}
+
+function redraw(now) {
+  sketch.clearRect(left - 1, topEdge - 1, right - left + 2, bottom - topEdge + 2);
+  drawMotion(reducedMotion.matches ? 1.2 : now / 1000);
+  if (!document.hidden && !reducedMotion.matches) frame = requestAnimationFrame(redraw);
+}
+
+function refresh() {
+  cancelAnimationFrame(frame);
+  if (!innerWidth || !innerHeight) return;
+  const density = Math.min(devicePixelRatio || 1, 2);
+  const scale = Math.min(innerWidth / 328, innerHeight / 258);
+  const halfWidth = innerWidth / (2 * scale), halfHeight = innerHeight / (2 * scale);
+  left = 200 - halfWidth; right = 200 + halfWidth;
+  topEdge = 150 - halfHeight; bottom = 150 + halfHeight;
+  for (const ctx of [paper, sketch]) {
+    ctx.canvas.width = Math.round(innerWidth * density);
+    ctx.canvas.height = Math.round(innerHeight * density);
+    const sx = ctx.canvas.width / (right - left), sy = ctx.canvas.height / (bottom - topEdge);
+    ctx.setTransform(sx, 0, 0, sy, -left * sx, -topEdge * sy);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+  }
+  drawPaperScene();
+  redraw(performance.now());
+}
+addEventListener('resize', refresh);
+document.addEventListener('visibilitychange', refresh);
+reducedMotion.addEventListener('change', refresh);
+refresh();
+</script>
+</body>
+</html>

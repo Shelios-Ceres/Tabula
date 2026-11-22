@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>气球书页</title>
+<style>
+  html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #f8eee2; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<div role="img" aria-label="晨曦水彩绘本般的云海之上，彩色条纹热气球点亮暖橘火苗，带着远方小镇与流云轻轻浮沉。">
+<canvas aria-hidden="true" id="paper"></canvas>
+<canvas aria-hidden="true" id="sketch"></canvas>
+</div>
+<script>
+'use strict';
+const paper = document.getElementById('paper').getContext('2d');
+const sketch = document.getElementById('sketch').getContext('2d');
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+const tau = Math.PI * 2;
+let left, topEdge, right, bottom, frame;
+
+function rng(seed) {
+  let s = seed | 0;
+  return () => {
+    s = (s + 0x6D2B79F5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const paperTile = document.createElement('canvas');
+paperTile.width = paperTile.height = 128;
+const pt = paperTile.getContext('2d');
+const pr = rng(108);
+for (let i = 0; i < 2600; i++) {
+  pt.fillStyle = i % 3 ? 'rgba(138,104,88,0.042)' : 'rgba(255,250,242,0.085)';
+  pt.fillRect(pr() * 128, pr() * 128, .7 + pr() * 1.5, .6 + pr() * 1.1);
+}
+
+function inkLine(c, pts, color = '#443532', width = 1.4, seed = 1, jitter = .8, passes = 2) {
+  const r = rng(seed);
+  for (let p = 0; p < passes; p++) {
+    c.beginPath();
+    pts.forEach(([x, y], idx) => {
+      const jx = (r() - .5) * jitter * (p ? 1.3 : 1);
+      const jy = (r() - .5) * jitter * (p ? 1.3 : 1);
+      if (idx === 0) c.moveTo(x + jx, y + jy);
+      else c.lineTo(x + jx, y + jy);
+    });
+    c.strokeStyle = color;
+    c.globalAlpha = p === 0 ? .86 : .32;
+    c.lineWidth = p === 0 ? width : width * .62;
+    c.stroke();
+  }
+  c.globalAlpha = 1;
+}
+
+function waterBlob(c, pts, color, seed = 7, alpha = .26, layers = 3) {
+  const r = rng(seed);
+  for (let l = 0; l < layers; l++) {
+    c.beginPath();
+    pts.forEach(([x, y], i) => {
+      const dx = (r() - .5) * 3.4, dy = (r() - .5) * 3.1;
+      if (i === 0) c.moveTo(x + dx, y + dy);
+      else c.lineTo(x + dx, y + dy);
+    });
+    c.closePath();
+    c.fillStyle = color;
+    c.globalAlpha = alpha * (1 - l * .16);
+    c.fill();
+    if (l === 0) {
+      c.strokeStyle = color;
+      c.globalAlpha = alpha * .5;
+      c.lineWidth = 1.4;
+      c.stroke();
+    }
+  }
+  c.globalAlpha = 1;
+}
+
+function sampleEllipse(cx, cy, rx, ry, n = 18, rot = 0) {
+  const out = [], cr = Math.cos(rot), sr = Math.sin(rot);
+  for (let i = 0; i <= n; i++) {
+    const a = (i / n) * tau;
+    const lx = Math.cos(a) * rx, ly = Math.sin(a) * ry;
+    out.push([cx + lx * cr - ly * sr, cy + lx * sr + ly * cr]);
+  }
+  return out;
+}
+
+function drawPaperScene() {
+  const c = paper;
+  // Morning peach-to-mist-blue wet-on-wet watercolor sky.
+  const sky = c.createLinearGradient(0, topEdge, 0, bottom);
+  sky.addColorStop(0, '#cfe1eb');
+  sky.addColorStop(.45, '#ece6de');
+  sky.addColorStop(.78, '#f7dec8');
+  sky.addColorStop(1, '#f0cbb1');
+  c.fillStyle = sky;
+  c.fillRect(left, topEdge, right - left, bottom - topEdge);
+
+  // Seamless wet-on-wet morning blush & upper cerulean wash (no hard ellipse rims).
+  const blush = c.createRadialGradient(204, 212, 10, 204, 212, 175);
+  blush.addColorStop(0, 'rgba(246,190,148,0.44)');
+  blush.addColorStop(.6, 'rgba(245,204,170,0.16)');
+  blush.addColorStop(1, 'rgba(245,204,170,0)');
+  c.fillStyle = blush;
+  c.fillRect(left, topEdge, right - left, bottom - topEdge);
+  const cool = c.createRadialGradient(112, 68, 8, 112, 68, 160);
+  cool.addColorStop(0, 'rgba(154,196,222,0.32)');
+  cool.addColorStop(1, 'rgba(154,196,222,0)');
+  c.fillStyle = cool;
+  c.fillRect(left, topEdge, right - left, bottom - topEdge);
+
+  // Rolling pastel hills sketched gently along the lower margin.
+  waterBlob(c, [
+    [left - 20, bottom + 12], [left - 20, 224], [84, 212], [176, 228],
+    [276, 214], [right + 20, 226], [right + 20, bottom + 12]
+  ], '#b4c2b2', 410, .42, 3);
+  waterBlob(c, [
+    [left - 20, bottom + 12], [left - 20, 240], [108, 228], [218, 242],
+    [322, 228], [right + 20, 238], [right + 20, bottom + 12]
+  ], '#8ea699', 412, .44, 3);
+  inkLine(c, [[left, 224], [84, 212], [176, 228], [276, 214], [right, 226]], '#5d6b66', 1.15, 415, .8, 1);
+
+  // Tiny storybook hillside village roofs & slender bell tower sketched in fine ink.
+  const houses = [
+    [98, 220, 16, 12, '#d8856d'], [118, 224, 14, 10, '#e3b366'],
+    [135, 222, 12, 11, '#7999a8'], [274, 220, 15, 11, '#d8856d'], [292, 224, 13, 10, '#e0b068']
+  ];
+  houses.forEach(([hx, hy, hw, hh, roof], idx) => {
+    waterBlob(c, [[hx, hy], [hx + hw, hy], [hx + hw, hy + hh], [hx, hy + hh]], '#fbf3e4', 420 + idx * 3, .85, 1);
+    waterBlob(c, [[hx - 2, hy], [hx + hw * .5, hy - 8], [hx + hw + 2, hy]], roof, 421 + idx * 3, .72, 2);
+    inkLine(c, [[hx, hy + hh], [hx, hy], [hx + hw * .5, hy - 8], [hx + hw, hy], [hx + hw, hy + hh]], '#4d3e3a', 1.0, 422 + idx * 3, .45, 1);
+  });
+  // Slender steeple peeking up near the left village cluster.
+  waterBlob(c, [[110, 220], [116, 220], [113, 200]], '#728996', 440, .65, 1);
+  inkLine(c, [[110, 222], [110, 213], [113, 200], [116, 213], [116, 222]], '#4a3d3a', 1.0, 441, .4, 1);
+
+  c.fillStyle = c.createPattern(paperTile, 'repeat');
+  c.fillRect(left, topEdge, right - left, bottom - topEdge);
+}
+
+function drawCloudPuff(c, x, y, s, seed) {
+  c.save(); c.translate(x, y); c.scale(s, s);
+  waterBlob(c, sampleEllipse(0, 0, 26, 11, 14), '#fffbf3', seed, .7, 2);
+  waterBlob(c, sampleEllipse(-18, 4, 16, 8.5, 12), '#fffbf3', seed + 1, .68, 2);
+  waterBlob(c, sampleEllipse(18, 4, 17, 9, 12), '#fffbf3', seed + 2, .68, 2);
+  inkLine(c, [[-30, 8], [-19, -4], [-4, -10], [11, -8], [24, -2], [31, 8]], '#8d9da8', .85, seed + 4, .65, 1);
+  c.restore();
+}
+
+function drawBalloon(c, x, y, s, tilt, colors, flame, boil, seed) {
+  c.save();
+  c.translate(x, y);
+  c.rotate(tilt);
+  c.scale(s, s);
+
+  // Classic teardrop envelope outline sampled smoothly.
+  const env = [
+    [-11, 20], [-21, 8], [-32, -8], [-34, -26], [-26, -44], [-13, -54],
+    [0, -57], [13, -54], [26, -44], [34, -26], [32, -8], [21, 8], [11, 20]
+  ];
+  // Base ivory paper wash.
+  waterBlob(c, env, '#fcf4e3', seed, .86, 2);
+
+  // Colored vertical watercolor gores clipped cleanly inside the balloon silhouette.
+  c.save();
+  c.beginPath();
+  env.forEach(([px, py], i) => i ? c.lineTo(px, py) : c.moveTo(px, py));
+  c.closePath();
+  c.clip();
+  // Left coral stripe
+  waterBlob(c, [[-36, -60], [-14, -60], [-9, 24], [-22, 24]], colors[0], seed + 2, .72, 2);
+  // Center mustard-gold stripe
+  waterBlob(c, [[-11, -60], [11, -60], [7, 24], [-7, 24]], colors[1], seed + 3, .72, 2);
+  // Right teal stripe
+  waterBlob(c, [[14, -60], [36, -60], [22, 24], [9, 24]], colors[2], seed + 4, .72, 2);
+  // Decorative horizontal cream bunting band across the equator.
+  waterBlob(c, [[-36, -24], [36, -24], [36, -14], [-36, -14]], '#fff7e6', seed + 5, .74, 2);
+  // Warm internal glow when the burner fires.
+  if (flame > .05) {
+    const glow = c.createRadialGradient(0, 14, 2, 0, 2, 42);
+    glow.addColorStop(0, `rgba(255,194,88,${.52 * flame})`);
+    glow.addColorStop(1, 'rgba(255,160,72,0)');
+    c.fillStyle = glow;
+    c.fillRect(-38, -60, 76, 85);
+  }
+  c.restore();
+
+  // Hand-inked envelope contour & curved gore ribs.
+  inkLine(c, [...env, env[0]], '#42332e', 1.5, seed + 10 + boil * 7, .75, 2);
+  inkLine(c, [[0, -57], [-12, -46], [-18, -22], [-14, 2], [-6, 20]], '#59443d', 1.0, seed + 12 + boil * 3, .5, 1);
+  inkLine(c, [[0, -57], [12, -46], [18, -22], [14, 2], [6, 20]], '#59443d', 1.0, seed + 13 + boil * 3, .5, 1);
+  inkLine(c, [[-33, -24], [0, -21], [33, -24]], '#59443d', .95, seed + 14 + boil, .5, 1);
+  inkLine(c, [[-32, -14], [0, -11], [32, -14]], '#59443d', .95, seed + 15 + boil, .5, 1);
+
+  // Suspension ropes descending to the wicker basket.
+  inkLine(c, [[-9, 20], [-6.5, 36]], '#524036', 1.05, seed + 16 + boil, .35, 1);
+  inkLine(c, [[9, 20], [6.5, 36]], '#524036', 1.05, seed + 17 + boil, .35, 1);
+  inkLine(c, [[0, 20], [0, 36]], '#524036', .85, seed + 18 + boil, .3, 1);
+
+  // Burner warm orange-gold watercolor flame pulsing softly above the basket.
+  if (flame > .05) {
+    c.save();
+    c.globalAlpha = flame;
+    waterBlob(c, [[0, 28], [-4.5, 22], [0, 14 - flame * 3], [4.5, 22]], '#f28b40', seed + 19, .85, 2);
+    waterBlob(c, [[0, 27], [-2.2, 22], [0, 18], [2.2, 22]], '#fff0a6', seed + 20, .92, 1);
+    c.restore();
+  }
+
+  // Hand-sketched wicker basket.
+  const basket = [[-8, 36], [8, 36], [6.5, 48], [-6.5, 48]];
+  waterBlob(c, basket, '#c99862', seed + 22, .8, 2);
+  inkLine(c, [...basket, basket[0]], '#463327', 1.35, seed + 23 + boil * 3, .5, 2);
+  inkLine(c, [[-7.2, 42], [7.2, 42]], '#6b4e38', .9, seed + 24, .35, 1);
+
+  c.restore();
+}
+
+function drawMotion(t) {
+  const c = sketch;
+  const boil = reducedMotion.matches ? 0 : Math.floor(t * 5) % 4;
+
+  // Distant smaller pastel balloons floating calmly in the morning mist.
+  const b2y = 114 + Math.sin(t * .85 + 1.4) * 7;
+  drawBalloon(c, 92 + Math.sin(t * .45) * 4, b2y, .42, Math.sin(t * .7 + 1) * .04, ['#6a9bb0', '#f0c56e', '#e38774'], .15, boil, 610);
+  const b3y = 140 + Math.sin(t * .95 + 3.2) * 5;
+  drawBalloon(c, 314 + Math.cos(t * .5) * 3.5, b3y, .32, Math.sin(t * .8 + 2) * .035, ['#8eb388', '#f2cf7c', '#6c98ab'], .1, boil, 640);
+
+  // Drifting background clouds behind the main balloon.
+  const cl1 = left - 55 + ((t * 4.5 + 40) % (right - left + 120));
+  drawCloudPuff(c, cl1, 174, .92, 660);
+
+  // Hero storybook balloon gently bobbing with periodic warm burner puffs.
+  const bob = Math.sin(t * 1.05) * 8.5;
+  const tilt = Math.sin(t * .72 - .4) * .045;
+  const burnerCycle = (t / 4.8) % 1;
+  const flame = burnerCycle < .28 ? Math.sin((burnerCycle / .28) * Math.PI) : .08;
+  drawBalloon(c, 200 + Math.sin(t * .55) * 5, 134 + bob, 1.04, tilt, ['#de6958', '#ebb956', '#5a949e'], flame, boil, 500);
+
+  // Foreground translucent cloud wisp passing lazily near the lower sky.
+  const cl2 = left - 60 + ((t * 6.4 + 210) % (right - left + 130));
+  drawCloudPuff(c, cl2, 198, .72, 675);
+
+  // Three tiny sketched birds gliding across the dawn sky.
+  for (let i = 0; i < 3; i++) {
+    const bp = (t / (10.5 + i * 1.4) + i * .12 + .2) % 1;
+    const bx = left - 20 + bp * (right - left + 40);
+    const by = 78 + i * 11 + Math.sin(t * 2.5 + i * 1.8) * 3.5;
+    const fl = Math.sin(t * 5.8 + i * 2.1) * 2.4;
+    inkLine(c, [[bx - 5.5, by + fl], [bx - 2, by - 1.8], [bx, by + .5], [bx + 2, by - 1.8], [bx + 5.5, by + fl]], '#544a4c', 1.05, 700 + i + boil, .25, 1);
+  }
+}
+
+function redraw(now) {
+  sketch.clearRect(left - 1, topEdge - 1, right - left + 2, bottom - topEdge + 2);
+  drawMotion(reducedMotion.matches ? 0.65 : now / 1000);
+  if (!document.hidden && !reducedMotion.matches) frame = requestAnimationFrame(redraw);
+}
+
+function refresh() {
+  cancelAnimationFrame(frame);
+  if (!innerWidth || !innerHeight) return;
+  const density = Math.min(devicePixelRatio || 1, 2);
+  const scale = Math.min(innerWidth / 328, innerHeight / 258);
+  const halfWidth = innerWidth / (2 * scale), halfHeight = innerHeight / (2 * scale);
+  left = 200 - halfWidth; right = 200 + halfWidth;
+  topEdge = 150 - halfHeight; bottom = 150 + halfHeight;
+  for (const ctx of [paper, sketch]) {
+    ctx.canvas.width = Math.round(innerWidth * density);
+    ctx.canvas.height = Math.round(innerHeight * density);
+    const sx = ctx.canvas.width / (right - left), sy = ctx.canvas.height / (bottom - topEdge);
+    ctx.setTransform(sx, 0, 0, sy, -left * sx, -topEdge * sy);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+  }
+  drawPaperScene();
+  redraw(performance.now());
+}
+addEventListener('resize', refresh);
+document.addEventListener('visibilitychange', refresh);
+reducedMotion.addEventListener('change', refresh);
+refresh();
+</script>
+</body>
+</html>

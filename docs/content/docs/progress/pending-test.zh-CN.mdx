@@ -7,6 +7,8 @@ description: 当前版本已实现但仍需人工验证的变更项
 
 - 项目由 Infinite Canvas 更名为 Tabula（丹青）：窗口标题、设置页「关于」（`Tabula（丹青）Ceres 1.0`）、可执行文件（`Tabula.exe`）、解决方案与项目命名空间（`Tabula.*`）、MCP 服务名（`tabula`）、命名管道（`Tabula-mcp-*`）、环境变量（`TABULA_DATA`、`TABULA_GLASS_TRACE`、`TABULA_GLASS_TRACE_GPU`、`TABULA_TEST_RECYCLE_BIN`）、`.mcp.json` 与文档已同步更新；默认本地数据目录 `%LocalAppData%\InfiniteCanvas` 保持不变。请测试：编译 `desktop/Tabula.sln` 后启动 `Tabula.exe`，确认原有画布和设置照常读取，查看标题栏和设置页「关于」，并同步更新外部 Agent 的 MCP 路径与桌面小组件路径。
 
+- 新增四幅原创手绘钢笔淡彩风等待动画（窗边眠猫 `sketch-cat-napping.html`、纸船溪流 `sketch-paper-boat.html`、骑行微风 `sketch-bicycle-breeze.html`、气球书页 `sketch-hot-air-balloon.html`），采用冷压水彩纸纹理、透明叠色水渍、双遍微颤钢笔线与 5fps 手绘线条呼吸效果。请在新数据目录确认共 14 幅原创等待动画全部装入 `loaders/`（已有目录沿用自选内容），检查横/竖图片节点中的适配、开启「减少动态效果」时定格静帧、以及生成结果到达后及时切回图片。
+
 - 「微光之境」新增潮汐灯塔、雨落青盏、山谷夜车、月下昙花四幅原创等待动画。请在新数据目录中确认十幅都装入 `loaders/`。已有目录沿用自选内容。请确认新作在横、竖图片节点里均能播放，系统开启「减少动态效果」时显示静帧，生成预览到达后及时切回图片。
 
 - 指令栏实测后的修复（R3b 阶段；编译无警告，358 个单元测试通过；用计算机操作在改名的隔离测试副本上驱动，有左键、按键、右键，窗口最大化和还原各测了一次）：（a）Ctrl+K 打开命令面板后搜索框立刻有焦点（之前是同一步里先显示再聚焦，聚焦会失败；现在 `CommandPalette.Open` 先排版再聚焦），输入马上过滤，焦点在面板内任何位置按 Esc 都能关。（b）小地图不再压在指令栏上：指令栏左右范围碰到它时，小地图抬到指令栏上方（`CanvasView.ComposerMoved`、`CanvasPage.PlaceMap`），指令栏收起后落回原位；已在约 1389 DIP 宽和约 1100 DIP 宽（资料库打开）下看过。（c）提示词框里的 Esc：有选区时仍分两步（先离开输入框，再清选区并收起指令栏）；没有选区时，用 / 或 Enter 调出的指令栏第一次 Esc 就收起（`CanvasView.LeaveComposer`）。没复现、没改代码：不移动的右键在空白处、图片上、提示词框有文字时、紧跟左键之后都打开了画布菜单和节点菜单，按下、`RightTapped`、`ContextRequested` 都到了；`/` 后按 Esc 再左键点图片能选中；主页「新建画布」第一次点击就建了画布。没测：右键拖动平移和 400 ms 菜单屏蔽（计算机操作没有右键拖动），以及窗口不在前台时的第一次点击。请测试：在不同状态下多次右键空白处和图片；右键拖动平移后松开不应弹出菜单；留意有没有第一次点击没反应的情况。
