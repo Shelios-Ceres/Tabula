@@ -12,16 +12,20 @@ using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
+using Windows.ApplicationModel.DataTransfer;
 using Windows.System;
 
 namespace Tabula.App.Pages;
 
-/// <summary>Two-line list entry: the vendor, then its host or a missing-key warning. A class, not a record: two entries of the same vendor must stay distinct items for ListView selection.</summary>
-public sealed class ChannelRow(string name, string detail, bool missingKey)
+/// <summary>Card entry for one configured vendor channel. A class, not a record: two entries of the same vendor stay distinct items for selection.</summary>
+public sealed class ChannelRow(string name, string detail, bool missingKey, string badge, Brush badgeBrush)
 {
     public string Name { get; } = name;
     public string Detail { get; } = detail;
-    public bool MissingKey { get; } = missingKey;
+    public Visibility MissingKey { get; } = missingKey ? Visibility.Visible : Visibility.Collapsed;
+    public Visibility HasKey { get; } = missingKey ? Visibility.Collapsed : Visibility.Visible;
+    public string Badge { get; } = badge;
+    public Brush BadgeBrush { get; } = badgeBrush;
 }
 
 public sealed partial class SettingsPage : Page
@@ -52,7 +56,48 @@ public sealed partial class SettingsPage : Page
         WaitingAnimationsSwitch.IsOn = Settings.WaitingAnimations;
         BridgeCommand.Text = $"\"{Environment.ProcessPath}\" {Agents.McpBridge.Argument}";
         RefreshChannels(Settings.Channels.FirstOrDefault());
+        NavList.SelectedIndex = 0;
+        ShowSection("vendors");
         App.Window.SetCaption("设置");
+    }
+
+    // ---------- Section navigation ----------
+
+    private void NavList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (NavList.SelectedItem is ListViewItem { Tag: string tag }) ShowSection(tag);
+    }
+
+    private void ShowSection(string tag)
+    {
+        var sections = new (string Tag, FrameworkElement Panel)[]
+        {
+            ("vendors", VendorsSection),
+            ("defaults", DefaultsSection),
+            ("generation", GenerationSection),
+            ("agents", AgentsSection),
+            ("external", ExternalSection),
+            ("appearance", AppearanceSection),
+            ("data", DataSection),
+            ("about", AboutSection),
+        };
+        FrameworkElement? active = null;
+        foreach (var (id, panel) in sections)
+        {
+            var on = id == tag;
+            panel.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+            if (on) active = panel;
+        }
+        ContentScroller.ChangeView(null, 0, null);
+        if (active is not null) Motion.Refresh(active);
+    }
+
+    private void VendorSubBar_Changed(SelectorBar sender, SelectorBarSelectionChangedEventArgs args)
+    {
+        var picked = sender.SelectedItem;
+        ConnectTab.Visibility = picked == ConnectTabItem ? Visibility.Visible : Visibility.Collapsed;
+        ModelsTab.Visibility = picked == ModelsTabItem ? Visibility.Visible : Visibility.Collapsed;
+        BillingTab.Visibility = picked == BillingTabItem ? Visibility.Visible : Visibility.Collapsed;
     }
 
     // ---------- 外观: material, canvas ground, theme and UI scale ----------
@@ -74,6 +119,7 @@ public sealed partial class SettingsPage : Page
         GroundList.SelectedIndex = CanvasGrounds.All.ToList().IndexOf(CanvasGrounds.Find(Settings.CanvasGround));
         ThemeList.SelectedIndex = Math.Max(0, Array.IndexOf(Themes, GlassSettings.Current.Theme));
         ScaleSlider.Value = GlassSettings.Current.UiScale;
+        ScaleValueText.Text = $"{Math.Round(GlassSettings.Current.UiScale * 100):0}%";
         TuningButton.IsEnabled = Skin.Liquid;
         _loading = false;
     }
@@ -100,6 +146,7 @@ public sealed partial class SettingsPage : Page
 
     private void Scale_Changed(object sender, Microsoft.UI.Xaml.Controls.Primitives.RangeBaseValueChangedEventArgs e)
     {
+        ScaleValueText.Text = $"{Math.Round(e.NewValue * 100):0}%";
         if (!_loading) GlassSettings.Update(g => g.UiScale = Math.Round(e.NewValue, 2));
     }
 
@@ -115,18 +162,49 @@ public sealed partial class SettingsPage : Page
         Frame.GoBack();
     }
 
+    // ---------- 服务商 ----------
+
+    private (string Badge, Brush Brush) VendorVisual(Vendor vendor)
+    {
+        var kind = vendor switch
+        {
+            Vendor.OpenAI => NodeKind.Text,
+            Vendor.Google => NodeKind.Image,
+            Vendor.Ark => NodeKind.Audio,
+            Vendor.XAI => NodeKind.Group,
+            Vendor.Qwen => NodeKind.Video,
+            _ => NodeKind.Config,
+        };
+        var badge = vendor switch
+        {
+            Vendor.OpenAI => "O",
+            Vendor.Google => "G",
+            Vendor.Ark => "方",
+            Vendor.XAI => "X",
+            Vendor.Qwen => "千",
+            _ => "M",
+        };
+        return (badge, new SolidColorBrush(Palette.Kind(kind, ActualTheme)));
+    }
+
     private void RefreshChannels(ModelChannel? select)
     {
         _loading = true;
         ChannelList.ItemsSource = Rows();
         ChannelList.SelectedIndex = select is null ? -1 : Settings.Channels.IndexOf(select);
+        ChannelList.Visibility = Settings.Channels.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
         _loading = false;
         ShowChannel(select);
         RefreshDefaults();
     }
 
     // Judge by the decrypted key: a key copied from another PC or Windows user is stored but unusable here.
-    private static List<ChannelRow> Rows() => Settings.Channels.Select(c => new ChannelRow(Settings.ChannelName(c), c.ApiKey.Length == 0 ? "未填写 API Key" : Host(c), c.ApiKey.Length == 0)).ToList();
+    private List<ChannelRow> Rows() => Settings.Channels.Select(c =>
+    {
+        var (badge, brush) = VendorVisual(c.Vendor);
+        var detail = c.ApiKey.Length == 0 ? "未填写 API Key" : $"{c.Models.Count} 个模型 · {Host(c)}";
+        return new ChannelRow(Settings.ChannelName(c), detail, c.ApiKey.Length == 0, badge, brush);
+    }).ToList();
 
     private static string Host(ModelChannel channel) => Uri.TryCreate(channel.BaseUrl.Trim(), UriKind.Absolute, out var uri) ? uri.Host : ModelChannel.DefaultBaseUrl(channel.Vendor)[8..];
 
@@ -137,6 +215,9 @@ public sealed partial class SettingsPage : Page
         NoChannelCard.Visibility = Settings.Channels.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         if (channel is null) return;
         _loading = true;
+        var (badge, brush) = VendorVisual(channel.Vendor);
+        EditorBadgeBorder.Background = brush;
+        EditorBadgeText.Text = badge;
         EditorTitle.Text = Settings.ChannelName(channel);
         BaseUrlBox.Text = channel.BaseUrl;
         BaseUrlBox.PlaceholderText = ModelChannel.DefaultBaseUrl(channel.Vendor);
@@ -313,7 +394,7 @@ public sealed partial class SettingsPage : Page
             var remove = new Button { Content = new FontIcon { Glyph = "", FontSize = 12 }, Style = (Style)Application.Current.Resources["ToolbarButton"], VerticalAlignment = VerticalAlignment.Top };
             ToolTipService.SetToolTip(remove, "移除模型");
             AutomationProperties.SetName(remove, "移除模型");
-            remove.Click += (_, _) => { _channel.Models.Remove(model); Save(); RenderModels(); RefreshDefaults(); };
+            remove.Click += (_, _) => { _channel.Models.Remove(model); Save(); RenderModels(); RefreshChannelNames(); };
             Grid.SetColumn(remove, 3);
             row.Children.Add(remove);
             ModelRows.Children.Add(row);
@@ -353,8 +434,6 @@ public sealed partial class SettingsPage : Page
     {
         if (_loading) return;
         ShowChannel(ChannelList.SelectedIndex >= 0 ? Settings.Channels[ChannelList.SelectedIndex] : null);
-        // The picked channel slides in at the top instead of swapping in place, even when the page was scrolled to a later section.
-        ContentScroller.ChangeView(null, 0, null);
         Motion.Refresh(EditorCard);
     }
 
@@ -415,7 +494,6 @@ public sealed partial class SettingsPage : Page
         RefreshDefaults();
     }
 
-
     private void AddModels(IEnumerable<string> names)
     {
         if (_channel is null) return;
@@ -423,7 +501,7 @@ public sealed partial class SettingsPage : Page
             if (_channel.Models.All(m => m.Name != name)) _channel.Models.Add(new ChannelModel { Name = name, Capability = ModelFamilies.GuessCapability(name) });
         Save();
         RenderModels();
-        RefreshDefaults();
+        RefreshChannelNames();
     }
 
     private async void AddModel_Click(object sender, RoutedEventArgs e)
@@ -541,6 +619,16 @@ public sealed partial class SettingsPage : Page
         Settings.ExternalAgents = ExternalAgentsSwitch.IsOn;
         Save();
         await Board.SharedCanvasHost.ApplyAsync(Settings.ExternalAgents);
+    }
+
+    private async void CopyBridge_Click(object sender, RoutedEventArgs e)
+    {
+        var pkg = new DataPackage();
+        pkg.SetText(BridgeCommand.Text);
+        Clipboard.SetContent(pkg);
+        CopyBridgeText.Text = "已复制";
+        await Task.Delay(1400);
+        CopyBridgeText.Text = "复制";
     }
 
     private void SystemPrompt_Changed(object sender, TextChangedEventArgs e)
