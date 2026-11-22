@@ -7,10 +7,12 @@
     <!-- Unified pill design: every single-line capsule is Height=36, CornerRadius=18, FontSize=13, GlassCapsule material. -->
     <Grid x:Name="Shell" Width="820">
 
-        <!-- ==================== VIEW 1: POST-GENERATION INFO BAR (图片/成品信息框) ==================== -->
+        <!-- ==================== VIEW 1: POST-GENERATION & RUNNING INFO BAR (图片/生成状态信息框) ==================== -->
         <StackPanel x:Name="InspectView" Spacing="8" Visibility="Collapsed">
-            <!-- Original references used to produce this output (only when wired upstream exists). -->
-            <board:WrapPanel x:Name="InspectRefsRow" HorizontalSpacing="6" VerticalSpacing="6" Visibility="Collapsed" />
+            <!-- Original references used to produce this output (or feeding this running/failed task). -->
+            <ScrollViewer x:Name="InspectRefsScroll" MaxHeight="110" HorizontalScrollMode="Disabled" HorizontalScrollBarVisibility="Disabled" VerticalScrollMode="Auto" VerticalScrollBarVisibility="Auto" Visibility="Collapsed">
+                <board:WrapPanel x:Name="InspectRefsRow" HorizontalSpacing="6" VerticalSpacing="6" />
+            </ScrollViewer>
 
             <!-- Original prompt used to generate this output (read-only selectable + one-click copy). -->
             <Border x:Name="InspectPromptCapsule" Style="{StaticResource GlassCapsule}" CornerRadius="18" Padding="14,7,6,7" Visibility="Collapsed">
@@ -69,9 +71,9 @@
                     </Border>
                     <Border x:Name="InspectComposeCapsule" Style="{StaticResource GlassCapsule}" Height="36" CornerRadius="18" Padding="2" Visibility="Collapsed">
                         <Button x:Name="InspectComposeButton" Style="{StaticResource ToolbarButton}" Height="30" MinHeight="0" Padding="14,0" CornerRadius="15"
-                                AllowFocusOnInteraction="False" Click="StartCompose_Click" AutomationProperties.Name="以此图生图">
+                                AllowFocusOnInteraction="False" Click="InspectPrimary_Click" AutomationProperties.Name="以此图生图">
                             <StackPanel Orientation="Horizontal" Spacing="6">
-                                <FontIcon Glyph="&#xE945;" FontSize="13" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                                <FontIcon x:Name="InspectComposeIcon" Glyph="&#xE945;" FontSize="13" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
                                 <TextBlock x:Name="InspectComposeText" Text="以此图生图" FontSize="13" FontWeight="SemiBold" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
                             </StackPanel>
                         </Button>

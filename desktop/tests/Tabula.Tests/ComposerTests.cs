@@ -348,4 +348,59 @@ public class ComposerTests
         Assert.Null(Composer.OriginOf(doc, imported));
         Assert.Null(Composer.OriginOf(doc, empty));
     }
+
+    [Fact]
+    public void Sources_of_finds_references_for_generated_running_recipe_and_source_id_chains()
+    {
+        var refImg = Picture(file: "图片-001.png");
+        var refText = Text("主体描述");
+        var group = new CanvasNode { Kind = NodeKind.Group };
+        var groupImg = Picture(file: "图片-002.png");
+        groupImg.GroupId = group.Id;
+        var recipe = new CanvasNode { Kind = NodeKind.Config, Prompt = "画一张" };
+        var fromRecipe = Picture(file: "图片-003.png");
+        fromRecipe.Prompt = "画一张";
+        fromRecipe.SetOption(NodeKeys.SourceId, recipe.Id);
+        var running = new CanvasNode { Kind = NodeKind.Image, Status = NodeStatus.Loading, Prompt = "生成中" };
+        var derived = Picture(file: "图片-004.png");
+        derived.SetOption(NodeKeys.SourceId, fromRecipe.Id);
+
+        var doc = Doc(refImg, refText, group, groupImg, recipe, fromRecipe, running, derived);
+        doc.Connections.Add(CanvasConnection.Create(refImg.Id, recipe.Id));
+        doc.Connections.Add(CanvasConnection.Create(group.Id, recipe.Id));
+        doc.Connections.Add(CanvasConnection.Create(recipe.Id, fromRecipe.Id));
+        doc.Connections.Add(CanvasConnection.Create(refImg.Id, running.Id));
+        doc.Connections.Add(CanvasConnection.Create(refText.Id, running.Id));
+
+        // Traverses through 配方 (config) and expands upstream groups even when output carries its own prompt.
+        Assert.Equal([refImg, groupImg], Composer.SourcesOf(doc, fromRecipe));
+        // Works for running nodes that do not have content yet.
+        Assert.Equal([refImg, refText], Composer.SourcesOf(doc, running));
+        // Follows SourceId even if direct wire is absent.
+        Assert.Equal([fromRecipe], Composer.SourcesOf(doc, derived));
+    }
+
+    [Fact]
+    public void Picture_strip_collects_image_sources_batch_siblings_and_newer_versions()
+    {
+        var source = Picture(file: "图片-001.png");
+        var note = Text("只作为文字参考，不进缩略图条");
+        var a = Picture(file: "图片-002.png");
+        var b = Picture(file: "图片-003.png");
+        Stacks.Form([a, b]);
+        var nextDone = Picture(file: "图片-004.png");
+        var nextRunning = new CanvasNode { Kind = NodeKind.Image, Status = NodeStatus.Loading };
+        var textChild = new CanvasNode { Kind = NodeKind.Text, Content = "反推结果" };
+        var doc = Doc(source, note, a, b, nextDone, nextRunning, textChild);
+        doc.Connections.Add(CanvasConnection.Create(source.Id, a.Id));
+        doc.Connections.Add(CanvasConnection.Create(note.Id, a.Id));
+        doc.Connections.Add(CanvasConnection.Create(a.Id, nextDone.Id));
+        doc.Connections.Add(CanvasConnection.Create(a.Id, nextRunning.Id));
+        doc.Connections.Add(CanvasConnection.Create(a.Id, textChild.Id));
+
+        var strip = Composer.PictureStrip(doc, a);
+        Assert.Equal([source], strip.Sources);
+        Assert.Equal([a, b], strip.Batch);
+        Assert.Equal([nextDone, nextRunning], strip.Versions);
+    }
 }

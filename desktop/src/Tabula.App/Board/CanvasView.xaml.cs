@@ -109,6 +109,7 @@ public sealed partial class CanvasView : UserControl
     private EventHandler<object>? _glide;
     private bool _gliding;
     private Popup? _preview;
+    private PictureView? _pictureView;
     /// <summary>When a stack last opened or closed: the second click of a double click on a stack must not also open the preview.</summary>
     private long _stackToggled;
 
@@ -447,8 +448,13 @@ public sealed partial class CanvasView : UserControl
     private void Root_SizeChanged(object sender, SizeChangedEventArgs e)
     {
         ApplyTopFade(false);
-        // The preview is sized to the old canvas area.
-        ClosePreview();
+        if (_pictureView is not null)
+        {
+            var origin = Root.TransformToVisual(null).TransformPoint(new Point(0, 0));
+            if (_preview is not null) (_preview.HorizontalOffset, _preview.VerticalOffset) = (origin.X, origin.Y);
+            _pictureView.Resize(Root.ActualWidth, Root.ActualHeight);
+        }
+        else ClosePreview();
         Realize();
         PositionPanel();
     }
@@ -1605,7 +1611,7 @@ public sealed partial class CanvasView : UserControl
         if (part == "panel") return;
         // A node still generating gets no import: the result would silently replace the imported file.
         if (view?.Node is { Kind: NodeKind.Image or NodeKind.Video or NodeKind.Audio, HasContent: false, Status: not NodeStatus.Loading } node) _ = ImportIntoAsync(node);
-        else if (view?.Node is { Kind: NodeKind.Image, HasContent: true } picture && part is null && Environment.TickCount64 - _stackToggled > 600) ShowPreview(picture);
+        else if (view?.Node is { Kind: NodeKind.Image, HasContent: true } picture && part is null && Environment.TickCount64 - _stackToggled > 600) ShowPictureView(picture);
         else if (view is null || view.Node.Kind == NodeKind.Group) ShowCreateMenu(e.GetPosition(Root), null);
     }
 
@@ -2045,28 +2051,14 @@ public sealed partial class CanvasView : UserControl
         EnsureVisible(Rect.Of(node));
     }
 
-    /// <summary>Pick a local Real-ESRGAN model and factor, then upscale into a new node beside this one.</summary>
-    private async Task UpscaleAsync(CanvasNode node)
+    /// <summary>Select a node (opening its batch if it was hidden inside a collapsed stack) and glide the canvas so it is clearly visible.</summary>
+    internal void FocusNode(CanvasNode node)
     {
-        var models = Upscaler.Models();
-        if (models.Count == 0)
-        {
-            await Dialogs.MessageAsync("没有找到本地放大工具", $"请把 Real-ESRGAN-ncnn-vulkan（realesrgan-ncnn-vulkan.exe 与 models 文件夹）放到：\n{Upscaler.Dir}");
-            return;
-        }
-        var model = new ComboBox { Header = "模型", ItemsSource = models.Select(m => m.Label).ToList(), SelectedIndex = 0, HorizontalAlignment = HorizontalAlignment.Stretch };
-        var factor = new ComboBox { Header = "倍数", ItemsSource = new List<string> { "2×", "4×" }, SelectedIndex = 0, HorizontalAlignment = HorizontalAlignment.Stretch };
-        var size = new TextBlock { Style = (Style)Application.Current.Resources["SecondaryCaption"], TextWrapping = TextWrapping.Wrap };
-        void ShowSize()
-        {
-            var scale = factor.SelectedIndex == 0 ? 2 : 4;
-            size.Text = (node.NaturalWidth > 0 ? $"输出 {node.NaturalWidth * scale}×{node.NaturalHeight * scale}。" : "") + "在本机显卡上运行，图片不会上传，结果放在右侧新节点。";
-        }
-        factor.SelectionChanged += (_, _) => ShowSize();
-        ShowSize();
-        var form = new StackPanel { Spacing = 12, MinWidth = 360, Children = { model, factor, size } };
-        if (!await Dialogs.FormAsync("本地放大", form, "放大")) return;
-        _ = Generator.UpscaleAsync(node, models[model.SelectedIndex].Name, factor.SelectedIndex == 0 ? 2 : 4);
+        if (Doc.Find(node.Id) != node) return;
+        if (Stacks.Of(node) is { } stack && !Stacks.IsOpen(node) && Stacks.Members(Doc, stack).FirstOrDefault() is { } lead && lead != node)
+            ToggleStack(lead);
+        Select([node.Id]);
+        EnsureVisible(Rect.Of(node));
     }
 
     internal async Task RenameAsync(CanvasNode node)
@@ -2175,83 +2167,21 @@ public sealed partial class CanvasView : UserControl
     }
 
     /// <summary>
-    /// Double-clicking a picture shows it over the whole canvas area on acrylic, above the page toolbars (a window-level popup);
-    /// Ctrl + wheel or pinch zooms it, and a click beside it or Esc closes.
+    /// Open the full-screen picture view (R5) on a picture node and optional initial tool tab.
+    /// Replaces the old preview popup and the six separate tool dialogs.
     /// </summary>
-    private void ShowPreview(CanvasNode node)
+    private void ShowPictureView(CanvasNode node, PictureTool tool = PictureTool.Adjust)
     {
         ClosePreview();
+        if (node.Kind != NodeKind.Image || !node.HasContent) return;
         var path = ProjectStore.AssetPath(Doc.Id, node.Content!);
         if (!File.Exists(path)) return;
-        var image = new Image { Source = Media.IsSvg(path) ? new SvgImageSource(new Uri(path)) : new BitmapImage(new Uri(path)), Stretch = Stretch.Uniform, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
-        // The picture fits and centres in the visible area at 100 %; zooming enlarges it from there.
-        var frame = new Grid { Children = { image } };
-        var scroller = new ScrollViewer
-        {
-            Content = frame, ZoomMode = ZoomMode.Enabled, MinZoomFactor = 0.5f, MaxZoomFactor = 8,
-            HorizontalScrollMode = ScrollMode.Enabled, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-        };
-        scroller.SizeChanged += (_, e) =>
-        {
-            (frame.Width, frame.Height) = (e.NewSize.Width, e.NewSize.Height);
-            // Zoom until one picture pixel covers 16 × 16 DIPs (the fit scale is how far the picture is shrunk or enlarged at zoom 1), and never less than 8x.
-            var fit = node.NaturalWidth > 0 && node.NaturalHeight > 0 ? Math.Min(e.NewSize.Width / node.NaturalWidth, e.NewSize.Height / node.NaturalHeight) : 0;
-            scroller.MaxZoomFactor = fit > 0 ? (float)Math.Max(8, 16 / fit) : 8;
-        };
-        Grid.SetRow(scroller, 1);
-        // WinUI pans a ScrollViewer by touch only, so a mouse or pen drags the zoomed picture by hand (handledEventsToo: the scroller may already have handled the press).
-        Point? grab = null;
-        (double H, double V) offset0 = default;
-        var moved = false;
-        var dragEnded = 0L;
-        scroller.AddHandler(PointerPressedEvent, new PointerEventHandler((_, e) =>
-        {
-            if (e.Pointer.PointerDeviceType == PointerDeviceType.Touch || (scroller.ScrollableWidth <= 0 && scroller.ScrollableHeight <= 0)) return;
-            // A press on a scroll bar (thumb, arrow or track) belongs to the bar, not to the picture drag.
-            for (var element = e.OriginalSource as DependencyObject; element is not null && element != scroller; element = VisualTreeHelper.GetParent(element))
-                if (element is Microsoft.UI.Xaml.Controls.Primitives.ScrollBar) return;
-            var point = e.GetCurrentPoint(scroller);
-            if (!point.Properties.IsLeftButtonPressed || !scroller.CapturePointer(e.Pointer)) return;
-            (grab, offset0, moved) = (point.Position, (scroller.HorizontalOffset, scroller.VerticalOffset), false);
-        }), true);
-        scroller.AddHandler(PointerMovedEvent, new PointerEventHandler((_, e) =>
-        {
-            if (grab is not { } start) return;
-            var position = e.GetCurrentPoint(scroller).Position;
-            moved |= Math.Abs(position.X - start.X) > 4 || Math.Abs(position.Y - start.Y) > 4;
-            scroller.ChangeView(offset0.H - (position.X - start.X), offset0.V - (position.Y - start.Y), null, true);
-        }), true);
-        void EndDrag()
-        {
-            if (grab is null) return;
-            grab = null;
-            if (moved) dragEnded = Environment.TickCount64;
-        }
-        scroller.AddHandler(PointerReleasedEvent, new PointerEventHandler((_, e) => { EndDrag(); scroller.ReleasePointerCapture(e.Pointer); }), true);
-        scroller.PointerCaptureLost += (_, _) => EndDrag();
-        scroller.PointerCanceled += (_, _) => EndDrag();
-        var close = new Button { Style = (Style)Application.Current.Resources["ToolbarButton"], Content = new FontIcon { Glyph = "", FontSize = 14 }, HorizontalAlignment = HorizontalAlignment.Right, AllowFocusOnInteraction = true };
-        ToolTipService.SetToolTip(close, "关闭 (Esc)");
-        AutomationProperties.SetName(close, "关闭预览");
-        close.Click += (_, _) => ClosePreview();
-        var caption = new TextBlock { Text = node.Title + (node.NaturalWidth > 0 ? $"  ·  {node.NaturalWidth} × {node.NaturalHeight}" : ""), VerticalAlignment = VerticalAlignment.Center, Style = (Style)Application.Current.Resources["BodyStrongTextBlockStyle"] };
-        var bar = new Grid { Padding = new Thickness(20, 12, 12, 0), Children = { caption, close } };
-        var surface = new Grid
-        {
-            Width = Root.ActualWidth, Height = Root.ActualHeight, Background = (Brush)Application.Current.Resources["GlassThickBrush"],
-            Padding = new Thickness(0, 0, 0, 24), RowSpacing = 12, Children = { bar, scroller },
-        };
-        surface.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        surface.RowDefinitions.Add(new RowDefinition());
-        AutomationProperties.SetName(surface, "图片预览");
-        // A tap that ends a drag must not close the preview.
-        surface.Tapped += (_, e) => { if (e.OriginalSource is not Image && Environment.TickCount64 - dragEnded > 400) ClosePreview(); };
-        surface.KeyDown += (_, e) => { if (e.Key == VirtualKey.Escape) { e.Handled = true; ClosePreview(); } };
-        // Focus inside the popup so Esc reaches it.
-        surface.Loaded += (_, _) => close.Focus(FocusState.Programmatic);
+        var view = new PictureView(this, node, tool, Root.ActualWidth, Root.ActualHeight, ClosePreview);
+        _pictureView = view;
         var origin = Root.TransformToVisual(null).TransformPoint(new Point(0, 0));
-        _preview = new Popup { XamlRoot = XamlRoot, Child = surface, HorizontalOffset = origin.X, VerticalOffset = origin.Y, IsOpen = true };
-        Motion.Appear(surface, 0.98f);
+        _preview = new Popup { XamlRoot = XamlRoot, Child = view, HorizontalOffset = origin.X, VerticalOffset = origin.Y, IsOpen = true };
+        _preview.Closed += (_, _) => { view.Dispose(); if (_pictureView == view) _pictureView = null; };
+        Motion.Appear(view, 0.98f);
     }
 
     /// <summary>
@@ -2290,6 +2220,7 @@ public sealed partial class CanvasView : UserControl
         if (_preview is null) return;
         _preview.IsOpen = false;
         _preview = null;
+        _pictureView = null;
         FocusCanvas();
     }
 
@@ -2551,46 +2482,6 @@ public sealed partial class CanvasView : UserControl
         var family = ModelFamilies.FindImage(resolved.Channel.Vendor, resolved.Model.Name);
         var openAI = resolved.Channel.Vendor == Vendor.OpenAI;
         return (openAI && family?.Mask == true, family?.Interactive == true, openAI && family?.Markup == true);
-    }
-
-    private async Task EditMarksCoreAsync(CanvasNode node)
-    {
-        var (allowMask, allowPoints, allowMarkup) = MarkSupport(node);
-        if (!allowMask && !allowPoints && !allowMarkup)
-        {
-            await Dialogs.MessageAsync(Media.IsSvg(node.Content) ? "SVG 不能局部编辑" : "当前模型不支持局部编辑", Media.IsSvg(node.Content)
-                ? "局部编辑需要位图，SVG 矢量图请直接用提示词修改。"
-                : "GPT Image 支持涂抹蒙版局部重绘，GPT Image 2.5 / 2.6 还支持画圈标注，Seedream 5.0 pro / flash / 5.5 支持点选和框选。请先在下方面板把模型切换到这些型号。");
-            return;
-        }
-        try
-        {
-            var path = ProjectStore.AssetPath(Doc.Id, node.Content!);
-            // The file may have been overwritten in another app, so size the mask from the file itself.
-            var (width, height) = await CanvasGenerator.ImageSizeAsync(await File.ReadAllBytesAsync(path));
-            if (width <= 0 || height <= 0 || Math.Max(width, height) > CanvasDevice.GetSharedDevice().MaximumBitmapSizeInPixels)
-            {
-                await Dialogs.MessageAsync("无法局部编辑", "这张图片无法解码，或尺寸超过显卡支持的最大位图尺寸。");
-                return;
-            }
-            var maskPath = node.Option(NodeKeys.Mask) is { Length: > 0 } maskAsset ? ProjectStore.AssetPath(Doc.Id, maskAsset) : null;
-            var mask = maskPath is not null && File.Exists(maskPath) ? await File.ReadAllBytesAsync(maskPath) : null;
-            var markupPath = node.Option(NodeKeys.Markup) is { Length: > 0 } markupAsset ? ProjectStore.AssetPath(Doc.Id, markupAsset) : null;
-            var markup = markupPath is not null && File.Exists(markupPath) ? await File.ReadAllBytesAsync(markupPath) : null;
-            var dialog = new ImageMarkDialog(path, width, height, mask, markup, NodeKeys.SelectionsOf(node), allowMask, allowPoints, allowMarkup);
-            if (await Dialogs.ShowAsync(dialog) != ContentDialogResult.Primary) return;
-            History.Record();
-            node.SetOption(NodeKeys.Mask, dialog.MaskPng is { } png ? ProjectStore.SaveAsset(Doc.Id, png, "image/png", ProjectStore.MaskPrefix) : null);
-            node.SetOption(NodeKeys.Markup, dialog.MarkupPng is { } layer ? ProjectStore.SaveAsset(Doc.Id, layer, "image/png", ProjectStore.MarkupPrefix) : null);
-            NodeKeys.SetSelections(node, dialog.Selections);
-            RaiseChanged();
-            UpdateComposer();
-        }
-        catch (Exception ex)
-        {
-            App.Log(ex);
-            await Dialogs.MessageAsync("局部编辑打开失败", ex.Message);
-        }
     }
 
     public void ClearMarks(CanvasNode node)

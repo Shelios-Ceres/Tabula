@@ -10,6 +10,9 @@ public sealed record ComposerState(ComposerMode Mode, IReadOnlyList<CanvasNode> 
     public CanvasNode? Bound => Mode is ComposerMode.Recipe or ComposerMode.Fill ? Nodes[0] : null;
 }
 
+/// <summary>The left version strip of the full-screen picture view: the picture's upstream image sources, the members of its batch, and newer image versions derived from it.</summary>
+public sealed record PictureStripData(List<CanvasNode> Sources, List<CanvasNode> Batch, List<CanvasNode> Versions);
+
 /// <summary>
 /// The composer is the UI form of what the agent tool canvas_generate does: generating from the selection creates a node beside the references,
 /// wires the references into it as inputs and runs it. The wires stay as the history of what was made from what.
@@ -69,6 +72,74 @@ public static class Composer
     /// <summary>The pictures and texts already wired into a node: what a 配方 or an empty node reads when the composer is bound to it.</summary>
     public static List<CanvasNode> Wired(CanvasDocument doc, CanvasNode node) =>
         CanvasGraph.UpstreamResources(doc, node.Id).Where(r => r.Type is NodeKind.Image or NodeKind.Text).Select(r => r.Node).ToList();
+
+    /// <summary>
+    /// All upstream image and text references that fed into <paramref name="node"/> (generated, running, failed, recipe or tool-derived),
+    /// expanding groups and traversing upstream 配方 (config) nodes and <see cref="NodeKeys.SourceId"/> links with cycle protection.
+    /// </summary>
+    public static List<CanvasNode> SourcesOf(CanvasDocument doc, CanvasNode node)
+    {
+        var result = new List<CanvasNode>();
+        var seen = new HashSet<string> { node.Id };
+        var visited = new HashSet<string> { node.Id };
+
+        void Collect(CanvasNode target)
+        {
+            foreach (var connection in doc.Connections.Where(c => c.To == target.Id))
+            {
+                if (doc.Find(connection.From) is not { } upstream) continue;
+                if (upstream.Kind == NodeKind.Group)
+                {
+                    foreach (var member in CanvasGraph.GroupMembers(doc, upstream.Id)) AddLeaf(member);
+                }
+                else if (upstream.Kind == NodeKind.Config)
+                {
+                    if (visited.Add(upstream.Id)) Collect(upstream);
+                }
+                else AddLeaf(upstream);
+            }
+            if (target.Option(NodeKeys.SourceId) is { Length: > 0 } sourceId && doc.Find(sourceId) is { } source && visited.Add(source.Id))
+            {
+                if (source.Kind == NodeKind.Config || !source.HasContent) Collect(source);
+                else AddLeaf(source);
+            }
+        }
+
+        void AddLeaf(CanvasNode candidate)
+        {
+            if (candidate.Kind == NodeKind.Image && candidate.HasContent && candidate.Option("role") != "mask" && seen.Add(candidate.Id))
+                result.Add(candidate);
+            else if (candidate.Kind == NodeKind.Text && (!string.IsNullOrWhiteSpace(candidate.Content) || !string.IsNullOrWhiteSpace(candidate.Prompt)) && seen.Add(candidate.Id))
+                result.Add(candidate);
+        }
+
+        Collect(node);
+        return result;
+    }
+
+    /// <summary>Downstream image nodes derived from <paramref name="node"/> (directly wired or referencing it via <see cref="NodeKeys.SourceId"/>), including ones still generating.</summary>
+    public static List<CanvasNode> DescendantsOf(CanvasDocument doc, CanvasNode node)
+    {
+        var wiredTo = doc.Connections.Where(c => c.From == node.Id).Select(c => c.To).ToHashSet();
+        var seen = new HashSet<string> { node.Id };
+        var result = new List<CanvasNode>();
+        foreach (var candidate in doc.Nodes)
+        {
+            if (candidate.Kind != NodeKind.Image || !seen.Add(candidate.Id)) continue;
+            if (wiredTo.Contains(candidate.Id) || candidate.Option(NodeKeys.SourceId) == node.Id)
+                result.Add(candidate);
+        }
+        return result;
+    }
+
+    /// <summary>The three sections of the full-screen picture view's left strip: upstream image sources, this batch's members, and newer image versions.</summary>
+    public static PictureStripData PictureStrip(CanvasDocument doc, CanvasNode node)
+    {
+        var sources = SourcesOf(doc, node).Where(n => n.Kind == NodeKind.Image && n.HasContent).ToList();
+        var batch = Stacks.Of(node) is { } stack ? Stacks.Members(doc, stack) : [node];
+        var versions = DescendantsOf(doc, node);
+        return new(sources, batch, versions);
+    }
 
     /// <summary>The composer's draft of this canvas, created with the first call.</summary>
     public static CanvasNode DraftOf(CanvasDocument doc) => doc.Draft ??= new CanvasNode { Kind = NodeKind.Config, Title = "草稿" };

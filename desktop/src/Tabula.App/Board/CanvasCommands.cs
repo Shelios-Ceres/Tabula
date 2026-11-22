@@ -83,14 +83,14 @@ public sealed partial class CanvasView
         ["reuse"] = Node(node => _composer.Reuse(node)),
         ["save-recipe"] = Do(_composer.SaveRecipe),
 
-        ["view"] = Node(node => { if (node is { Kind: NodeKind.Image, HasContent: true }) ShowPreview(node); }),
+        ["view"] = Node(node => { if (node is { Kind: NodeKind.Image, HasContent: true }) ShowPictureView(node, PictureTool.Adjust); }),
 
-        ["mark"] = Local(EditMarksCoreAsync),
-        ["crop"] = Local(node => ImageTools.CropAsync(this, node)),
-        ["split"] = Local(node => ImageTools.SplitAsync(this, node)),
-        ["angle"] = Local(node => ImageTools.AngleAsync(this, node)),
-        ["upscale"] = Local(UpscaleAsync),
-        ["reverse"] = Local(node => ImageTools.ReversePromptAsync(this, node)),
+        ["mark"] = Node(node => ShowPictureView(node, PictureTool.Mark)),
+        ["crop"] = Node(node => ShowPictureView(node, PictureTool.Crop)),
+        ["split"] = Node(node => ShowPictureView(node, PictureTool.Split)),
+        ["angle"] = Node(node => ShowPictureView(node, PictureTool.Angle)),
+        ["upscale"] = Node(node => ShowPictureView(node, PictureTool.Upscale)),
+        ["reverse"] = Node(node => ShowPictureView(node, PictureTool.Reverse)),
 
         ["promote"] = Local(PromoteAsync),
         ["keep-one"] = Local(KeepOneAsync),

@@ -106,12 +106,14 @@ public sealed partial class ComposerPanel : UserControl
         capsule.Translation = new System.Numerics.Vector3(0, 0, elevation);
     }
 
-    /// <summary>Whether the current selection is a single finished node whose post-generation info view can be returned to.</summary>
-    private bool CanInspect => New && _selectedNodes.Count == 1 && (_selectedNodes[0].HasContent || _selectedNodes[0].Kind == NodeKind.Group);
+    /// <summary>Whether the current selection is a single finished node or an active/failed task whose info bar can be returned to.</summary>
+    private bool CanInspect => (_state.Mode is ComposerMode.Stop or ComposerMode.Retry)
+        || (New && _selectedNodes.Count == 1 && (_selectedNodes[0].HasContent || _selectedNodes[0].Kind == NodeKind.Group));
 
     private bool ShouldCompose()
     {
-        if (!New) return true; // Recipe, empty Fill, Stop, Retry always use the pre-generation composer.
+        if (_state.Mode is ComposerMode.Recipe or ComposerMode.Fill) return true;
+        if (_state.Mode is ComposerMode.Stop or ComposerMode.Retry) return _manualCompose || HasFocus;
         if (_called || _manualCompose || HasFocus) return true;
         if (_selectedNodes.Count == 0) return true;
         if (_selectedNodes.Count == 1) return !_selectedNodes[0].HasContent && _selectedNodes[0].Kind != NodeKind.Group;
@@ -211,18 +213,69 @@ public sealed partial class ComposerPanel : UserControl
         if (modeChanged) ViewModeChanged?.Invoke();
     }
 
-    // ---------- Post-generation info view (图片信息框) ----------
+    // ---------- Post-generation & task status info view (图片 / 生成状态信息框) ----------
+
+    private void ShowInspectSources(IEnumerable<CanvasNode> sources)
+    {
+        InspectRefsRow.Children.Clear();
+        var list = sources.ToList();
+        for (var i = 0; i < list.Count; i++) InspectRefsRow.Children.Add(Chip(list[i], i + 1, editable: false, prefix: "原参考"));
+        InspectRefsScroll.Visibility = list.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
 
     private void ShowInspect()
     {
         InspectRefsRow.Children.Clear();
-        InspectRefsRow.Visibility = Visibility.Collapsed;
+        InspectRefsScroll.Visibility = Visibility.Collapsed;
         InspectPromptCapsule.Visibility = Visibility.Collapsed;
         InspectSpecCapsule.Visibility = Visibility.Collapsed;
         InspectNotesCapsule.Visibility = Visibility.Collapsed;
         InspectReuseCapsule.Visibility = Visibility.Collapsed;
         InspectComposeCapsule.Visibility = Visibility.Collapsed;
+        InspectComposeIcon.Glyph = "\uE945";
         _inspectSubject = null;
+
+        // Running or failed tasks: show their own upstream references, prompt, model, status and Stop/Retry action instead of an unrelated draft.
+        if (_state.Mode is ComposerMode.Stop or ComposerMode.Retry)
+        {
+            var lead = _state.Nodes[0];
+            var origin = Composer.ReuseSource(_host.Doc, lead) ?? lead;
+            _inspectSubject = lead;
+            InspectKindIcon.Glyph = _state.Mode == ComposerMode.Stop ? "\uE895" : "\uE783";
+            InspectKindIcon.Foreground = _state.Mode == ComposerMode.Stop
+                ? (Brush)Application.Current.Resources["AccentTextFillColorPrimaryBrush"]
+                : (Brush)Application.Current.Resources["SystemFillColorCriticalBrush"];
+            InspectPrimaryText.Text = !string.IsNullOrWhiteSpace(origin.Model) ? Settings.Label(origin.Model) : Stacks.OwnTitle(lead);
+
+            var specs = new List<string>
+            {
+                _state.Mode == ComposerMode.Stop
+                    ? (_state.Nodes.Count > 1 ? $"{_state.Nodes.Count} 个正在生成…" : "正在生成…")
+                    : (_state.Nodes.Count > 1 ? $"{_state.Nodes.Count} 个失败，可重试" : string.IsNullOrWhiteSpace(lead.Error) ? "生成失败" : lead.Error),
+            };
+            if (origin.Size is { Length: > 0 } size && size != "auto") specs.Add(size);
+            if (origin.Ratio is { Length: > 0 } ratio && ratio != "auto") specs.Add(ratio);
+            InspectSpecText.Text = string.Join(" · ", specs);
+            InspectSpecCapsule.Visibility = Visibility.Visible;
+
+            if (!string.IsNullOrWhiteSpace(origin.Prompt))
+            {
+                InspectPromptText.Text = origin.Prompt.Trim();
+                InspectPromptCapsule.Visibility = Visibility.Visible;
+            }
+            var refs = _state.Nodes.SelectMany(n => Composer.SourcesOf(_host.Doc, n)).DistinctBy(n => n.Id).ToList();
+            ShowInspectSources(refs);
+
+            if (!string.IsNullOrWhiteSpace(origin.Prompt) || !string.IsNullOrWhiteSpace(origin.Model))
+                InspectReuseCapsule.Visibility = Visibility.Visible;
+
+            var isStop = _state.Mode == ComposerMode.Stop;
+            InspectComposeIcon.Glyph = isStop ? "\uE71A" : "\uE72C";
+            InspectComposeText.Text = isStop ? "停止" : "重试";
+            AutomationProperties.SetName(InspectComposeButton, InspectComposeText.Text);
+            InspectComposeCapsule.Visibility = Visibility.Visible;
+            return;
+        }
 
         if (_selectedNodes.Count >= 2)
         {
@@ -255,17 +308,20 @@ public sealed partial class ComposerPanel : UserControl
         };
         InspectKindIcon.Foreground = new SolidColorBrush(Palette.Kind(subject.Kind, ActualTheme));
 
-        var origin = Composer.OriginOf(_host.Doc, subject);
-        if (origin is not null)
+        var sources = Composer.SourcesOf(_host.Doc, subject);
+        ShowInspectSources(sources);
+
+        var originNode = Composer.OriginOf(_host.Doc, subject);
+        if (originNode is not null)
         {
             // AI-generated output: show its real model, specs, original prompt, wired references, and notes.
-            InspectPrimaryText.Text = !string.IsNullOrWhiteSpace(origin.Model) ? Settings.Label(origin.Model) : Stacks.OwnTitle(subject);
+            InspectPrimaryText.Text = !string.IsNullOrWhiteSpace(originNode.Model) ? Settings.Label(originNode.Model) : Stacks.OwnTitle(subject);
             var specs = new List<string>();
             if (subject.Kind == NodeKind.Image)
             {
-                if (origin.Size is { Length: > 0 } size && size != "auto") specs.Add(size);
-                if (origin.Ratio is { Length: > 0 } ratio && ratio != "auto") specs.Add(ratio);
-                if (origin.Quality is { Length: > 0 } quality && quality != "auto") specs.Add(quality);
+                if (originNode.Size is { Length: > 0 } size && size != "auto") specs.Add(size);
+                if (originNode.Ratio is { Length: > 0 } ratio && ratio != "auto") specs.Add(ratio);
+                if (originNode.Quality is { Length: > 0 } quality && quality != "auto") specs.Add(quality);
                 if (subject.NaturalWidth > 0 && subject.NaturalHeight > 0) specs.Add($"{subject.NaturalWidth}×{subject.NaturalHeight}");
                 if (subject.Content is { Length: > 0 } file && Path.GetExtension(file) is { Length: > 1 } ext) specs.Add(ext[1..].ToUpperInvariant());
             }
@@ -275,30 +331,23 @@ public sealed partial class ComposerPanel : UserControl
                 InspectSpecText.Text = string.Join(" · ", specs);
                 InspectSpecCapsule.Visibility = Visibility.Visible;
             }
-            if (!string.IsNullOrWhiteSpace(origin.Prompt))
+            if (!string.IsNullOrWhiteSpace(originNode.Prompt))
             {
-                InspectPromptText.Text = origin.Prompt.Trim();
+                InspectPromptText.Text = originNode.Prompt.Trim();
                 InspectPromptCapsule.Visibility = Visibility.Visible;
-            }
-            var wired = Composer.Wired(_host.Doc, subject);
-            if (wired.Count == 0 && origin != subject) wired = Composer.Wired(_host.Doc, origin);
-            if (wired.Count > 0)
-            {
-                for (var i = 0; i < wired.Count; i++) InspectRefsRow.Children.Add(Chip(wired[i], i + 1, editable: false, prefix: "原参考"));
-                InspectRefsRow.Visibility = Visibility.Visible;
             }
             InspectReuseCapsule.Visibility = Visibility.Visible;
         }
         else
         {
-            // Locally imported file, plain typed note, or group: compact factual metadata only.
+            // Locally imported file, tool-derived image, plain typed note, or group: compact factual metadata only.
             InspectPrimaryText.Text = Stacks.OwnTitle(subject);
             var specs = new List<string>();
             if (subject.Kind == NodeKind.Image)
             {
                 if (subject.NaturalWidth > 0 && subject.NaturalHeight > 0) specs.Add($"{subject.NaturalWidth}×{subject.NaturalHeight}");
                 if (subject.Content is { Length: > 0 } file) specs.Add(Media.IsSvg(file) ? "SVG 矢量" : Path.GetExtension(file).TrimStart('.').ToUpperInvariant());
-                specs.Add("本地导入");
+                if (sources.Count == 0) specs.Add("本地导入");
             }
             else if (subject.Kind == NodeKind.Text) specs.Add($"{(subject.Content ?? "").Length} 字");
             else if (subject.Kind == NodeKind.Group) specs.Add($"{CanvasGraph.GroupMembers(_host.Doc, subject.Id).Count()} 个节点");
@@ -341,6 +390,12 @@ public sealed partial class ComposerPanel : UserControl
         CopyPromptIcon.Glyph = "\uE8C8";
     }
 
+    private async void InspectPrimary_Click(object sender, RoutedEventArgs e)
+    {
+        if (_state.Mode is ComposerMode.Stop or ComposerMode.Retry) await SubmitAsync();
+        else StartCompose_Click(sender, e);
+    }
+
     private void StartCompose_Click(object sender, RoutedEventArgs e)
     {
         _manualCompose = true;
@@ -357,7 +412,8 @@ public sealed partial class ComposerPanel : UserControl
 
     private void InspectReuse_Click(object sender, RoutedEventArgs e)
     {
-        if (_inspectSubject is null || Composer.OriginOf(_host.Doc, _inspectSubject) is not { } origin) return;
+        if (_inspectSubject is null) return;
+        var origin = Composer.OriginOf(_host.Doc, _inspectSubject) ?? Composer.ReuseSource(_host.Doc, _inspectSubject) ?? _inspectSubject;
         Composer.Reuse(Composer.DraftOf(_host.Doc), origin);
         _host.DraftChanged(true);
         _manualCompose = true;
@@ -407,7 +463,8 @@ public sealed partial class ComposerPanel : UserControl
         BackInfoCapsule.Visibility = CanInspect && _manualCompose ? Visibility.Visible : Visibility.Collapsed;
         if (BackInfoCapsule.Visibility == Visibility.Visible) RefChips.Children.Add(BackInfoCapsule);
 
-        var shown = New ? _refs : _state.Bound is { } bound ? Composer.Wired(_host.Doc, bound) : [];
+        var shown = New ? _refs : _state.Bound is { } bound ? Composer.SourcesOf(_host.Doc, bound)
+            : _state.Nodes.SelectMany(n => Composer.SourcesOf(_host.Doc, n)).DistinctBy(n => n.Id).ToList();
         for (var i = 0; i < shown.Count; i++) RefChips.Children.Add(Chip(shown[i], i + 1, New));
         AddCapsule.Visibility = New ? Visibility.Visible : Visibility.Collapsed;
         TargetText.Text = _state.Mode switch
@@ -422,37 +479,55 @@ public sealed partial class ComposerPanel : UserControl
         RefChips.Children.Add(TargetCapsule);
     }
 
-    /// <summary>One reference as a unified Height=36, CornerRadius=18 floating glass pill.</summary>
+    /// <summary>One reference as a unified Height=36, CornerRadius=18 floating glass pill. Non-editable chips locate the reference on click.</summary>
     private UIElement Chip(CanvasNode node, int number, bool editable, string prefix = "参考")
     {
         UIElement thumb;
-        if (node.Kind == NodeKind.Image && node.HasContent)
+        if (node.Kind == NodeKind.Image && node.HasContent && ProjectStore.AssetPath(_host.Doc.Id, node.Content!) is { } path && File.Exists(path))
         {
-            var path = ProjectStore.AssetPath(_host.Doc.Id, node.Content!);
             var source = Media.IsSvg(path) ? new SvgImageSource(new Uri(path)) : (ImageSource)new BitmapImage { DecodePixelWidth = 48, UriSource = new Uri(path) };
             thumb = new Border { Width = 24, Height = 24, CornerRadius = new(12), Child = new Image { Stretch = Stretch.UniformToFill, Source = source } };
         }
+        else if (node.Kind == NodeKind.Image)
+            thumb = new Border { Width = 24, Height = 24, CornerRadius = new(12), Background = new SolidColorBrush(Palette.Kind(NodeKind.Image, ActualTheme)), Child = new FontIcon { Glyph = "\uEB9F", FontSize = 12, Foreground = new SolidColorBrush(Microsoft.UI.Colors.White) } };
         else thumb = new Border { Width = 24, Height = 24, CornerRadius = new(12), Background = new SolidColorBrush(Palette.Kind(NodeKind.Text, ActualTheme)), Child = new FontIcon { Glyph = "\uE8D2", FontSize = 12, Foreground = new SolidColorBrush(Microsoft.UI.Colors.White) } };
         var label = new TextBlock { Text = $"{prefix} {number} · {Stacks.OwnTitle(node)}", FontSize = 13, VerticalAlignment = VerticalAlignment.Center, MaxWidth = 152, TextTrimming = TextTrimming.CharacterEllipsis };
         var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center, Children = { thumb, label } };
+        UIElement inner = row;
         if (editable)
         {
             var pinned = _host.IsPinned(node);
             row.Children.Add(ChipButton("\uE718", pinned ? $"取消固定参考 {number}" : $"固定参考 {number}", pinned ? "取消固定：选中其他节点时不再保留它" : "固定为参考：选中其他节点时也保留它", () => _host.TogglePin(node), pinned));
             row.Children.Add(ChipButton("\uE711", $"移除参考 {number}", "不作为这次的参考（节点仍保持选中）", () => _host.DropReference(node), false));
         }
+        else
+        {
+            var jump = new Button
+            {
+                Style = (Style)Application.Current.Resources["ToolbarButton"],
+                Height = 30, MinHeight = 0, Padding = new(4, 0, 10, 0), CornerRadius = new(15),
+                Content = row,
+            };
+            jump.Click += (_, _) => _host.FocusNode(node);
+            AutomationProperties.SetName(jump, $"{prefix} {number}：{Stacks.OwnTitle(node)}");
+            ToolTipService.SetToolTip(jump, $"点击定位到{prefix}：{Stacks.OwnTitle(node)}");
+            inner = jump;
+        }
         var chip = new Border
         {
             Style = (Style)Application.Current.Resources["GlassCapsule"],
             Height = 36,
             CornerRadius = new(18),
-            Padding = new(6, 0, editable ? 4 : 12, 0),
-            Child = row,
+            Padding = editable ? new(6, 0, 4, 0) : new(2),
+            Child = inner,
         };
         BlockCanvas(chip);
         ApplyShadow(chip, 24);
-        ToolTipService.SetToolTip(chip, Stacks.OwnTitle(node));
-        AutomationProperties.SetName(chip, $"{prefix} {number}：{Stacks.OwnTitle(node)}");
+        if (editable)
+        {
+            ToolTipService.SetToolTip(chip, Stacks.OwnTitle(node));
+            AutomationProperties.SetName(chip, $"{prefix} {number}：{Stacks.OwnTitle(node)}");
+        }
         return chip;
     }
 
@@ -642,7 +717,6 @@ public sealed partial class ComposerPanel : UserControl
     public async Task SubmitAsync()
     {
         if (_node is null || _host.IsClosing) return;
-        if (!IsComposing) { FocusPrompt(); return; }
         var generator = _host.Generator;
         switch (_state.Mode)
         {
@@ -655,9 +729,11 @@ public sealed partial class ComposerPanel : UserControl
                     .Select(async group => { foreach (var node in group) await generator.GenerateAsync(node); }));
                 break;
             case ComposerMode.Recipe or ComposerMode.Fill:
+                if (!IsComposing) { FocusPrompt(); break; }
                 await generator.GenerateAsync(_state.Bound!);
                 break;
             default:
+                if (!IsComposing) { FocusPrompt(); break; }
                 if (!GenerateButton.IsEnabled) { FocusPrompt(); break; }
                 await _host.GenerateFromComposerAsync(_node, _refs);
                 break;
