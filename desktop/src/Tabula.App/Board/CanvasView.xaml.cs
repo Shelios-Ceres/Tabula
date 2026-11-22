@@ -2081,6 +2081,17 @@ public sealed partial class CanvasView : UserControl
         EnsureVisible(Rect.Of(node));
     }
 
+    internal void ToggleSelect(string nodeId)
+    {
+        if (Doc.Find(nodeId) is not { } node) return;
+        if (Stacks.Of(node) is { } stack && !Stacks.IsOpen(node) && Stacks.Members(Doc, stack).FirstOrDefault() is { } lead && lead != node)
+            ToggleStack(lead);
+        if (_selected.Contains(nodeId)) Select(_selected.Where(id => id != nodeId).ToList());
+        else Select([.. _selected, nodeId]);
+    }
+
+    internal void OpenPicture(CanvasNode node) => ShowPictureView(node, PictureTool.Adjust);
+
     internal async Task RenameAsync(CanvasNode node)
     {
         if (await Dialogs.InputAsync("重命名节点", node.Title) is not { Length: > 0 } title) return;

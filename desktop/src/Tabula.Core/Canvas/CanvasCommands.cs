@@ -180,6 +180,7 @@ public static class CanvasCommands
         C("open-agent", "助手", "\uE99A", null, CommandGroup.Go, CommandScope.Selection, Always, false, "让本机的 Agent 操作画布"),
         C("open-quota", "额度与用量", "\uE8C7", null, CommandGroup.Go, CommandScope.Selection, Always, false, "各服务商的余额和本机用量"),
         C("minimap", "小地图", "\uE826", null, CommandGroup.Go, CommandScope.Selection, Always, false, "显示或隐藏"),
+        C("outline", "大纲", "\uE8FD", null, CommandGroup.Go, CommandScope.Selection, Always, false, "按分组、批次和类型搜索并定位节点"),
         C("fullscreen", "全屏", "\uE740", "F11", CommandGroup.Go, CommandScope.Selection, Always, false, "进入或退出全屏"),
         C("help", "操作说明", "\uE9CE", null, CommandGroup.Go, CommandScope.Selection, Always, false),
         C("settings", "设置", "\uE713", null, CommandGroup.Go, CommandScope.Selection, Always, false),

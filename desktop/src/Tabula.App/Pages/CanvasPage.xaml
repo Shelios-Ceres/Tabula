@@ -92,8 +92,9 @@
         </Border>
         </board:GlassScale>
 
-        <!-- Left: shared media library -->
+        <!-- Left: shared media library or searchable outline drawer (one at a time) -->
         <board:LibraryPanel x:Name="Library" Width="300" Margin="16,72,0,16" HorizontalAlignment="Left" VerticalAlignment="Stretch" Visibility="Collapsed" />
+        <board:OutlinePanel x:Name="Outline" Width="300" Margin="16,72,0,16" HorizontalAlignment="Left" VerticalAlignment="Stretch" Visibility="Collapsed" />
 
         <!-- Bottom-right: overview map, above the status bar and beside the right panel when it is open -->
         <board:MiniMap x:Name="Map" Margin="0,0,16,76" HorizontalAlignment="Right" VerticalAlignment="Bottom" Visibility="Collapsed" />
@@ -134,8 +135,7 @@
                 <ToggleButton x:Name="MiniMapToggle" Style="{StaticResource ToolbarToggleButton}" Padding="10,7" Click="MiniMapToggle_Click" ToolTipService.ToolTip="小地图" AutomationProperties.Name="小地图">
                     <FontIcon Glyph="&#xE826;" FontSize="15" />
                 </ToggleButton>
-                <!-- Placeholder until the outline drawer (phase R7). -->
-                <ToggleButton x:Name="OutlineToggle" Style="{StaticResource ToolbarToggleButton}" Padding="10,7" IsEnabled="False" ToolTipService.ToolTip="大纲（即将推出）" AutomationProperties.Name="大纲">
+                <ToggleButton x:Name="OutlineToggle" Style="{StaticResource ToolbarToggleButton}" Padding="10,7" Click="OutlineToggle_Click" ToolTipService.ToolTip="大纲：按分组、批次和类型浏览节点" AutomationProperties.Name="大纲">
                     <FontIcon Glyph="&#xE8FD;" FontSize="15" />
                 </ToggleButton>
                 <ToggleButton x:Name="FullScreenToggle" Style="{StaticResource ToolbarToggleButton}" Padding="10,7" Click="FullScreen_Click" ToolTipService.ToolTip="全屏" AutomationProperties.Name="全屏">

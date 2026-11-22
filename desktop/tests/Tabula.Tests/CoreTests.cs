@@ -373,6 +373,33 @@ public class CoreTests
     }
 
     [Fact]
+    public void Outline_groups_by_groups_batches_and_loose_kinds_and_filters_by_query()
+    {
+        var group = new CanvasNode { Kind = NodeKind.Group, Title = "主视觉分组" };
+        var inGroup = new CanvasNode { Kind = NodeKind.Image, Title = "图片-001", Content = "图片-001.png", Status = NodeStatus.Success, GroupId = group.Id };
+        var b1 = new CanvasNode { Kind = NodeKind.Image, Title = "图片-002", Content = "图片-002.png", Status = NodeStatus.Success, Prompt = "夕阳下的海港" };
+        var b2 = new CanvasNode { Kind = NodeKind.Image, Title = "图片-003", Content = "图片-003.png", Status = NodeStatus.Success, Prompt = "夕阳下的海港" };
+        Stacks.Form([b1, b2]);
+        var looseText = new CanvasNode { Kind = NodeKind.Text, Title = "剧本笔记", Content = "赛博雨夜分镜" };
+        var doc = new CanvasDocument();
+        foreach (var n in new[] { group, inGroup, b1, b2, looseText }) doc.Nodes.Add(n);
+
+        var full = Outline.Build(doc);
+        Assert.Equal(OutlineRowKind.Node, full[0].Kind);
+        Assert.Equal("主视觉分组", full[0].Label);
+        Assert.Equal(1, full[1].Depth);
+        Assert.Equal("图片-001", full[1].Label);
+        Assert.Contains(full, r => r.Kind == OutlineRowKind.Batch && r.Label.Contains("第 1 轮 · 2 张"));
+        Assert.Contains(full, r => r.Kind == OutlineRowKind.Header && r.Label == "文本" && r.Count == 1);
+
+        var collapsed = Outline.Build(doc, "", new HashSet<string> { b1.Id });
+        Assert.DoesNotContain(collapsed, r => r.Kind == OutlineRowKind.Node && r.Node?.Id == b2.Id);
+        var searched = Outline.Build(doc, "赛博", new HashSet<string> { b1.Id });
+        Assert.Equal(2, searched.Count);
+        Assert.Equal(looseText, searched[1].Node);
+    }
+
+    [Fact]
     public void Promote_puts_the_picture_in_the_old_ones_place_with_its_title_group_and_connections()
     {
         var doc = new CanvasDocument();

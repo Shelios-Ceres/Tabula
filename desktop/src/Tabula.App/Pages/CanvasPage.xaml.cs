@@ -40,6 +40,9 @@ public sealed partial class CanvasPage : Page
         Library.CastShadowOn(Board);
         LibraryToggle.IsChecked = SettingsStore.Current.LibraryOpen;
         Library.Visibility = SettingsStore.Current.LibraryOpen ? Visibility.Visible : Visibility.Collapsed;
+        Outline.Attach(Board);
+        Outline.CastShadowOn(Board);
+        Outline.CloseRequested += () => SetOutlineOpen(false);
         Map.Attach(Board);
         MiniMapToggle.IsChecked = SettingsStore.Current.MiniMapOpen;
         Map.Visibility = SettingsStore.Current.MiniMapOpen ? Visibility.Visible : Visibility.Collapsed;
@@ -52,6 +55,7 @@ public sealed partial class CanvasPage : Page
         Agent.Visibility = SettingsStore.Current.AgentOpen ? Visibility.Visible : Visibility.Collapsed;
         // Side panels and the map slide out of their own edge when toggled.
         Motion.ShowHide(Library, 0, 0.5f, 0.97f);
+        Motion.ShowHide(Outline, 0, 0.5f, 0.97f);
         Motion.ShowHide(Agent, 1, 0.5f, 0.97f);
         Motion.ShowHide(Map, 1, 1, 0.94f);
         var quota = new QuotaFlyout();
@@ -72,6 +76,7 @@ public sealed partial class CanvasPage : Page
         Board.Changed += HideToastWhenStale;
         // Liquid glass experiment: scaled glass panels, the tuning panel and its shortcut.
         GlassScale.Wrap(Library);
+        GlassScale.Wrap(Outline);
         GlassScale.Wrap(Agent);
         Motion.ShowHide(GlassPanel, 1, 0.5f, 0.97f);
         GlassPanel.CloseRequested += () => ShowGlassPanel(false);
@@ -108,9 +113,11 @@ public sealed partial class CanvasPage : Page
     {
         var s = GlassSettings.Current.UiScale;
         Library.Width = 300 * s;
+        Outline.Width = 300 * s;
         Agent.Width = 380 * s;
         var top = 12 + 60 * s;
         Library.Margin = new Thickness(16, top, 0, 16);
+        Outline.Margin = new Thickness(16, top, 0, 16);
         Agent.Margin = new Thickness(0, top, 16, 16 + 56 * s);
         GlassPanel.Margin = new Thickness(0, top, 16, 16 + 56 * s);
         ApplySafeArea();
@@ -128,9 +135,27 @@ public sealed partial class CanvasPage : Page
     private void LibraryToggle_Click(object sender, RoutedEventArgs e)
     {
         var open = LibraryToggle.IsChecked == true;
+        if (open && Outline.Visibility == Visibility.Visible) SetOutlineOpen(false);
         Library.Visibility = open ? Visibility.Visible : Visibility.Collapsed;
         SettingsStore.Current.LibraryOpen = open;
         SettingsStore.Save();
+        ApplySafeArea();
+    }
+
+    private void OutlineToggle_Click(object sender, RoutedEventArgs e) => SetOutlineOpen(OutlineToggle.IsChecked == true);
+
+    private void SetOutlineOpen(bool open)
+    {
+        if (open && Library.Visibility == Visibility.Visible)
+        {
+            LibraryToggle.IsChecked = false;
+            Library.Visibility = Visibility.Collapsed;
+            SettingsStore.Current.LibraryOpen = false;
+            SettingsStore.Save();
+        }
+        OutlineToggle.IsChecked = open;
+        Outline.Visibility = open ? Visibility.Visible : Visibility.Collapsed;
+        if (open) Outline.Refresh();
         ApplySafeArea();
     }
 
@@ -156,6 +181,9 @@ public sealed partial class CanvasPage : Page
         SettingsStore.Save();
     }
 
+    /// <summary>The panel in the left dock, if one is open.</summary>
+    private FrameworkElement? LeftDock => Library.Visibility == Visibility.Visible ? Library : Outline.Visibility == Visibility.Visible ? Outline : null;
+
     /// <summary>The panel in the right dock, if one is open.</summary>
     private FrameworkElement? RightDock => Agent.Visibility == Visibility.Visible ? Agent : GlassPanel.Visibility == Visibility.Visible ? GlassPanel : null;
 
@@ -163,11 +191,11 @@ public sealed partial class CanvasPage : Page
     private void ApplySafeArea()
     {
         var s = GlassSettings.Current.UiScale;
-        var library = Library.Visibility == Visibility.Visible ? Library.Margin.Left + Library.Width + 12 : 0;
+        var left = LeftDock is { } l ? l.Margin.Left + l.Width + 12 : 0;
         var dock = RightDock is { } panel ? panel.Margin.Right + panel.Width + 12 : 0;
         PlaceMap(dock);
         Board.StatusWidth = StatusHost.ActualWidth + 16;
-        Board.SafeArea = new Thickness(library, 12 + 56 * s, dock, 16 + 56 * s);
+        Board.SafeArea = new Thickness(left, 12 + 56 * s, dock, 16 + 56 * s);
     }
 
     /// <summary>The map sits above the status bar, beside the right dock; when the composer reaches it sideways, it rides above the composer instead.</summary>
@@ -247,6 +275,7 @@ public sealed partial class CanvasPage : Page
             case "open-agent": SetAgentOpen(Agent.Visibility != Visibility.Visible); break;
             case "open-quota": QuotaButton.Flyout.ShowAt(QuotaButton); break;
             case "minimap": MiniMapToggle.IsChecked = Map.Visibility != Visibility.Visible; MiniMapToggle_Click(MiniMapToggle, new RoutedEventArgs()); break;
+            case "outline": SetOutlineOpen(Outline.Visibility != Visibility.Visible); break;
             case "fullscreen": SetFullScreen(App.Window.AppWindow.Presenter.Kind != AppWindowPresenterKind.FullScreen); break;
             case "help": _help.ShowAt(HelpButton); break;
             case "settings": await OpenSettingsAsync(); break;
