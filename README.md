@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="desktop/src/InfiniteCanvas.App/Assets/Logo.svg" width="96" alt="infinite-canvas logo">
+  <img src="desktop/src/Tabula.App/Assets/Logo.svg" width="96" alt="Tabula logo">
 </p>
 
-<h1 align="center">无限画布 Ceres (infinite-canvas)</h1>
+<h1 align="center">Tabula（丹青）Ceres</h1>
 
 <p align="center">
   <a href="https://github.com/Shelios-Ceres/infinite-canvas"><img src="https://img.shields.io/github/stars/Shelios-Ceres/infinite-canvas?style=flat-square&logo=github" alt="GitHub stars"></a>
@@ -15,7 +15,7 @@
   <a href="docs/content/docs/overview/quick-start.mdx">快速开始</a> · <a href="docs/content/docs/overview/features.mdx">功能介绍</a> · <a href="docs/content/docs/development/local-development.mdx">本地开发</a> · <a href="desktop/README.md">桌面客户端说明</a> · <a href="SECURITY.md">漏洞提交</a> · <a href="docs/content/docs/progress/todo.mdx">待办事项</a>
 </p>
 
-无限画布是一款面向图片创作的开源 Windows 桌面工作台，用 WinUI 3 原生编写。它把画布编排、AI 图片生成、图片工具、本机 Agent、提示词库和资料库放在同一个界面里，适合用来探索视觉方案并连续迭代图片结果。
+Tabula（丹青）是一款面向图片创作的开源 Windows 桌面工作台，用 WinUI 3 原生编写。它把画布编排、AI 图片生成、图片工具、本机 Agent、提示词库和资料库放在同一个界面里，适合用来探索视觉方案并连续迭代图片结果。
 
 本项目改自 [basketikun/infinite-canvas](https://github.com/basketikun/infinite-canvas)（MIT 许可），感谢原作者。原项目是网页版；这里改写成了 Windows 原生客户端，网页版及其配套已移除，需要时可以查看 git 历史或原仓库。
 
@@ -38,11 +38,11 @@
 需要 Windows 10 1809 及以上（推荐 Windows 11）和 .NET 10 SDK。在仓库根目录执行：
 
 ```bash
-dotnet build desktop/InfiniteCanvas.sln
+dotnet build desktop/Tabula.sln
 ```
 
 ```bash
-desktop/src/InfiniteCanvas.App/bin/x64/Debug/net10.0-windows10.0.22621.0/win-x64/InfiniteCanvas.exe
+desktop/src/Tabula.App/bin/x64/Debug/net10.0-windows10.0.22621.0/win-x64/Tabula.exe
 ```
 
 首次打开后进入设置，在「服务商」里添加服务商并填入 API Key。更多说明见 [快速开始](docs/content/docs/overview/quick-start.mdx) 和 [桌面客户端说明](desktop/README.md)。

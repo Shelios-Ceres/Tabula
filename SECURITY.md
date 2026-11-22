@@ -2,7 +2,7 @@
 
 ## Supported Versions
 
-infinite-canvas is in active development. Security fixes are accepted for the
+Tabula is in active development. Security fixes are accepted for the
 `main` branch and the latest tagged release. Older versions may be handled on a
 best-effort basis.
 

@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>远山</title>
+<!-- Tabula waiting animation: 远山. Original work for the Tabula client, no libraries. -->
+<style>html, body { margin: 0; height: 100%; overflow: hidden; background: #efe9dc; } canvas { display: block; width: 100%; height: 100%; }</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas = document.getElementById('c'), x = canvas.getContext('2d');
+const PAPER = '#efe9dc', PAINT_MS = 10000, HOLD_MS = 2600;
+let W, H, U, queue, next, start, fade;
+let seed = (Date.now() ^ (Math.random() * 1e9)) >>> 0;
+function rnd() { seed = (seed + 0x6D2B79F5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t ^= t + Math.imul(t ^ (t >>> 7), 61 | t); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }
+const r = (a, b) => a + (b - a) * rnd();
+const pick = (list) => list[Math.floor(rnd() * list.length)];
+const gauss = () => (rnd() + rnd() + rnd() + rnd() - 2) / 2;
+const rgba = (hex, a) => { const n = parseInt(hex.slice(1), 16); return 'rgba(' + (n >> 16) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')'; };
+// Paint something at a time (ms) on the timeline.
+const at = (time, draw) => queue.push({ time, draw });
+function grain(amount, dark) {
+  for (let i = 0; i < W * H / 260 * amount; i++) {
+    x.fillStyle = dark ? 'rgba(255,255,255,' + r(0.01, 0.05) + ')' : 'rgba(90,70,40,' + r(0.01, 0.05) + ')';
+    x.fillRect(r(0, W), r(0, H), r(0.5, 1.6) * U, r(0.5, 1.6) * U);
+  }
+}
+function begin() {
+  x.globalCompositeOperation = 'source-over'; x.globalAlpha = 1;
+  x.fillStyle = PAPER; x.fillRect(0, 0, W, H);
+  queue = []; paint(); queue.sort((a, b) => a.time - b.time);
+  next = 0; start = performance.now(); fade = 0;
+  // ?at=ms paints straight to that moment (previews and stills).
+  const jump = +new URLSearchParams(location.search).get('at') || 0;
+  while (jump && next < queue.length && queue[next].time <= jump) { x.save(); queue[next++].draw(); x.restore(); }
+  start -= jump;
+}
+function resize() {
+  const d = Math.min(devicePixelRatio || 1, 2);
+  W = canvas.width = Math.max(1, Math.round(innerWidth * d)); H = canvas.height = Math.max(1, Math.round(innerHeight * d));
+  U = Math.min(W, H) / 400;
+  begin();
+}
+function frame(now) {
+  const t = now - start;
+  while (next < queue.length && queue[next].time <= t) { x.save(); queue[next++].draw(); x.restore(); }
+  if (next >= queue.length && t > PAINT_MS + HOLD_MS) {
+    x.globalAlpha = 0.07; x.fillStyle = PAPER; x.fillRect(0, 0, W, H); x.globalAlpha = 1;
+    if (++fade > 45) begin();
+  }
+  requestAnimationFrame(frame);
+}
+addEventListener('resize', resize);
+resize();
+requestAnimationFrame(frame);
+
+// Ink-wash mountains: pale far ridges first, then darker near ones, each brushed left to right and fading into mist at its foot.
+function ridge(base, amp, rough) {
+  const n = 64, pts = [];
+  const waves = [0, 1, 2].map(() => ({ f: r(1, 3.2), p: r(0, 6.28), a: r(0.4, 1) }));
+  for (let i = 0; i <= n; i++) {
+    const u = i / n;
+    let y = waves.reduce((s, w) => s + Math.sin(u * w.f * 6.28 + w.p) * w.a, 0) / 2.4;
+    y += gauss() * rough;
+    pts.push([u * W, base - y * amp]);
+  }
+  for (let k = 0; k < 2; k++) for (let i = 1; i < n; i++) pts[i][1] = (pts[i - 1][1] + pts[i][1] * 2 + pts[i + 1][1]) / 4;
+  return pts;
+}
+function paint() {
+  grain(1.2);
+  // A warm wash of sky.
+  at(0, () => {
+    const g = x.createLinearGradient(0, 0, 0, H * 0.7);
+    g.addColorStop(0, 'rgba(214,196,168,0.35)'); g.addColorStop(1, 'rgba(239,233,220,0)');
+    x.fillStyle = g; x.fillRect(0, 0, W, H);
+  });
+  // A pale sun.
+  const sun = [r(0.15, 0.85) * W, r(0.12, 0.26) * H, r(18, 30) * U];
+  at(500, () => { x.fillStyle = 'rgba(196,92,62,0.22)'; x.beginPath(); x.arc(sun[0], sun[1], sun[2], 0, 6.28); x.fill(); });
+  const layers = 5, cols = 64;
+  for (let L = 0; L < layers; L++) {
+    const depth = L / (layers - 1);
+    const pts = ridge(H * (0.42 + depth * 0.36), H * r(0.1, 0.2) * (1 - depth * 0.35), 0.15 + depth * 0.2);
+    const ink = [Math.round(120 - depth * 95), Math.round(128 - depth * 100), Math.round(140 - depth * 105)];
+    const alpha = 0.22 + depth * 0.55, foot = H * (0.16 + depth * 0.08);
+    const t0 = 900 + L * 1650, dir = rnd() < 0.5;
+    // One gradient for the whole layer, so neighbouring columns join without bands.
+    const crest = Math.min(...pts.map((p) => p[1])), low = Math.max(...pts.map((p) => p[1])) + foot;
+    for (let c = 0; c < cols; c++) {
+      const i0 = dir ? c : cols - 1 - c;
+      at(t0 + c * (1500 / cols), () => {
+        // One column per ridge segment: neighbours share an edge and never cover the same strip twice.
+        const a = pts[i0], b = pts[i0 + 1];
+        // Columns snap to whole device pixels and never overlap, so no seams build up where their washes meet.
+        const x0 = Math.round(a[0]), x1 = Math.round(b[0]), top = Math.min(a[1], b[1]);
+        const g = x.createLinearGradient(0, crest, 0, low);
+        g.addColorStop(0, `rgba(${ink},${alpha})`); g.addColorStop(0.45, `rgba(${ink},${alpha * 0.6})`); g.addColorStop(1, `rgba(${ink},0)`);
+        x.fillStyle = g;
+        x.beginPath(); x.rect(x0, 0, x1 - x0, H); x.clip();
+        x.beginPath(); x.moveTo(x0 - 2, a[1]); x.lineTo(x1 + 2, b[1]); x.lineTo(x1 + 2, low); x.lineTo(x0 - 2, low); x.closePath(); x.fill();
+        // Dry-brush edge along the crest.
+        x.strokeStyle = `rgba(${ink},${Math.min(0.9, alpha + 0.15)})`; x.lineWidth = r(0.6, 1.6) * U;
+        x.beginPath(); x.moveTo(a[0], a[1] + r(-0.5, 0.5) * U); x.lineTo(b[0], b[1] + r(-0.5, 0.5) * U); x.stroke();
+      });
+    }
+    // Mist rising off the ridge's foot.
+    at(t0 + 1550, () => {
+      const y = H * (0.5 + depth * 0.36);
+      const g = x.createLinearGradient(0, y - H * 0.06, 0, y + H * 0.08);
+      g.addColorStop(0, 'rgba(239,233,220,0)'); g.addColorStop(0.5, 'rgba(239,233,220,0.55)'); g.addColorStop(1, 'rgba(239,233,220,0)');
+      x.fillStyle = g; x.fillRect(0, y - H * 0.06, W, H * 0.14);
+    });
+  }
+  // Pines on the nearest ridge.
+  for (let p = 0; p < 4; p++) {
+    const px = r(0.05, 0.95) * W, py = H * r(0.8, 0.9), h = r(28, 50) * U;
+    at(9000 + p * 120, () => {
+      x.strokeStyle = 'rgba(25,28,32,0.85)'; x.lineWidth = 1.2 * U;
+      x.beginPath(); x.moveTo(px, py); x.lineTo(px + r(-2, 2) * U, py - h); x.stroke();
+      for (let k = 0; k < 6; k++) {
+        const ky = py - h * (0.35 + k * 0.11), w = (6 - k) * 2.6 * U;
+        x.fillStyle = 'rgba(25,28,32,0.7)'; x.beginPath(); x.ellipse(px, ky, w, 1.4 * U, r(-0.15, 0.15), 0, 6.28); x.fill();
+      }
+    });
+  }
+  // A few birds, then the seal.
+  for (let b = 0; b < 4; b++) {
+    const bx = r(0.2, 0.8) * W, by = r(0.15, 0.35) * H, s = r(3, 5) * U;
+    at(9300 + b * 90, () => {
+      x.strokeStyle = 'rgba(30,30,34,0.75)'; x.lineWidth = 0.9 * U;
+      x.beginPath(); x.moveTo(bx - s, by - s * 0.3); x.quadraticCurveTo(bx - s * 0.4, by - s * 0.6, bx, by); x.quadraticCurveTo(bx + s * 0.4, by - s * 0.6, bx + s, by - s * 0.3); x.stroke();
+    });
+  }
+  at(9800, () => {
+    const s = 22 * U, sx = W - s - 16 * U, sy = H - s - 16 * U;
+    x.fillStyle = 'rgba(178,40,32,0.88)'; x.fillRect(sx, sy, s, s);
+    x.fillStyle = '#f6ecdc'; x.font = `${s * 0.42}px "KaiTi", "STKaiti", serif`; x.textAlign = 'center'; x.textBaseline = 'middle';
+    x.fillText('无', sx + s / 2, sy + s * 0.3); x.fillText('限', sx + s / 2, sy + s * 0.72);
+  });
+}
+
+</script>
+</body>
+</html>

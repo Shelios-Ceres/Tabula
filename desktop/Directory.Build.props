@@ -5,6 +5,6 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <!-- Release version and codename; the About card in settings and the exe details read them from the assembly. -->
     <Version>1.0.0</Version>
-    <Product>无限画布 Ceres</Product>
+    <Product>Tabula（丹青）Ceres</Product>
   </PropertyGroup>
 </Project>

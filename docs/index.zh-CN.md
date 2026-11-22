@@ -1,4 +1,4 @@
-# 无限画布文档索引
+# Tabula（丹青）文档索引
 
 ## 项目介绍
 
@@ -26,6 +26,6 @@
 
 ## 说明
 
-- 无限画布是 Windows 原生桌面客户端，代码在 `desktop/`；原来的网页版及其配套工具已移除。
+- Tabula（丹青）是 Windows 原生桌面客户端，代码在 `desktop/`；原来的网页版及其配套工具已移除。
 - 画布、媒体文件和设置保存在本机 `%LocalAppData%\InfiniteCanvas`，没有云同步。
 - API Key 用 Windows DPAPI 加密保存，客户端直接请求各家服务商的原生接口。

@@ -1,11 +1,11 @@
 ---
 title: 快速开始
-description: 编译并运行无限画布 Windows 桌面客户端
+description: 编译并运行 Tabula（丹青）Windows 桌面客户端
 ---
 
 # 快速开始
 
-无限画布是 Windows 原生桌面客户端，代码在仓库的 `desktop/` 目录。
+Tabula（丹青）是 Windows 原生桌面客户端，代码在仓库的 `desktop/` 目录。
 
 ## 环境
 
@@ -17,20 +17,20 @@ description: 编译并运行无限画布 Windows 桌面客户端
 在仓库根目录执行：
 
 ```bash
-dotnet build desktop/InfiniteCanvas.sln
+dotnet build desktop/Tabula.sln
 ```
 
 ```bash
-desktop/src/InfiniteCanvas.App/bin/x64/Debug/net10.0-windows10.0.22621.0/win-x64/InfiniteCanvas.exe
+desktop/src/Tabula.App/bin/x64/Debug/net10.0-windows10.0.22621.0/win-x64/Tabula.exe
 ```
 
-程序为非打包自包含形式，不需要另装 Windows App SDK 运行时。也可以用支持 .NET 10 的 Visual Studio 2026 打开 `desktop/InfiniteCanvas.sln`，选择 x64 直接运行。
+程序为非打包自包含形式，不需要另装 Windows App SDK 运行时。也可以用支持 .NET 10 的 Visual Studio 2026 打开 `desktop/Tabula.sln`，选择 x64 直接运行。
 
 ## 首次使用
 
 - 打开设置，在「服务商」里添加要用的服务商（OpenAI、Google Gemini、火山方舟、xAI、千问），填入 API Key，再拉取或添加模型。
 - 回到画布列表新建画布，在底部的指令栏选择模型，按 Enter 即可生成。
-- 想让 Agent 操作画布：在画布右侧打开「助手」，或者在客户端外的 Agent 里把 `InfiniteCanvas.exe --mcp-bridge` 登记为 MCP 服务器。
+- 想让 Agent 操作画布：在画布右侧打开「助手」，或者在客户端外的 Agent 里把 `Tabula.exe --mcp-bridge` 登记为 MCP 服务器。
 
 ## 说明
 

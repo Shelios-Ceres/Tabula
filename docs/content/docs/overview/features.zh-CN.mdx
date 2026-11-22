@@ -5,7 +5,7 @@ description: Windows 桌面客户端已实现的主要功能
 
 # 功能介绍
 
-无限画布是 Windows 原生桌面客户端（WinUI 3，代码在仓库 `desktop/`）。本文档介绍已经发布的主要功能；新做的、还在等测试确认的改动见[待测试](/zh-CN/docs/progress/pending-test)。
+Tabula（丹青）是 Windows 原生桌面客户端（WinUI 3，代码在仓库 `desktop/`）。本文档介绍已经发布的主要功能；新做的、还在等测试确认的改动见[待测试](/zh-CN/docs/progress/pending-test)。
 
 ## 画布
 
@@ -52,7 +52,7 @@ description: Windows 桌面客户端已实现的主要功能
 ## Agent 助手
 
 - 画布右侧的「助手」通过 ACP 启动本机 Agent（默认 Claude Code、Kimi Code、Grok Build、DeepSeek Harness，命令可在设置里改）。对话即可让 Agent 读取画布、增删改节点、连线和发起生成，支持授权确认和停止，一次修改只记一步撤销。
-- 客户端外的 Agent（如 Claude Code、终端里的 Kimi / Grok）可以把 `InfiniteCanvas.exe --mcp-bridge` 登记为 MCP 服务器，操作当前打开的画布；设置里的「允许外部 Agent 连接」可以关掉。
+- 客户端外的 Agent（如 Claude Code、终端里的 Kimi / Grok）可以把 `Tabula.exe --mcp-bridge` 登记为 MCP 服务器，操作当前打开的画布；设置里的「允许外部 Agent 连接」可以关掉。
 - 画布工具只走本机命名管道，只允许当前 Windows 用户连接，不开网络端口。Agent 自身的登录、模型与计费由各家 Agent 负责。
 
 ## 界面

@@ -10,28 +10,28 @@ The desktop client is written in C# with .NET 10 and WinUI 3 (Windows App SDK), 
 ## Build, run and test
 
 ```bash
-dotnet build desktop/InfiniteCanvas.sln
+dotnet build desktop/Tabula.sln
 ```
 
 ```bash
-dotnet test desktop/tests/InfiniteCanvas.Tests
+dotnet test desktop/tests/Tabula.Tests
 ```
 
-The built app is at `desktop/src/InfiniteCanvas.App/bin/x64/Debug/net10.0-windows10.0.22621.0/win-x64/InfiniteCanvas.exe`.
+The built app is at `desktop/src/Tabula.App/bin/x64/Debug/net10.0-windows10.0.22621.0/win-x64/Tabula.exe`.
 
 ## Testing with a separate data folder
 
-The client reads and writes `%LocalAppData%\InfiniteCanvas` by default. For testing, point the `INFINITE_CANVAS_DATA` environment variable at another folder so the test instance uses its own canvases and settings, and build with `-p:BaseOutputPath=...` into a temporary folder so it does not clash with a running client.
+The client reads and writes `%LocalAppData%\InfiniteCanvas` by default. For testing, point the `TABULA_DATA` environment variable at another folder so the test instance uses its own canvases and settings, and build with `-p:BaseOutputPath=...` into a temporary folder so it does not clash with a running client.
 
 ## Code layout
 
 | Folder | Contents |
 | --- | --- |
-| `desktop/src/InfiniteCanvas.Core` | Canvas model, connection rules, undo history, project and settings storage, model family capabilities |
-| `desktop/src/InfiniteCanvas.Providers` | Native adapters for the five vendors |
-| `desktop/src/InfiniteCanvas.Agents` | Local agent integration: ACP client, canvas MCP tools and the named-pipe server |
-| `desktop/src/InfiniteCanvas.App` | WinUI 3 UI: `Pages` (canvas list, canvas, settings) and `Board` (canvas engine, nodes, generation panel, scheduling) |
-| `desktop/tests/InfiniteCanvas.Tests` | Core rules and request / response parsing tests |
+| `desktop/src/Tabula.Core` | Canvas model, connection rules, undo history, project and settings storage, model family capabilities |
+| `desktop/src/Tabula.Providers` | Native adapters for the five vendors |
+| `desktop/src/Tabula.Agents` | Local agent integration: ACP client, canvas MCP tools and the named-pipe server |
+| `desktop/src/Tabula.App` | WinUI 3 UI: `Pages` (canvas list, canvas, settings) and `Board` (canvas engine, nodes, generation panel, scheduling) |
+| `desktop/tests/Tabula.Tests` | Core rules and request / response parsing tests |
 
 ## Documentation site
 
@@ -44,8 +44,8 @@ bun run dev
 
 Common locations:
 
-- Canvas, nodes and the generation panel: `desktop/src/InfiniteCanvas.App/Board/`
-- Vendor requests: `desktop/src/InfiniteCanvas.Providers/`, with cases in `desktop/tests/InfiniteCanvas.Tests/ProviderTests.cs`
-- Model capabilities: `desktop/src/InfiniteCanvas.Core/Models/ModelFamilies.cs`
-- Agents and MCP tools: `desktop/src/InfiniteCanvas.Agents/`
+- Canvas, nodes and the generation panel: `desktop/src/Tabula.App/Board/`
+- Vendor requests: `desktop/src/Tabula.Providers/`, with cases in `desktop/tests/Tabula.Tests/ProviderTests.cs`
+- Model capabilities: `desktop/src/Tabula.Core/Models/ModelFamilies.cs`
+- Agents and MCP tools: `desktop/src/Tabula.Agents/`
 - Documentation content: `docs/content/docs/`

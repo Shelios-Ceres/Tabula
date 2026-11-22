@@ -10,28 +10,28 @@ description: 桌面客户端的编译、测试与代码结构
 ## 编译、运行与测试
 
 ```bash
-dotnet build desktop/InfiniteCanvas.sln
+dotnet build desktop/Tabula.sln
 ```
 
 ```bash
-dotnet test desktop/tests/InfiniteCanvas.Tests
+dotnet test desktop/tests/Tabula.Tests
 ```
 
-编译出的程序在 `desktop/src/InfiniteCanvas.App/bin/x64/Debug/net10.0-windows10.0.22621.0/win-x64/InfiniteCanvas.exe`。
+编译出的程序在 `desktop/src/Tabula.App/bin/x64/Debug/net10.0-windows10.0.22621.0/win-x64/Tabula.exe`。
 
 ## 用独立数据目录测试
 
-客户端默认读写 `%LocalAppData%\InfiniteCanvas`。测试时把环境变量 `INFINITE_CANVAS_DATA` 指向另一个文件夹，测试实例就使用独立的画布和设置；同时用 `-p:BaseOutputPath=...` 把编译输出放到临时目录，避免和正在运行的客户端冲突。
+客户端默认读写 `%LocalAppData%\InfiniteCanvas`。测试时把环境变量 `TABULA_DATA` 指向另一个文件夹，测试实例就使用独立的画布和设置；同时用 `-p:BaseOutputPath=...` 把编译输出放到临时目录，避免和正在运行的客户端冲突。
 
 ## 代码结构
 
 | 目录 | 内容 |
 | --- | --- |
-| `desktop/src/InfiniteCanvas.Core` | 画布模型、连线规则、撤销历史、项目与设置存储、模型家族能力表 |
-| `desktop/src/InfiniteCanvas.Providers` | 五家服务商原生适配 |
-| `desktop/src/InfiniteCanvas.Agents` | 本机 Agent 接入：ACP 客户端、画布 MCP 工具与命名管道服务 |
-| `desktop/src/InfiniteCanvas.App` | WinUI 3 界面：`Pages`（画布列表、画布、设置）、`Board`（画布引擎、节点、生成面板、生成调度） |
-| `desktop/tests/InfiniteCanvas.Tests` | 核心规则与请求 / 响应解析测试 |
+| `desktop/src/Tabula.Core` | 画布模型、连线规则、撤销历史、项目与设置存储、模型家族能力表 |
+| `desktop/src/Tabula.Providers` | 五家服务商原生适配 |
+| `desktop/src/Tabula.Agents` | 本机 Agent 接入：ACP 客户端、画布 MCP 工具与命名管道服务 |
+| `desktop/src/Tabula.App` | WinUI 3 界面：`Pages`（画布列表、画布、设置）、`Board`（画布引擎、节点、生成面板、生成调度） |
+| `desktop/tests/Tabula.Tests` | 核心规则与请求 / 响应解析测试 |
 
 ## 文档站
 
@@ -44,8 +44,8 @@ bun run dev
 
 ## 常见场景
 
-- 改画布、节点和生成面板：主要看 `desktop/src/InfiniteCanvas.App/Board/`
-- 改服务商请求：主要看 `desktop/src/InfiniteCanvas.Providers/`，并在 `desktop/tests/InfiniteCanvas.Tests/ProviderTests.cs` 补用例
-- 改模型能力：主要看 `desktop/src/InfiniteCanvas.Core/Models/ModelFamilies.cs`
-- 改 Agent 与 MCP 工具：主要看 `desktop/src/InfiniteCanvas.Agents/`
+- 改画布、节点和生成面板：主要看 `desktop/src/Tabula.App/Board/`
+- 改服务商请求：主要看 `desktop/src/Tabula.Providers/`，并在 `desktop/tests/Tabula.Tests/ProviderTests.cs` 补用例
+- 改模型能力：主要看 `desktop/src/Tabula.Core/Models/ModelFamilies.cs`
+- 改 Agent 与 MCP 工具：主要看 `desktop/src/Tabula.Agents/`
 - 改文档站内容：主要看 `docs/content/docs/`

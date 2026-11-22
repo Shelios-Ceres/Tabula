@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- Tabula（丹青）: a canvas sheet with grid dots and an infinity ribbon in the node-kind palette (image blue → video purple → config magenta → audio orange). -->
+  <defs>
+    <linearGradient id="sheet" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" />
+      <stop offset="1" stop-color="#E8ECF6" />
+    </linearGradient>
+    <linearGradient id="ribbon" x1="44" y1="0" x2="212" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1F7AE0" />
+      <stop offset="0.38" stop-color="#7A4CC9" />
+      <stop offset="0.68" stop-color="#D9449A" />
+      <stop offset="1" stop-color="#F06A1F" />
+    </linearGradient>
+    <pattern id="dots" width="26" height="26" x="11" y="11" patternUnits="userSpaceOnUse">
+      <circle cx="13" cy="13" r="2.4" fill="#BFC7D8" />
+    </pattern>
+    <clipPath id="inside">
+      <rect x="16" y="16" width="224" height="224" rx="52" />
+    </clipPath>
+    <filter id="lift" x="-25%" y="-50%" width="150%" height="210%">
+      <feDropShadow dx="0" dy="6" stdDeviation="6" flood-color="#3B2A7A" flood-opacity="0.28" />
+    </filter>
+  </defs>
+  <rect x="16" y="16" width="224" height="224" rx="52" fill="url(#sheet)" />
+  <rect class="dots" x="16" y="16" width="224" height="224" fill="url(#dots)" opacity="0.75" clip-path="url(#inside)" />
+  <rect x="17" y="17" width="222" height="222" rx="51" fill="none" stroke="#C9D0DF" stroke-width="2" />
+  <path d="M128 128 C152 88 202 90 202 128 C202 166 152 168 128 128 C104 88 54 90 54 128 C54 166 104 168 128 128 Z"
+        fill="none" stroke="url(#ribbon)" stroke-width="24" stroke-linecap="round" stroke-linejoin="round" filter="url(#lift)" />
+</svg>

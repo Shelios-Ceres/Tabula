@@ -1,4 +1,4 @@
-# Infinite Canvas Documentation Index
+# Tabula Documentation Index
 
 ## Overview
 
@@ -26,6 +26,6 @@
 
 ## Notes
 
-- Infinite Canvas is a native Windows desktop client in `desktop/`; the former web client and its companion tools have been removed.
+- Tabula is a native Windows desktop client in `desktop/`; the former web client and its companion tools have been removed.
 - Canvases, media files and settings are stored locally in `%LocalAppData%\InfiniteCanvas`; there is no cloud sync.
 - API keys are encrypted with Windows DPAPI, and the client sends requests directly to each vendor's native API.

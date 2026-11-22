@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>月下昙花</title>
+<style>
+  html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #173831; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<div role="img" aria-label="深绿色夜色里，昙花的象牙白花瓣一层层舒展，带着花粉的金色花蕊微微起伏。">
+<canvas aria-hidden="true" id="print"></canvas>
+<canvas aria-hidden="true" id="motion"></canvas>
+</div>
+<script>
+'use strict';
+const print = document.getElementById('print').getContext('2d');
+const motion = document.getElementById('motion').getContext('2d');
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+const tau = Math.PI * 2;
+let left, topEdge, right, bottom, frame;
+
+function shape(ctx, path, fill, stroke, width = 1) {
+  const outline = new Path2D(path);
+  if (fill) { ctx.fillStyle = fill; ctx.fill(outline); }
+  if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = width; ctx.stroke(outline); }
+}
+
+function oval(ctx, x, y, rx, ry, fill) {
+  ctx.beginPath();
+  ctx.ellipse(x, y, rx, ry, 0, 0, tau);
+  ctx.fillStyle = fill;
+  ctx.fill();
+}
+
+function wash(ctx, y1, y2, stops) {
+  const gradient = ctx.createLinearGradient(0, y1, 0, y2);
+  for (const [offset, color] of stops) gradient.addColorStop(offset, color);
+  return gradient;
+}
+
+// A small, stationary two-ink grain tile gives flat colours the tooth of a paper print.
+const grainTile = document.createElement('canvas');
+grainTile.width = grainTile.height = 96;
+const grain = grainTile.getContext('2d');
+for (let i = 0; i < 1800; i++) {
+  grain.fillStyle = i % 3 ? '#172e3720' : '#fff0c825';
+  grain.fillRect(Math.random() * 96, Math.random() * 96, .5 + Math.random(), .5 + Math.random());
+}
+
+const pine = '#214c42', sage = '#8fa879';
+
+function cladode(c, x, y, rotation, length, width, color) {
+  // Epiphyllum stems are flat, with scalloped edges and a pale midrib.
+  c.save(); c.translate(x, y); c.rotate(rotation); c.scale(width, length);
+  shape(c, 'M0 0 C-7 -11 -12 -20 -10 -29 Q-8 -32 -12 -38 Q-17 -48 -12 -56 Q-9 -60 -12 -66 Q-14 -75 -8 -83 Q-4 -86 0 -100 Q6 -88 9 -82 Q14 -74 11 -68 Q9 -64 13 -59 Q17 -51 13 -42 Q9 -37 11 -31 Q12 -20 0 0Z', color, '#233f36', .75);
+  shape(c, 'M0 -2 Q-1 -41 0 -94', null, sage, .8);
+  for (let k = 0; k < 5; k++) {
+    const mid = -17 - k * 12;
+    shape(c, `M0 ${mid} q-4 -4 -8 -10 M0 ${mid - 4} q5 -4 8 -9`, null, '#a2b28880', .65);
+  }
+  c.restore();
+}
+
+function drawPrint() {
+  const c = print;
+  c.fillStyle = wash(c, topEdge, bottom, [[0, '#102f32'], [.55, '#244b43'], [1, '#355344']]);
+  c.fillRect(left, topEdge, right - left, bottom - topEdge);
+  const halo = c.createRadialGradient(130, 77, 2, 130, 77, 167);
+  halo.addColorStop(0, '#a4b17f29'); halo.addColorStop(1, '#a4b17f00');
+  c.fillStyle = halo; c.fillRect(left, topEdge, right - left, bottom - topEdge);
+  for (let i = 0; i < 98; i++) {
+    const x = left + (i * 137 % 251) / 251 * (right - left);
+    const y = topEdge + (i * 193 % 257) / 257 * (bottom - topEdge);
+    oval(c, x, y, i % 9 ? .55 : 1, i % 9 ? .55 : .9, '#d0d2a36c');
+  }
+  // Two arcs form the crescent, leaving the green sky visible on its unlit side.
+  shape(c, 'M108 61 C82 61 78 97 103 105 C114 108 125 103 130 95 C104 106 88 78 108 61Z', '#e2d59e');
+  for (let i = 0; i < 4; i++) {
+    shape(c, `M${97 - i} ${70 + i * 5} q-2 5 .4 8`, null, '#b6b780', .65);
+  }
+  shape(c, 'M350 348 C281 293 287 228 237 190 Q221 175 208 160', null, '#142e2a', 7);
+  shape(c, 'M350 348 C281 293 287 228 237 190 Q221 175 208 160', null, '#739272', 3.1);
+  cladode(c, 302, 285, .84, 1.13, 1.02, '#3c6351');
+  cladode(c, 291, 257, -.91, 1.12, 1, '#47745d');
+  cladode(c, 264, 219, 1.13, .78, .87, '#6d8c68');
+  cladode(c, 244, 196, -.98, .89, 1.08, '#64866b');
+  cladode(c, 92, 324, -.44, 1.29, 1.45, pine);
+  cladode(c, 91, 277, .38, .81, .81, '#3a6454');
+  // A closed second bud sits at the end of a curved pedicel.
+  shape(c, 'M261 216 Q265 192 284 183 Q298 175 297 159', null, '#79916d', 2.5);
+  c.save(); c.translate(297, 160); c.rotate(.3);
+  shape(c, 'M0 2 Q-13 -5 -8 -19 Q-7 -28 -10 -35 Q2 -30 4 -23 Q10 -15 7 -8Z', '#aa796f', '#344f40', 1);
+  shape(c, 'M-1 1 Q-4 -15 -8 -30 M0 1 Q6 -10 3 -20', null, '#d4aa91', .9);
+  c.restore();
+}
+
+const petalOutline = new Path2D('M0 2 C-4 -2 -14 -24 -13 -40 C-13 -57 -4 -76 2 -90 C2 -68 16 -54 12 -37 C9 -19 3 -4 0 2Z');
+const petalVeins = new Path2D('M0 -2 C-2 -20 -4 -45 1 -75 M-1 -8 Q5 -31 5 -48');
+
+function petal(c, angle, length, width, fill, line) {
+  c.save(); c.rotate(angle); c.scale(width, length);
+  c.fillStyle = fill; c.fill(petalOutline);
+  c.strokeStyle = line; c.lineWidth = .95; c.stroke(petalOutline);
+  c.lineWidth = .63; c.stroke(petalVeins);
+  c.restore();
+}
+
+function drawMotion(t) {
+  const c = motion;
+  const breath = .5 - .5 * Math.cos(t * tau / 8.4 + 1.7);
+  c.save(); c.translate(206, 158); c.rotate(-.28);
+  // Long blush sepals, a whorl of ivory petals and the shorter cup around the stamens.
+  for (let i = 0; i < 15; i++) {
+    const angle = -2.54 + i * .342;
+    petal(c, angle * (.78 + .24 * breath), .84 + .21 * Math.cos(angle) + .07 * Math.sin(i * 3), .31,
+      i % 2 ? '#ceaa93' : '#b8887e', '#886f64');
+  }
+  for (let i = 0; i < 13; i++) {
+    const angle = -2.32 + i * .366;
+    petal(c, angle * (.74 + .27 * breath), .68 + .2 * Math.cos(angle) + .04 * Math.sin(i * 2),
+      .83 + .14 * Math.cos(angle), i % 2 ? '#e9d7b7' : '#f1e0c3', '#bfae94');
+  }
+  for (let i = 0; i < 10; i++) {
+    const angle = -2.48 + i * .55;
+    petal(c, angle * (.74 + .3 * breath), .37 + .15 * Math.cos(angle), .65, i % 2 ? '#f7ebcd' : '#eadeba', '#c2b397');
+  }
+  for (let i = 0; i < 23; i++) {
+    const a = -2.13 + i * .181, r = 13 + 8 * (1 + Math.cos(i * 1.9)) / 2;
+    const x = Math.sin(a) * r * (1 + breath * .1), y = -9 - Math.cos(a) * r - 1.4 * breath;
+    shape(c, `M0 2 Q${x * .68} -2 ${x} ${y}`, null, '#cb9f54', .82);
+    oval(c, x, y, 1.45, .93, '#e6b768');
+  }
+  shape(c, 'M0 2 Q-8 -12 -15 -20 M-15 -20 l-4 -2 m4 2 -.5 -4 m.5 4 -4 .7', null, '#f4edbd', 1.5);
+  c.restore();
+  for (let i = 0; i < 7; i++) {
+    const p = (t / 8.4 + i * .162) % 1;
+    const x = 123 + i * 21 + 4 * Math.sin(t * tau / 8.4 + i);
+    c.globalAlpha = Math.sin(p * Math.PI) * .65;
+    oval(c, x, 168 - 60 * p - i % 3 * 12, 1, .8, '#f3d393');
+  }
+  c.globalAlpha = 1;
+}
+
+// Reprint the stationary ink only on resize. Motion is a separate transparent sheet.
+function redraw(now) {
+  motion.clearRect(left - 1, topEdge - 1, right - left + 2, bottom - topEdge + 2);
+  drawMotion(reducedMotion.matches ? 0 : now / 1000);
+  if (!document.hidden && !reducedMotion.matches) frame = requestAnimationFrame(redraw);
+}
+
+function refresh() {
+  cancelAnimationFrame(frame);
+  if (!innerWidth || !innerHeight) return;
+  const density = Math.min(devicePixelRatio || 1, 2);
+  const scale = Math.min(innerWidth / 328, innerHeight / 258);
+  const halfWidth = innerWidth / (2 * scale), halfHeight = innerHeight / (2 * scale);
+  left = 200 - halfWidth; right = 200 + halfWidth;
+  topEdge = 150 - halfHeight; bottom = 150 + halfHeight;
+  for (const ctx of [print, motion]) {
+    ctx.canvas.width = Math.round(innerWidth * density);
+    ctx.canvas.height = Math.round(innerHeight * density);
+    const sx = ctx.canvas.width / (right - left), sy = ctx.canvas.height / (bottom - topEdge);
+    ctx.setTransform(sx, 0, 0, sy, -left * sx, -topEdge * sy);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+  }
+  drawPrint();
+  print.fillStyle = print.createPattern(grainTile, 'repeat');
+  print.fillRect(left, topEdge, right - left, bottom - topEdge);
+  redraw(performance.now());
+}
+addEventListener('resize', refresh);
+document.addEventListener('visibilitychange', refresh);
+reducedMotion.addEventListener('change', refresh);
+refresh();
+</script>
+</body>
+</html>

@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>潮汐灯塔</title>
+<style>
+  html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #e9a075; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<div role="img" aria-label="暖红色天幕下，一束灯光扫过靛蓝色海浪。">
+<canvas aria-hidden="true" id="print"></canvas>
+<canvas aria-hidden="true" id="motion"></canvas>
+</div>
+<script>
+'use strict';
+const print = document.getElementById('print').getContext('2d');
+const motion = document.getElementById('motion').getContext('2d');
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+const tau = Math.PI * 2;
+let left, topEdge, right, bottom, frame;
+
+function shape(ctx, path, fill, stroke, width = 1) {
+  const outline = new Path2D(path);
+  if (fill) { ctx.fillStyle = fill; ctx.fill(outline); }
+  if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = width; ctx.stroke(outline); }
+}
+
+function oval(ctx, x, y, rx, ry, fill) {
+  ctx.beginPath();
+  ctx.ellipse(x, y, rx, ry, 0, 0, tau);
+  ctx.fillStyle = fill;
+  ctx.fill();
+}
+
+function wash(ctx, y1, y2, stops) {
+  const gradient = ctx.createLinearGradient(0, y1, 0, y2);
+  for (const [offset, color] of stops) gradient.addColorStop(offset, color);
+  return gradient;
+}
+
+// A small, stationary two-ink grain tile gives flat colours the tooth of a paper print.
+const grainTile = document.createElement('canvas');
+grainTile.width = grainTile.height = 96;
+const grain = grainTile.getContext('2d');
+for (let i = 0; i < 1800; i++) {
+  grain.fillStyle = i % 3 ? '#172e3720' : '#fff0c825';
+  grain.fillRect(Math.random() * 96, Math.random() * 96, .5 + Math.random(), .5 + Math.random());
+}
+
+const ink = '#202f43', foam = '#f8d5a1';
+const lamp = { x: 240, y: 82 };
+
+function drawPrint() {
+  const c = print;
+  c.fillStyle = wash(c, topEdge, 179, [[0, '#bb6661'], [.58, '#eaa075'], [1, '#f6c58d']]);
+  c.fillRect(left, topEdge, right - left, bottom - topEdge);
+  // A low sun cut with horizontal gaps like a second block of ink.
+  c.save();
+  c.beginPath(); c.arc(143, 132, 39, 0, tau); c.clip();
+  c.fillStyle = '#ffdea0'; c.fillRect(102, 92, 82, 80);
+  for (let y = 140; y < 174; y += 4) {
+    c.fillStyle = '#eaa376'; c.fillRect(101, y, 85, (y - 137) * .054);
+  }
+  c.restore();
+  shape(c, 'M-50 166 Q16 162 56 151 L65 151 74 146 95 150 108 145 116 147 135 144 174 163 203 168 203 177 -50 177Z', '#bd7770');
+  c.fillStyle = wash(c, 168, bottom, [[0, '#4b6773'], [.38, '#354f60'], [1, '#16293d']]);
+  c.fillRect(left, 169, right - left, bottom - 169);
+  for (let row = 0; row < (bottom - 166) / 6; row++) {
+    const y = 171 + row * 6 + row * row * .065;
+    for (let x = left - 40; x < right; x += 34) {
+      const a = x + 9 * Math.sin(row * 2.7 + x * .23), k = Math.sin(row + x * .3);
+      shape(c, `M${a} ${y} q${7 + 3 * k} ${-1.4 - k} ${15 + k * 4} -.5`, null, row % 3 ? '#78919672' : '#bbc2af80', .72 + row * .025);
+    }
+  }
+  // Lighthouse and the tapered shadow on its leeward face.
+  shape(c, 'M221 161 L232 91 248 91 258 161Z', '#f6dcb0', ink, 1.3);
+  shape(c, 'M242 91 L248 91 258 161 246 161Z', '#95938b');
+  shape(c, 'M229 108 L250.5 107 253.2 125 226 127Z', '#b7493b', ink, .8);
+  shape(c, 'M245 107 L250.5 107 253.2 125 246.6 126Z', '#913e37');
+  shape(c, 'M236 157 v-12 q2.5 -4 5 0 v12Z M237 101 v-5 h3 v5Z', ink);
+  shape(c, 'M230 89 V76 L240 71 250 76 V89Z', '#ffdb89', ink, 1.6);
+  shape(c, 'M227 76 L240 66 253 76Z M226 90 h28 l-4 4 h-20Z', ink);
+  shape(c, 'M240 66 v-5 M234 77 v11 M246 77 v11 M226 89 v-5 h28 v5', null, ink, 1.15);
+  shape(c, 'M194 160 v-12 l11 -7 12 7 v12Z', '#e3ba90', ink, 1.1);
+  shape(c, 'M191 148 l14 -10 15 10Z', '#914d45', ink, .9);
+  shape(c, 'M206 152 h4 v8 h-4Z', ink);
+  shape(c, 'M144 178 l21 -7 17 -2 9 -9 19 1 10 -6 21 2 10 -3 11 3 6 8 24 3 9 7 21 5 -46 5 -65 -3 -42 2Z', ink);
+  for (let i = 0; i < 17; i++) {
+    const x = 178 + i * 6.8, y = 171 + 2.4 * Math.cos(i * .66);
+    shape(c, `M${x} ${y} l7 -3.2 m-4 6.1 10 -4`, null, '#70848b', .7);
+  }
+  // Two distant terns are small enough to leave the sky quiet.
+  shape(c, 'M147 73 q5 -3 9 2 3 -5 9 -4 M163 65 q3 -2 6 1 2 -3 6 -3', null, '#795653', 1.1);
+}
+
+function drawMotion(t) {
+  const c = motion;
+  const turn = Math.sin(t * tau / 8.4 + 1);
+  c.save();
+  c.translate(lamp.x, lamp.y); c.scale(turn >= 0 ? 1 : -1, 1);
+  const reach = Math.max(3, Math.abs(turn) * (right - left));
+  const light = c.createLinearGradient(0, 0, reach, 0);
+  light.addColorStop(0, '#fff6c7ac'); light.addColorStop(.38, '#ffeebd56'); light.addColorStop(1, '#fff0b100');
+  shape(c, `M0 -1.8 L${reach} ${-2 - reach * .096} V${2 + reach * .052} L0 1.8Z`, light);
+  c.restore();
+  oval(c, lamp.x, lamp.y, 2.5, 2.8, '#fff4ce');
+  // Engraved wave crests rock and stretch in place instead of scrolling with the sky.
+  for (let row = 0; row < 8; row++) {
+    const y = 187 + 7 * row + row * row * .42;
+    for (let i = Math.floor(left / 100) - 1; i < right / 100 + 1; i++) {
+      const phase = t * tau / 8.4 + row * 1.7 + i * 2.1;
+      const x = i * 100 + (row * 37) % 96 + 7 * Math.sin(phase);
+      const span = 14 + row * 1.3 + 5 * Math.cos(phase);
+      shape(c, `M${x} ${y} q${span * .3} .4 ${span * .58} -1.6 t${span * .5} -.4`, null, row % 3 ? '#aabbaf' : foam, .78 + row * .05);
+    }
+  }
+}
+
+// Reprint the stationary ink only on resize. Motion is a separate transparent sheet.
+function redraw(now) {
+  motion.clearRect(left - 1, topEdge - 1, right - left + 2, bottom - topEdge + 2);
+  drawMotion(reducedMotion.matches ? 0 : now / 1000);
+  if (!document.hidden && !reducedMotion.matches) frame = requestAnimationFrame(redraw);
+}
+
+function refresh() {
+  cancelAnimationFrame(frame);
+  if (!innerWidth || !innerHeight) return;
+  const density = Math.min(devicePixelRatio || 1, 2);
+  const scale = Math.min(innerWidth / 328, innerHeight / 258);
+  const halfWidth = innerWidth / (2 * scale), halfHeight = innerHeight / (2 * scale);
+  left = 200 - halfWidth; right = 200 + halfWidth;
+  topEdge = 150 - halfHeight; bottom = 150 + halfHeight;
+  for (const ctx of [print, motion]) {
+    ctx.canvas.width = Math.round(innerWidth * density);
+    ctx.canvas.height = Math.round(innerHeight * density);
+    const sx = ctx.canvas.width / (right - left), sy = ctx.canvas.height / (bottom - topEdge);
+    ctx.setTransform(sx, 0, 0, sy, -left * sx, -topEdge * sy);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+  }
+  drawPrint();
+  print.fillStyle = print.createPattern(grainTile, 'repeat');
+  print.fillRect(left, topEdge, right - left, bottom - topEdge);
+  redraw(performance.now());
+}
+addEventListener('resize', refresh);
+document.addEventListener('visibilitychange', refresh);
+reducedMotion.addEventListener('change', refresh);
+refresh();
+</script>
+</body>
+</html>

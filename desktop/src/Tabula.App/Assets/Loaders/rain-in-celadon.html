@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>雨落青盏</title>
+<style>
+  html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #d9dfc9; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<div role="img" aria-label="雨从斜伸的叶尖落进青瓷茶盏，在琥珀色茶面上漾出一圈圈涟漪。">
+<canvas aria-hidden="true" id="print"></canvas>
+<canvas aria-hidden="true" id="motion"></canvas>
+</div>
+<script>
+'use strict';
+const print = document.getElementById('print').getContext('2d');
+const motion = document.getElementById('motion').getContext('2d');
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+const tau = Math.PI * 2;
+let left, topEdge, right, bottom, frame;
+
+function shape(ctx, path, fill, stroke, width = 1) {
+  const outline = new Path2D(path);
+  if (fill) { ctx.fillStyle = fill; ctx.fill(outline); }
+  if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = width; ctx.stroke(outline); }
+}
+
+function oval(ctx, x, y, rx, ry, fill) {
+  ctx.beginPath();
+  ctx.ellipse(x, y, rx, ry, 0, 0, tau);
+  ctx.fillStyle = fill;
+  ctx.fill();
+}
+
+function wash(ctx, y1, y2, stops) {
+  const gradient = ctx.createLinearGradient(0, y1, 0, y2);
+  for (const [offset, color] of stops) gradient.addColorStop(offset, color);
+  return gradient;
+}
+
+// A small, stationary two-ink grain tile gives flat colours the tooth of a paper print.
+const grainTile = document.createElement('canvas');
+grainTile.width = grainTile.height = 96;
+const grain = grainTile.getContext('2d');
+for (let i = 0; i < 1800; i++) {
+  grain.fillStyle = i % 3 ? '#172e3720' : '#fff0c825';
+  grain.fillRect(Math.random() * 96, Math.random() * 96, .5 + Math.random(), .5 + Math.random());
+}
+
+const glaze = '#377d79', deep = '#244f52', pale = '#dce5cb';
+
+function leafSprig(c) {
+  shape(c, 'M16 15 C53 40 80 48 116 47 S159 51 187 77', null, '#536f54', 2);
+  const leaves = [
+    [60, 40, -2.1, 29], [77, 44, -1.18, 25], [87, 47, 1.4, 28],
+    [104, 47, -.91, 37], [124, 47, 1.05, 34], [143, 51, -.71, 33], [157, 56, 1.12, 30],
+    [169, 63, -.36, 26], [177, 68, .72, 24]
+  ];
+  for (const [x, y, angle, length] of leaves) {
+    c.save(); c.translate(x, y); c.rotate(angle); c.scale(length / 32, length / 32);
+    shape(c, 'M0 0 Q12 -11 32 -3 20 8 0 0Z', '#64846a', deep, .75);
+    shape(c, 'M1 0 Q18 0 29 -2', null, '#c3cba8', .7);
+    c.restore();
+  }
+}
+
+function drawPrint() {
+  const c = print;
+  c.fillStyle = wash(c, topEdge, bottom, [[0, '#b5cbba'], [.47, '#d6ddc6'], [1, '#efd9b8']]);
+  c.fillRect(left, topEdge, right - left, bottom - topEdge);
+  // Dilute, offset shadows echo the leaves across the matte tabletop.
+  c.save(); c.globalAlpha = .13; c.translate(46, 29); c.scale(1.13, 1.13); leafSprig(c); c.restore();
+  leafSprig(c);
+  c.save(); c.translate(213, 215); c.rotate(-.12);
+  oval(c, 12, 8, 115, 25, '#879b8860'); oval(c, 4, 3, 105, 22, '#78948877'); c.restore();
+  oval(c, 199, 213, 106, 31, deep); oval(c, 198, 210, 106, 31, '#78a499'); oval(c, 198, 209, 101, 27, '#c0cfb3');
+  oval(c, 196, 208, 88, 20, '#93b5a5'); oval(c, 196, 208, 80, 16.5, '#abc6b1');
+  for (let i = 0; i < 27; i++) {
+    const a = (.03 + i / 27 * .94) * Math.PI;
+    const x = 198 + 99 * Math.cos(a), y = 209 + 25 * Math.sin(a);
+    shape(c, `M${x} ${y} l${3.5 * Math.cos(a)} ${1.6 * Math.sin(a)}`, null, '#e0e4cc', .85);
+  }
+  // The handle is an open stroke; its centre shows the same paper as the background.
+  const handle = 'M250 149 C273 121 297 131 288 155 C281 173 269 179 251 180';
+  shape(c, handle, null, deep, 11); shape(c, handle, null, '#81a997', 8);
+  shape(c, 'M259 141 Q286 124 287 141', null, '#d8ddbc', 1.7);
+  shape(c, 'M162 204 Q162 218 172 221 Q197 228 217 218 L221 206Z', '#56897f', deep, 1.5);
+  shape(c, 'M122 138 C122 169 137 204 164 214 Q190 226 213 215 C239 205 256 175 258 139Z',
+    wash(c, 139, 217, [[0, '#a9c7af'], [.4, '#94bca7'], [1, '#488983']]), deep, 1.9);
+  shape(c, 'M126 149 Q138 199 165 208 M129 153 Q144 196 168 205', null, '#e0e6c9', 1.3);
+  // A painted waterweed curls around the bowl; small carved leaf shapes follow it.
+  shape(c, 'M140 174 Q163 196 198 187 T249 158 M155 192 Q178 202 205 193', null, glaze, 1.25);
+  for (let i = 0; i < 10; i++) {
+    const x = 151 + i * 9.2, y = 182 + 8 * Math.sin((i + 1) / 9 * Math.PI) - Math.pow(i / 9, 2) * 17;
+    c.save(); c.translate(x, y); c.rotate(-.3 - i * .06);
+    shape(c, 'M0 0 Q-5 -2 -5 -8 Q1 -6 0 0Z M3 1 Q10 0 12 4 Q5 7 3 1Z', glaze);
+    c.restore();
+  }
+  oval(c, 190, 139, 69, 23, deep); oval(c, 190, 137.5, 67, 21.5, '#e0e4c8');
+  oval(c, 190, 138, 62.5, 18, '#698f79'); oval(c, 190, 140, 61, 15.7, '#8e6848');
+  oval(c, 190, 141, 59, 13.6, wash(c, 127, 154, [[0, '#9f7047'], [.5, '#bd8651'], [1, '#dfa761']]));
+  shape(c, 'M128 138 C135 116 234 113 251 135 M142 150 Q158 157 172 157', null, '#f4edce', 1.5);
+}
+
+function drawMotion(t) {
+  const c = motion;
+  // The droplet falls from the low leaf tip, then rings travel across the curved tea surface.
+  const beat = (t / 2.8 + .42) % 1;
+  if (beat < .44) {
+    const progress = beat / .44, y = 82 + 58 * progress * progress;
+    const radius = 1.4 + 1.1 * Math.min(1, progress * 5);
+    oval(c, 191.8, y, radius, radius * (1 + progress * .62), '#719d98');
+    oval(c, 191.2, y - .7, radius * .38, radius * .5, '#edf2d9');
+  }
+  c.save();
+  c.beginPath(); c.ellipse(190, 141, 59, 13.6, 0, 0, tau); c.clip();
+  for (const delay of [0, .17]) {
+    const p = (beat + 1 - .44 - delay) % 1;
+    c.strokeStyle = `rgba(255,225,163,${.84 * (1 - p)})`;
+    c.lineWidth = 1.05 - p * .36;
+    c.beginPath(); c.ellipse(191.8, 140, 1 + p * 61, .8 + p * 15, -.04, 0, tau); c.stroke();
+  }
+  c.restore();
+  // A few diagonal rain strokes recede at the sides, away from the cup.
+  for (let i = 0; i < 22; i++) {
+    const lane = (i * 79 % 149) + (i % 2 ? 271 : left - 95);
+    const p = (t / 2.8 + i * .341) % 1;
+    const x = lane - p * 22, y = topEdge - 15 + p * (bottom - topEdge + 25);
+    shape(c, `M${x} ${y} l-2.1 7.5`, null, '#6b98894a', .95);
+  }
+}
+
+// Reprint the stationary ink only on resize. Motion is a separate transparent sheet.
+function redraw(now) {
+  motion.clearRect(left - 1, topEdge - 1, right - left + 2, bottom - topEdge + 2);
+  drawMotion(reducedMotion.matches ? 0 : now / 1000);
+  if (!document.hidden && !reducedMotion.matches) frame = requestAnimationFrame(redraw);
+}
+
+function refresh() {
+  cancelAnimationFrame(frame);
+  if (!innerWidth || !innerHeight) return;
+  const density = Math.min(devicePixelRatio || 1, 2);
+  const scale = Math.min(innerWidth / 328, innerHeight / 258);
+  const halfWidth = innerWidth / (2 * scale), halfHeight = innerHeight / (2 * scale);
+  left = 200 - halfWidth; right = 200 + halfWidth;
+  topEdge = 150 - halfHeight; bottom = 150 + halfHeight;
+  for (const ctx of [print, motion]) {
+    ctx.canvas.width = Math.round(innerWidth * density);
+    ctx.canvas.height = Math.round(innerHeight * density);
+    const sx = ctx.canvas.width / (right - left), sy = ctx.canvas.height / (bottom - topEdge);
+    ctx.setTransform(sx, 0, 0, sy, -left * sx, -topEdge * sy);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+  }
+  drawPrint();
+  print.fillStyle = print.createPattern(grainTile, 'repeat');
+  print.fillRect(left, topEdge, right - left, bottom - topEdge);
+  redraw(performance.now());
+}
+addEventListener('resize', refresh);
+document.addEventListener('visibilitychange', refresh);
+reducedMotion.addEventListener('change', refresh);
+refresh();
+</script>
+</body>
+</html>

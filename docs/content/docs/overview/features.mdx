@@ -5,7 +5,7 @@ description: Major features of the Windows desktop client
 
 # Features
 
-Infinite Canvas is a native Windows desktop client (WinUI 3, in the repository's `desktop/` folder). This page covers the released features; newer changes that still await testing are listed in [Pending Tests](/docs/progress/pending-test).
+Tabula is a native Windows desktop client (WinUI 3, in the repository's `desktop/` folder). This page covers the released features; newer changes that still await testing are listed in [Pending Tests](/docs/progress/pending-test).
 
 ## Canvas
 
@@ -52,7 +52,7 @@ The panel on the left of a canvas has two tabs, both scoped to the current canva
 ## Agent assistant
 
 - The "助手" panel on the right of a canvas starts a local agent over ACP (Claude Code, Kimi Code, Grok Build and DeepSeek Harness by default; commands can be changed in Settings). Chat with it to read the canvas, add, edit and delete nodes, connect them and start generations, with permission prompts and a stop button; each change is a single undo step.
-- Agents outside the client (such as Claude Code, or Kimi / Grok in a terminal) can register `InfiniteCanvas.exe --mcp-bridge` as an MCP server to work on the open canvas. Turn this off with "允许外部 Agent 连接" in Settings.
+- Agents outside the client (such as Claude Code, or Kimi / Grok in a terminal) can register `Tabula.exe --mcp-bridge` as an MCP server to work on the open canvas. Turn this off with "允许外部 Agent 连接" in Settings.
 - Canvas tools only use local named pipes limited to the current Windows user, with no network port. Each agent handles its own sign-in, models and billing.
 
 ## Interface

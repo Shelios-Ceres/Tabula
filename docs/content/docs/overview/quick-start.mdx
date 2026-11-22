@@ -1,11 +1,11 @@
 ---
 title: Quick Start
-description: Build and run the Infinite Canvas Windows desktop client
+description: Build and run the Tabula Windows desktop client
 ---
 
 # Quick Start
 
-Infinite Canvas is a native Windows desktop client; its code is in the repository's `desktop/` folder.
+Tabula is a native Windows desktop client; its code is in the repository's `desktop/` folder.
 
 ## Requirements
 
@@ -17,20 +17,20 @@ Infinite Canvas is a native Windows desktop client; its code is in the repositor
 From the repository root:
 
 ```bash
-dotnet build desktop/InfiniteCanvas.sln
+dotnet build desktop/Tabula.sln
 ```
 
 ```bash
-desktop/src/InfiniteCanvas.App/bin/x64/Debug/net10.0-windows10.0.22621.0/win-x64/InfiniteCanvas.exe
+desktop/src/Tabula.App/bin/x64/Debug/net10.0-windows10.0.22621.0/win-x64/Tabula.exe
 ```
 
-The app is unpackaged and self-contained, so no separate Windows App SDK runtime is needed. You can also open `desktop/InfiniteCanvas.sln` in Visual Studio 2026 with .NET 10 support and run the x64 configuration.
+The app is unpackaged and self-contained, so no separate Windows App SDK runtime is needed. You can also open `desktop/Tabula.sln` in Visual Studio 2026 with .NET 10 support and run the x64 configuration.
 
 ## First run
 
 - Open Settings, add the vendors you use under "服务商" (OpenAI, Google Gemini, Volcengine Ark, xAI, Qwen), enter their API keys, then fetch or add models.
 - Go back to the canvas list, create a canvas, and pick a model in the composer at the bottom and press Enter to generate.
-- To let an agent work on the canvas, open "助手" on the right of a canvas, or register `InfiniteCanvas.exe --mcp-bridge` as an MCP server in an agent outside the client.
+- To let an agent work on the canvas, open "助手" on the right of a canvas, or register `Tabula.exe --mcp-bridge` as an MCP server in an agent outside the client.
 
 ## Notes
 

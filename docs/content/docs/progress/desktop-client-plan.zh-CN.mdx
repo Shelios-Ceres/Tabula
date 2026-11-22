@@ -1,6 +1,6 @@
 ---
 title: WinUI 3 桌面客户端规划
-description: 用 WinUI 3 原生重写无限画布客户端的架构、迁移对照、服务商适配与阶段进度
+description: 用 WinUI 3 原生重写 Tabula（丹青）客户端的架构、迁移对照、服务商适配与阶段进度
 ---
 
 # WinUI 3 桌面客户端规划
@@ -21,10 +21,11 @@ description: 用 WinUI 3 原生重写无限画布客户端的架构、迁移对�
 
 ```
 desktop/
-├─ src/InfiniteCanvas.Core/       # 画布模型、连线规则、撤销历史、项目与设置存储、模型家族能力
-├─ src/InfiniteCanvas.Providers/  # 五家服务商原生适配
-├─ src/InfiniteCanvas.App/        # WinUI 3：Pages（画布列表、画布、设置）与 Board（画布引擎、节点、生成面板、生成调度）
-└─ tests/InfiniteCanvas.Tests/    # 核心规则与各服务商请求 / 响应解析测试
+├─ src/Tabula.Core/       # 画布模型、连线规则、撤销历史、项目与设置存储、模型家族能力
+├─ src/Tabula.Providers/  # 五家服务商原生适配
+├─ src/Tabula.Agents/     # 本机 Agent 接入：ACP 客户端、画布 MCP 工具与命名管道服务
+├─ src/Tabula.App/        # WinUI 3：Pages（画布列表、画布、设置）与 Board（画布引擎、节点、生成面板、生成调度）
+└─ tests/Tabula.Tests/    # 核心规则与各服务商请求 / 响应解析测试
 ```
 
 ## 服务商原生适配
@@ -41,7 +42,7 @@ desktop/
 
 视频一列目前不在 main：视频生成（含千问万相 2.7）整体保存在 `video-models` 分支，main 上视频节点只用来放导入的视频，需要时再合并回来。
 
-模型能力（尺寸档位、比例、参考图上限、单次张数）统一在 `desktop/src/InfiniteCanvas.Core/Models/ModelFamilies.cs` 按模型家族声明，取值来自各家最新官方 API 参考。
+模型能力（尺寸档位、比例、参考图上限、单次张数）统一在 `desktop/src/Tabula.Core/Models/ModelFamilies.cs` 按模型家族声明，取值来自各家最新官方 API 参考。
 
 ## 阶段进度
 

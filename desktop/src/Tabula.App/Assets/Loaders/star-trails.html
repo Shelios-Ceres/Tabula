@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>星轨</title>
+<!-- Tabula waiting animation: 星轨. Original work for the Tabula client, no libraries. -->
+<style>html, body { margin: 0; height: 100%; overflow: hidden; background: #0a1328; } canvas { display: block; width: 100%; height: 100%; }</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas = document.getElementById('c'), x = canvas.getContext('2d');
+const PAPER = '#0a1328', PAINT_MS = 10000, HOLD_MS = 2600;
+let W, H, U, queue, next, start, fade;
+let seed = (Date.now() ^ (Math.random() * 1e9)) >>> 0;
+function rnd() { seed = (seed + 0x6D2B79F5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t ^= t + Math.imul(t ^ (t >>> 7), 61 | t); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }
+const r = (a, b) => a + (b - a) * rnd();
+const pick = (list) => list[Math.floor(rnd() * list.length)];
+const gauss = () => (rnd() + rnd() + rnd() + rnd() - 2) / 2;
+const rgba = (hex, a) => { const n = parseInt(hex.slice(1), 16); return 'rgba(' + (n >> 16) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')'; };
+// Paint something at a time (ms) on the timeline.
+const at = (time, draw) => queue.push({ time, draw });
+function grain(amount, dark) {
+  for (let i = 0; i < W * H / 260 * amount; i++) {
+    x.fillStyle = dark ? 'rgba(255,255,255,' + r(0.01, 0.05) + ')' : 'rgba(90,70,40,' + r(0.01, 0.05) + ')';
+    x.fillRect(r(0, W), r(0, H), r(0.5, 1.6) * U, r(0.5, 1.6) * U);
+  }
+}
+function begin() {
+  x.globalCompositeOperation = 'source-over'; x.globalAlpha = 1;
+  x.fillStyle = PAPER; x.fillRect(0, 0, W, H);
+  queue = []; paint(); queue.sort((a, b) => a.time - b.time);
+  next = 0; start = performance.now(); fade = 0;
+  // ?at=ms paints straight to that moment (previews and stills).
+  const jump = +new URLSearchParams(location.search).get('at') || 0;
+  while (jump && next < queue.length && queue[next].time <= jump) { x.save(); queue[next++].draw(); x.restore(); }
+  start -= jump;
+}
+function resize() {
+  const d = Math.min(devicePixelRatio || 1, 2);
+  W = canvas.width = Math.max(1, Math.round(innerWidth * d)); H = canvas.height = Math.max(1, Math.round(innerHeight * d));
+  U = Math.min(W, H) / 400;
+  begin();
+}
+function frame(now) {
+  const t = now - start;
+  while (next < queue.length && queue[next].time <= t) { x.save(); queue[next++].draw(); x.restore(); }
+  if (next >= queue.length && t > PAINT_MS + HOLD_MS) {
+    x.globalAlpha = 0.07; x.fillStyle = PAPER; x.fillRect(0, 0, W, H); x.globalAlpha = 1;
+    if (++fade > 45) begin();
+  }
+  requestAnimationFrame(frame);
+}
+addEventListener('resize', resize);
+resize();
+requestAnimationFrame(frame);
+
+// A long exposure: star trails lengthening around the pole above a dark hill line with pines.
+function paint() {
+  at(0, () => {
+    const g = x.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, '#071026'); g.addColorStop(0.65, '#16244a'); g.addColorStop(1, '#2c2f52');
+    x.fillStyle = g; x.fillRect(0, 0, W, H);
+    const glow = x.createRadialGradient(W * 0.5, H * 1.05, 0, W * 0.5, H * 1.05, H * 0.6);
+    glow.addColorStop(0, 'rgba(240,150,110,0.28)'); glow.addColorStop(1, 'rgba(240,150,110,0)');
+    x.fillStyle = glow; x.fillRect(0, 0, W, H);
+    grain(0.6, true);
+  });
+  const pole = [r(0.3, 0.7) * W, r(0.08, 0.22) * H];
+  const reach = Math.hypot(Math.max(pole[0], W - pole[0]), H - pole[1]);
+  const tints = ['#ffffff', '#cfe0ff', '#ffe7c4', '#bcd2ff', '#fff4e0'];
+  const stars = Array.from({ length: 360 }, () => ({
+    rad: Math.sqrt(rnd()) * reach, a0: r(0, 6.28), color: pick(tints), alpha: r(0.25, 0.9), width: r(0.4, 1.3),
+  }));
+  // The hill line and pines, redrawn after every step so the trails stay behind them.
+  const hill = new Path2D();
+  hill.moveTo(0, H);
+  for (let i = 0; i <= 40; i++) hill.lineTo(i / 40 * W, H * (0.82 - 0.06 * Math.sin(i / 40 * 3.1 + 0.6) - 0.03 * Math.sin(i / 7)) + gauss() * U);
+  hill.lineTo(W, H); hill.closePath();
+  for (let p = 0; p < 9; p++) {
+    const px = r(0, 1) * W, base = H * (0.82 - 0.05 * Math.sin(px / W * 3.1 + 0.6)) + 2 * U, h = r(30, 70) * U;
+    hill.moveTo(px - h * 0.18, base); hill.lineTo(px, base - h); hill.lineTo(px + h * 0.18, base); hill.closePath();
+  }
+  const steps = 110, sweep = r(0.55, 0.8);
+  for (let k = 1; k <= steps; k++) {
+    at(600 + k * (8600 / steps), () => {
+      x.lineCap = 'round';
+      for (const s of stars) {
+        x.strokeStyle = rgba(s.color, s.alpha * 0.9); x.lineWidth = s.width * U;
+        x.beginPath(); x.arc(pole[0], pole[1], s.rad, s.a0 + sweep * (k - 1) / steps, s.a0 + sweep * k / steps); x.stroke();
+      }
+      x.fillStyle = '#05070f'; x.fill(hill);
+    });
+  }
+  // One shooting star near the end.
+  const sx = r(0.15, 0.6) * W, sy = r(0.1, 0.3) * H, len = r(60, 110) * U;
+  for (let k = 0; k < 12; k++) at(8200 + k * 30, () => {
+    x.strokeStyle = `rgba(255,255,255,${0.15 + k * 0.06})`; x.lineWidth = 1.2 * U; x.lineCap = 'round';
+    x.beginPath(); x.moveTo(sx + len * k / 12, sy + len * 0.4 * k / 12); x.lineTo(sx + len * (k + 1) / 12, sy + len * 0.4 * (k + 1) / 12); x.stroke();
+  });
+}
+
+</script>
+</body>
+</html>
