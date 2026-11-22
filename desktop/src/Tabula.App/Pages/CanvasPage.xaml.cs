@@ -44,7 +44,10 @@ public sealed partial class CanvasPage : Page
         MiniMapToggle.IsChecked = SettingsStore.Current.MiniMapOpen;
         Map.Visibility = SettingsStore.Current.MiniMapOpen ? Visibility.Visible : Visibility.Collapsed;
         Agent.Attach(Board);
+        Board.AttachAgent(Agent);
         Agent.CastShadowOn(Board);
+        Agent.CloseRequested += () => SetAgentOpen(false);
+        Board.AgentModeRequested += open => SetAgentOpen(open);
         AgentToggle.IsChecked = SettingsStore.Current.AgentOpen;
         Agent.Visibility = SettingsStore.Current.AgentOpen ? Visibility.Visible : Visibility.Collapsed;
         // Side panels and the map slide out of their own edge when toggled.
@@ -141,6 +144,7 @@ public sealed partial class CanvasPage : Page
         SettingsStore.Current.AgentOpen = open;
         SettingsStore.Save();
         ApplySafeArea();
+        Board.SetAgentMode(open, focus: open);
     }
 
     private void MiniMapToggle_Click(object sender, RoutedEventArgs e)
@@ -315,6 +319,7 @@ public sealed partial class CanvasPage : Page
         _saveTimer.IsRepeating = false;
         _saveTimer.Tick += (_, _) => SaveNow();
         Board.Load(_doc);
+        if (SettingsStore.Current.AgentOpen) Board.SetAgentMode(true);
         Library.Refresh();
         SharedCanvasHost.Open = new CanvasAgentHost(Board);
         // Subscribe after loading so merely opening a canvas does not rewrite it.

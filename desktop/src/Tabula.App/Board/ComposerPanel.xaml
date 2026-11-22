@@ -194,6 +194,12 @@
                                     <TextBlock Text="音频" FontSize="13" />
                                 </StackPanel>
                             </Button>
+                            <Button x:Name="ModeAgentButton" Tag="Agent" Style="{StaticResource ToolbarButton}" Height="30" MinHeight="0" Padding="10,0" CornerRadius="15" Click="ModeButton_Click" AutomationProperties.Name="助手模式">
+                                <StackPanel Orientation="Horizontal" Spacing="5">
+                                    <FontIcon Glyph="&#xE99A;" FontSize="13" Foreground="{ThemeResource KindConfigBrush}" />
+                                    <TextBlock Text="助手" FontSize="13" />
+                                </StackPanel>
+                            </Button>
                         </StackPanel>
                     </Border>
                     <Border x:Name="ModelCapsule" Style="{StaticResource GlassCapsule}" Height="36" CornerRadius="18" Padding="2,0">

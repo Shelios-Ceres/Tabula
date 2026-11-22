@@ -6,9 +6,7 @@ using Tabula.Core.Storage;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
-using Windows.System;
 
 namespace Tabula.App.Board;
 
@@ -33,12 +31,64 @@ public sealed partial class AgentPanel : UserControl, IAcpClientHandler
     private readonly Dictionary<string, (Expander Card, TextBlock Title, TextBlock Status, TextBlock Detail)> _tools = [];
     private readonly List<TaskCompletionSource<string?>> _pendingChoices = [];
 
+    private static readonly string[] StarterPrompts =
+    [
+        "把选中的图排成一行",
+        "按选中的图再出 2 张不同风格的版本",
+        "这个画布上有什么？",
+    ];
+
+    public event Action? StateChanged;
+    public event Action? CloseRequested;
+
+    public bool IsBusy => _busy;
+    public bool IsReady => !_resetting && !_shuttingDown;
+    public IReadOnlyList<string> AgentNames => Agents.Select(a => a.Name).ToList();
+    public int SelectedAgentIndex => AgentPicker.SelectedIndex;
+
     public AgentPanel()
     {
         InitializeComponent();
         Messages.SizeChanged += (_, _) => ScrollToEnd();
+        BuildSuggestions();
         RefreshAgents();
     }
+
+    private void BuildSuggestions()
+    {
+        Suggestions.Children.Clear();
+        foreach (var text in StarterPrompts)
+        {
+            var prompt = text;
+            var btn = new Button
+            {
+                Style = (Style)Application.Current.Resources["ActionButton"],
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                HorizontalContentAlignment = HorizontalAlignment.Left,
+                Content = new StackPanel
+                {
+                    Orientation = Orientation.Horizontal,
+                    Spacing = 7,
+                    Children =
+                    {
+                        new FontIcon { Glyph = "\uE8BD", FontSize = 12, Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"] },
+                        new TextBlock { Text = prompt, FontSize = 12.5, TextTrimming = TextTrimming.CharacterEllipsis },
+                    },
+                },
+            };
+            AutomationProperties.SetName(btn, prompt);
+            btn.Click += async (_, _) => await SendMessageAsync(prompt);
+            Suggestions.Children.Add(btn);
+        }
+    }
+
+    public void SelectAgent(int index)
+    {
+        if (index >= 0 && index < Agents.Count && AgentPicker.SelectedIndex != index)
+            AgentPicker.SelectedIndex = index;
+    }
+
+    private void Close_Click(object sender, RoutedEventArgs e) => CloseRequested?.Invoke();
 
     public void Attach(CanvasView board) => _board = board;
 
@@ -59,14 +109,21 @@ public sealed partial class AgentPanel : UserControl, IAcpClientHandler
         var agents = Agents;
         AgentPicker.ItemsSource = agents.Select(a => a.Name).ToList();
         AgentPicker.SelectedIndex = Math.Max(0, agents.FindIndex(a => a.Id == SettingsStore.Current.Agent));
-        AgentPicker.IsEnabled = agents.Count > 0;
+        AgentPicker.IsEnabled = agents.Count > 0 && !_busy && !_resetting && !_shuttingDown;
+        FooterStatus.Text = SettingsStore.Current.ExternalAgents ? "外部 Agent 连接已开启（--mcp-bridge）" : "在下方指令栏「助手」模式输入，Enter 发送";
+        StateChanged?.Invoke();
     }
 
     private async void AgentPicker_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (Selected is not { } agent || agent.Id == SettingsStore.Current.Agent && _clientAgent is null) return;
+        if (Selected is not { } agent || agent.Id == SettingsStore.Current.Agent && _clientAgent is null)
+        {
+            StateChanged?.Invoke();
+            return;
+        }
         SettingsStore.Current.Agent = agent.Id;
         SettingsStore.Save();
+        StateChanged?.Invoke();
         if (_clientAgent is not null && _clientAgent.Id != agent.Id)
         {
             await StopAgentAsync();
@@ -86,7 +143,7 @@ public sealed partial class AgentPanel : UserControl, IAcpClientHandler
         _plan = null;
         _followMessages = true;
         LatestButton.Visibility = Visibility.Collapsed;
-        EmptyText.Visibility = Visibility.Visible;
+        EmptyState.Visibility = Visibility.Visible;
     }
 
     /// <summary>Leaving the canvas ends the agent process and the tool pipe.</summary>
@@ -137,39 +194,31 @@ public sealed partial class AgentPanel : UserControl, IAcpClientHandler
         if (client is not null) await client.DisposeAsync();
     }
 
-    // ---------- Sending ----------
+    // ---------- Sending (driven from the bottom composer's 助手 mode or starter prompts) ----------
 
-    private void InputBox_PreviewKeyDown(object sender, KeyRoutedEventArgs e)
+    public async Task CancelTurnAsync()
     {
-        var shift = Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Shift).HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down);
-        if (e.Key != VirtualKey.Enter || shift) return;
-        e.Handled = true;
-        if (!_busy) Send_Click(sender, e);
+        if (_resetting || _shuttingDown || !_busy) return;
+        _cancelRequested = true;
+        CancelChoices();
+        if (_prompting && _client is { } client && _session is { } session)
+        {
+            try { await client.CancelAsync(session); }
+            catch { await StopTurnAsync(); }
+        }
+        else await StopTurnAsync();
     }
 
-    private async void Send_Click(object sender, RoutedEventArgs e)
+    public async Task SendMessageAsync(string rawText)
     {
-        if (_resetting || _shuttingDown) return;
-        if (_busy)
-        {
-            _cancelRequested = true;
-            CancelChoices();
-            if (_prompting && _client is { } client && _session is { } session)
-            {
-                try { await client.CancelAsync(session); }
-                catch { await StopTurnAsync(); }
-            }
-            else await StopTurnAsync();
-            return;
-        }
-        var text = InputBox.Text.Trim();
+        if (_resetting || _shuttingDown || _busy) return;
+        var text = rawText.Trim();
         if (text.Length == 0 || _board is null) return;
         if (Selected is not { } agent)
         {
             AddNote("没有可用的 Agent，请在设置里启用至少一个", error: true);
             return;
         }
-        InputBox.Text = "";
         AddBubble(text);
         // Tool call IDs only need to be unique within a turn: a new turn never updates an earlier card.
         _tools.Clear();
@@ -243,11 +292,9 @@ public sealed partial class AgentPanel : UserControl, IAcpClientHandler
     private void SetBusy(bool busy)
     {
         _busy = busy;
-        SendIcon.Glyph = busy ? "" : "";
-        ToolTipService.SetToolTip(SendButton, busy ? "停止" : "发送");
-        AutomationProperties.SetName(SendButton, busy ? "停止" : "发送");
         AgentPicker.IsEnabled = !busy && !_resetting && !_shuttingDown && Agents.Count > 0;
-        SendButton.IsEnabled = NewChatButton.IsEnabled = !_resetting && !_shuttingDown;
+        NewChatButton.IsEnabled = !_resetting && !_shuttingDown;
+        StateChanged?.Invoke();
     }
 
     /// <summary>Selected nodes travel with each message, so "this picture" means something to the agent.</summary>
@@ -558,7 +605,7 @@ public sealed partial class AgentPanel : UserControl, IAcpClientHandler
 
     private void Add(UIElement element)
     {
-        EmptyText.Visibility = Visibility.Collapsed;
+        EmptyState.Visibility = Visibility.Collapsed;
         Messages.Children.Add(element);
         ScrollToEnd();
     }

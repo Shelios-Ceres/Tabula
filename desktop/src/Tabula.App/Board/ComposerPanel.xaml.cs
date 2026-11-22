@@ -39,6 +39,8 @@ public sealed partial class ComposerPanel : UserControl
     private bool _called;
     /// <summary>User explicitly switched from an inspected finished node into the pre-generation composer.</summary>
     private bool _manualCompose;
+    private bool _agentMode;
+    private string _agentText = "";
     private Panel _params = null!;
     /// <summary>Set while rebuilding the open flyout, so the 高级 section the user is working in stays expanded.</summary>
     private bool _keepAdvanced;
@@ -80,12 +82,23 @@ public sealed partial class ComposerPanel : UserControl
     public IReadOnlyList<CanvasNode> References => _refs;
     public bool HasFocus => PromptBox.FocusState != FocusState.Unfocused;
     public bool IsComposing { get; private set; }
+    public bool IsAgentMode => _agentMode;
     private static AppSettings Settings => SettingsStore.Current;
     private Capability Capability => _node is null ? Capability.Image : CanvasGenerator.CapabilityOf(_node);
     private bool New => _state.Mode == ComposerMode.New;
 
     /// <summary>The draft counts as something to save as a 配方 when nothing is bound and there is a prompt or a reference.</summary>
-    public bool CanSaveRecipe => IsComposing && _state.Mode is ComposerMode.New && _node is not null && (!string.IsNullOrWhiteSpace(_node.Prompt) || _refs.Count > 0);
+    public bool CanSaveRecipe => IsComposing && !_agentMode && _state.Mode is ComposerMode.New && _node is not null && (!string.IsNullOrWhiteSpace(_node.Prompt) || _refs.Count > 0);
+
+    public void SetAgentMode(bool active)
+    {
+        if (_agentMode == active) return;
+        _agentMode = active;
+        _loading = true;
+        PromptBox.Text = active ? NodeView.BoxText(_agentText) : _node is not null ? NodeView.BoxText(_node.Prompt) : "";
+        _loading = false;
+        Refresh();
+    }
 
     /// <summary>The width of the group in layout units: the canvas decides, from the room between its panels.</summary>
     public void SetWidth(double width) => Shell.Width = width;
@@ -112,6 +125,7 @@ public sealed partial class ComposerPanel : UserControl
 
     private bool ShouldCompose()
     {
+        if (_agentMode) return true;
         if (_state.Mode is ComposerMode.Recipe or ComposerMode.Fill) return true;
         if (_state.Mode is ComposerMode.Stop or ComposerMode.Retry) return _manualCompose || HasFocus;
         if (_called || _manualCompose || HasFocus) return true;
@@ -144,6 +158,7 @@ public sealed partial class ComposerPanel : UserControl
 
     private void ShowPrompt()
     {
+        if (_agentMode) return;
         _loading = true;
         PromptBox.Text = NodeView.BoxText(_node!.Prompt);
         _loading = false;
@@ -185,15 +200,37 @@ public sealed partial class ComposerPanel : UserControl
         {
             ShowInspect();
         }
+        else if (_agentMode)
+        {
+            var agent = _host.Agent;
+            var names = agent?.AgentNames ?? [];
+            ModelBox.PlaceholderText = "未配置 Agent";
+            ModelBox.ItemsSource = names;
+            ModelBox.SelectedIndex = agent?.SelectedAgentIndex ?? -1;
+            ModeCapsule.Visibility = Visibility.Visible;
+            UpdateModeButtons(_node.Mode, agent: true);
+            PromptBox.PlaceholderText = "告诉助手要对画布做什么，Enter 发送，Shift+Enter 换行";
+            ParamsCapsule.Visibility = Visibility.Collapsed;
+            LibraryCapsule.Visibility = Visibility.Collapsed;
+            InfoCapsule.Visibility = Visibility.Collapsed;
+            RecipeCapsule.Visibility = Visibility.Collapsed;
+            EstimateCapsule.Visibility = Visibility.Collapsed;
+            ShowReferences();
+            ShowInfo();
+            ShowButtons();
+        }
         else
         {
             var capability = Capability;
             _node.Model = Settings.ModelFor(capability, _node.Model);
             _models = Settings.ModelsFor(capability).ToList();
+            ModelBox.PlaceholderText = "选择模型";
             ModelBox.ItemsSource = _models.Select(Settings.Label).ToList();
             ModelBox.SelectedIndex = _models.IndexOf(_node.Model);
             ModeCapsule.Visibility = _state.Mode == ComposerMode.Fill ? Visibility.Collapsed : Visibility.Visible;
-            UpdateModeButtons(_node.Mode);
+            ParamsCapsule.Visibility = Visibility.Visible;
+            LibraryCapsule.Visibility = Visibility.Visible;
+            UpdateModeButtons(_node.Mode, agent: false);
             PromptBox.PlaceholderText = _state.Mode switch
             {
                 ComposerMode.Recipe => "写下这个配方的提示词，Enter 运行配方，Shift+Enter 换行",
@@ -424,12 +461,17 @@ public sealed partial class ComposerPanel : UserControl
 
     // ---------- Pre-generation composer (生成参数框) ----------
 
-    private void UpdateModeButtons(Capability current)
+    private void UpdateModeButtons(Capability current, bool agent = false)
     {
         var activeBrush = (Brush)Application.Current.Resources["SubtleFillColorSecondaryBrush"];
-        foreach (var (button, cap) in new[] { (ModeImageButton, Capability.Image), (ModeTextButton, Capability.Text), (ModeAudioButton, Capability.Audio) })
+        foreach (var (button, selected) in new[]
         {
-            var selected = cap == current;
+            (ModeImageButton, !agent && current == Capability.Image),
+            (ModeTextButton, !agent && current == Capability.Text),
+            (ModeAudioButton, !agent && current == Capability.Audio),
+            (ModeAgentButton, agent),
+        })
+        {
             if (selected) button.Background = activeBrush;
             else button.ClearValue(BackgroundProperty);
             if (button.Content is StackPanel panel && panel.Children.OfType<TextBlock>().FirstOrDefault() is { } text)
@@ -439,7 +481,14 @@ public sealed partial class ComposerPanel : UserControl
 
     private void ModeButton_Click(object sender, RoutedEventArgs e)
     {
-        if (_loading || _node is null || sender is not Button { Tag: string tag } || tag == _node.Mode.ToString()) return;
+        if (_loading || _node is null || sender is not Button { Tag: string tag }) return;
+        if (tag == "Agent")
+        {
+            if (!_agentMode) _host.RequestAgentMode(true);
+            return;
+        }
+        if (_agentMode) _host.RequestAgentMode(false);
+        if (tag == _node.Mode.ToString()) return;
         var (node, mode) = (_node, Enum.Parse<Capability>(tag));
         SetParameter(() => node.Mode = mode);
         Refresh();
@@ -459,6 +508,17 @@ public sealed partial class ComposerPanel : UserControl
         RefChips.Children.Remove(AddCapsule);
         RefChips.Children.Remove(TargetCapsule);
         RefChips.Children.Clear();
+
+        if (_agentMode)
+        {
+            BackInfoCapsule.Visibility = Visibility.Collapsed;
+            AddCapsule.Visibility = Visibility.Collapsed;
+            var picked = _selectedNodes.Where(n => n.Kind is NodeKind.Image or NodeKind.Text).Take(8).ToList();
+            for (var i = 0; i < picked.Count; i++) RefChips.Children.Add(Chip(picked[i], i + 1, editable: false, prefix: "已选"));
+            TargetText.Text = _selectedNodes.Count > 0 ? $"助手会携带已选的 {_selectedNodes.Count} 个节点" : "助手可读写当前画布，每次修改记一步撤销";
+            RefChips.Children.Add(TargetCapsule);
+            return;
+        }
 
         BackInfoCapsule.Visibility = CanInspect && _manualCompose ? Visibility.Visible : Visibility.Collapsed;
         if (BackInfoCapsule.Visibility == Visibility.Visible) RefChips.Children.Add(BackInfoCapsule);
@@ -559,6 +619,16 @@ public sealed partial class ComposerPanel : UserControl
     /// <summary>Missing-key hints, local-edit marks, and model notes in the pre-generation composer.</summary>
     private void ShowInfo()
     {
+        if (_agentMode)
+        {
+            var missing = (_host.Agent?.AgentNames.Count ?? 0) == 0 ? "还没有启用的本机 Agent，请在设置里启用" : null;
+            HintText.Text = missing ?? "";
+            HintCapsule.Visibility = missing is null ? Visibility.Collapsed : Visibility.Visible;
+            MarksCapsule.Visibility = Visibility.Collapsed;
+            InfoCapsule.Visibility = Visibility.Collapsed;
+            InfoRow.Visibility = HintCapsule.Visibility;
+            return;
+        }
         var hint = Problem();
         HintText.Text = hint ?? "";
         HintCapsule.Visibility = hint is null ? Visibility.Collapsed : Visibility.Visible;
@@ -588,6 +658,20 @@ public sealed partial class ComposerPanel : UserControl
     private void ShowButtons()
     {
         if (_node is null) return;
+        if (_agentMode)
+        {
+            var agent = _host.Agent;
+            var busy = agent?.IsBusy == true;
+            var (label, icon) = busy ? ("停止", "\uE71A") : ("发送", "\uE724");
+            GenerateText.Text = label;
+            GenerateIcon.Glyph = icon;
+            AutomationProperties.SetName(GenerateButton, label);
+            GenerateButton.IsEnabled = agent is not null && agent.IsReady && (busy || (_agentText.Trim().Length > 0 && agent.AgentNames.Count > 0));
+            GenerateCapsule.Opacity = GenerateButton.IsEnabled ? 1 : 0.55;
+            ToolTipService.SetToolTip(GenerateButton, busy ? "停止当前回复" : "发送给助手（Enter 或 Ctrl+Enter）");
+            RecipeCapsule.Visibility = Visibility.Collapsed;
+            return;
+        }
         var (text, glyph) = _state.Mode switch
         {
             ComposerMode.Stop => ("停止", "\uE71A"),
@@ -661,7 +745,14 @@ public sealed partial class ComposerPanel : UserControl
 
     private void PromptBox_TextChanged(object sender, TextChangedEventArgs e)
     {
-        if (_loading || _node is null || PromptBox.Text == NodeView.BoxText(_node.Prompt)) return;
+        if (_loading || _node is null) return;
+        if (_agentMode)
+        {
+            _agentText = PromptBox.Text.Replace('\r', '\n');
+            ShowButtons();
+            return;
+        }
+        if (PromptBox.Text == NodeView.BoxText(_node.Prompt)) return;
         if (_state.Bound is not null) _host.History.Record($"{_node.Id}/prompt");
         _node.Prompt = PromptBox.Text.Replace('\r', '\n');
         _host.DraftChanged(_state.Bound is null);
@@ -704,7 +795,13 @@ public sealed partial class ComposerPanel : UserControl
 
     private void ModelBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (_loading || _node is null || ModelBox.SelectedIndex < 0 || _models[ModelBox.SelectedIndex] == _node.Model) return;
+        if (_loading || _node is null || ModelBox.SelectedIndex < 0) return;
+        if (_agentMode)
+        {
+            _host.Agent?.SelectAgent(ModelBox.SelectedIndex);
+            return;
+        }
+        if (_models[ModelBox.SelectedIndex] == _node.Model) return;
         var (node, model) = (_node, _models[ModelBox.SelectedIndex]);
         SetParameter(() => node.Model = model);
         ShowInfo();
@@ -713,10 +810,24 @@ public sealed partial class ComposerPanel : UserControl
 
     private async void Generate_Click(object sender, RoutedEventArgs e) => await SubmitAsync();
 
-    /// <summary>What the button and Enter do for this selection: stop, retry, run the bound node, or start a new generation from the references.</summary>
+    /// <summary>What the button and Enter do for this selection: send/stop agent, stop/retry, run the bound node, or start a new generation from the references.</summary>
     public async Task SubmitAsync()
     {
         if (_node is null || _host.IsClosing) return;
+        if (_agentMode)
+        {
+            if (_host.Agent is not { } agent) return;
+            if (agent.IsBusy) { await agent.CancelTurnAsync(); return; }
+            var text = _agentText.Trim();
+            if (text.Length == 0) { FocusPrompt(); return; }
+            _loading = true;
+            _agentText = "";
+            PromptBox.Text = "";
+            _loading = false;
+            ShowButtons();
+            await agent.SendMessageAsync(text);
+            return;
+        }
         var generator = _host.Generator;
         switch (_state.Mode)
         {

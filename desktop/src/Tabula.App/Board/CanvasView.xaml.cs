@@ -80,6 +80,26 @@ public sealed partial class CanvasView : UserControl
     public event Action? ComposerMoved;
     /// <summary>The composer's 添加 asked for the library.</summary>
     public event Action? LibraryRequested;
+    /// <summary>The composer's 助手 mode toggled the right transcript drawer.</summary>
+    public event Action<bool>? AgentModeRequested;
+    internal AgentPanel? Agent { get; private set; }
+    private bool _agentMode;
+
+    public void AttachAgent(AgentPanel agent)
+    {
+        Agent = agent;
+        agent.StateChanged += () => DispatcherQueue.TryEnqueue(() => _composer.Refresh());
+    }
+
+    public void SetAgentMode(bool active, bool focus = false)
+    {
+        _agentMode = active;
+        _composer.SetAgentMode(active);
+        UpdateComposer();
+        if (active && focus) _composer.FocusPrompt();
+    }
+
+    internal void RequestAgentMode(bool active) => AgentModeRequested?.Invoke(active);
     /// <summary>The command bar floating at the selection, and its glass wrapper.</summary>
     private readonly CommandBar _commands = new();
     private readonly Border _bar;
@@ -799,7 +819,7 @@ public sealed partial class CanvasView : UserControl
         _composer.Update(state, references, selectedNodes, _called, selectionChanged);
         RefreshRefTags();
         SyncBatchHeaders();
-        var show = _selected.Count > 0 || _called || _composer.HasFocus;
+        var show = _agentMode || _selected.Count > 0 || _called || _composer.HasFocus;
         _composer.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
         if (show && selectionChanged) AskForRoom();
         PositionPanel(show && selectionChanged);
@@ -807,7 +827,7 @@ public sealed partial class CanvasView : UserControl
 
     private void RefreshRefTags()
     {
-        var active = _composer.IsComposing ? _composer.References : [];
+        var active = _composer.IsComposing && !_composer.IsAgentMode ? _composer.References : [];
         _refTags = active.Select((node, i) => (node.Id, Number: i + 1)).ToDictionary(pair => pair.Id, pair => pair.Number);
         foreach (var (id, view) in _views) view.RefIndex = _refTags.GetValueOrDefault(id);
     }
