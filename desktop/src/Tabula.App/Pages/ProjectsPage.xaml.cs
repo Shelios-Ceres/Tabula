@@ -7,11 +7,33 @@ using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Microsoft.UI.Xaml.Navigation;
 using Windows.Foundation;
+using Windows.System;
 
 namespace Tabula.App.Pages;
 
+public sealed record ProjectTile(ProjectInfo? Project)
+{
+    public bool IsNew => Project is null;
+    public string Id => Project?.Id ?? "";
+    public string Title => Project?.Title ?? "新建画布";
+    public string? CoverPath => Project?.Cover;
+    public string StatsText => Project is null ? "" : ProjectsPage.Stats(Project.NodeCount, Project.ConnectionCount, Project.UpdatedAt);
+    public Visibility PendingVisibility => Project is { PendingCount: > 0 } ? Visibility.Visible : Visibility.Collapsed;
+    public string PendingText => Project is { PendingCount: > 0 } p ? $"{p.PendingCount} 个进行中" : "";
+}
+
+public sealed class ProjectTileSelector : DataTemplateSelector
+{
+    public DataTemplate? NewTemplate { get; set; }
+    public DataTemplate? CardTemplate { get; set; }
+    protected override DataTemplate SelectTemplateCore(object item, DependencyObject container) =>
+        item is ProjectTile { IsNew: true } ? NewTemplate! : CardTemplate!;
+}
+
 public sealed partial class ProjectsPage : Page
 {
+    private List<ProjectInfo> _all = [];
+
     public ProjectsPage()
     {
         InitializeComponent();
@@ -25,10 +47,48 @@ public sealed partial class ProjectsPage : Page
 
     private void Reload()
     {
-        var projects = ProjectStore.List();
-        Projects.ItemsSource = projects;
-        Empty.Visibility = projects.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-        Summary.Text = projects.Count == 0 ? "画布保存在本机，不会上传到任何服务器" : $"共 {projects.Count} 个画布 · 保存在本机";
+        _all = ProjectStore.List();
+        ApplyFilter();
+    }
+
+    private void ApplyFilter()
+    {
+        var query = SearchBox.Text.Trim();
+        var filtered = ProjectStore.Filter(_all, query);
+        var hasQuery = query.Length > 0;
+        var tiles = new List<ProjectTile>();
+        if (_all.Count > 0 && !hasQuery) tiles.Add(new ProjectTile(null));
+        tiles.AddRange(filtered.Select(p => new ProjectTile(p)));
+        Projects.ItemsSource = tiles;
+
+        Empty.Visibility = _all.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        SearchEmpty.Visibility = _all.Count > 0 && hasQuery && filtered.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        SearchEmptyText.Text = hasQuery ? $"没有名字里带「{query}」的画布" : "";
+        Summary.Text = _all.Count == 0
+            ? "画布保存在本机，不会上传到任何服务器"
+            : hasQuery
+                ? $"找到 {filtered.Count} / {_all.Count} 个画布 · 保存在本机"
+                : $"共 {_all.Count} 个画布 · 保存在本机，不会上传到任何服务器";
+    }
+
+    private void Search_Changed(object sender, TextChangedEventArgs e) => ApplyFilter();
+
+    private void Search_KeyDown(object sender, KeyRoutedEventArgs e)
+    {
+        if (e.Key == VirtualKey.Escape && SearchBox.Text.Length > 0)
+        {
+            SearchBox.Text = "";
+            e.Handled = true;
+        }
+    }
+
+    private void ClearSearch_Click(object sender, RoutedEventArgs e) => SearchBox.Text = "";
+
+    private void Find_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
+    {
+        SearchBox.Focus(FocusState.Programmatic);
+        SearchBox.SelectAll();
+        args.Handled = true;
     }
 
     // Logical pixels, set before UriSource: sharp at 150%/200% scaling, and a 16:9 cover filling the card height is never upscaled.
@@ -62,19 +122,24 @@ public sealed partial class ProjectsPage : Page
 
     private void Settings_Click(object sender, RoutedEventArgs e) => Frame.Navigate(typeof(SettingsPage), null, new Microsoft.UI.Xaml.Media.Animation.DrillInNavigationTransitionInfo());
 
-    private void Projects_ItemClick(object sender, ItemClickEventArgs e) => Open(((ProjectInfo)e.ClickedItem).Id);
+    private void Projects_ItemClick(object sender, ItemClickEventArgs e)
+    {
+        if (e.ClickedItem is not ProjectTile tile) return;
+        if (tile.IsNew) Create_Click(sender, e);
+        else Open(tile.Project!.Id);
+    }
 
     private void Open(string id) => Frame.Navigate(typeof(CanvasPage), id, new Microsoft.UI.Xaml.Media.Animation.DrillInNavigationTransitionInfo());
 
     private void More_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is FrameworkElement { DataContext: ProjectInfo project } button) ShowMenu(button, project, null);
+        if (sender is FrameworkElement { DataContext: ProjectTile { Project: { } project } } button) ShowMenu(button, project, null);
     }
 
     // Mouse right-click, Shift+F10 and the menu key all raise ContextRequested.
     private void Projects_ContextRequested(UIElement sender, ContextRequestedEventArgs e)
     {
-        if (e.OriginalSource is not FrameworkElement { DataContext: ProjectInfo project } target) return;
+        if (e.OriginalSource is not FrameworkElement { DataContext: ProjectTile { Project: { } project } } target) return;
         ShowMenu(target, project, e.TryGetPosition(target, out var point) ? point : null);
         e.Handled = true;
     }
@@ -99,7 +164,7 @@ public sealed partial class ProjectsPage : Page
             menu.Items.Add(item);
         }
         Add("打开", "", () => { Open(project.Id); return Task.CompletedTask; });
-        Add("重命名", "", async () =>
+        Add("重命名…", "", async () =>
         {
             if (await Dialogs.InputAsync("重命名画布", project.Title) is { Length: > 0 } title) { ProjectStore.Rename(project.Id, title); Reload(); }
         });
@@ -109,7 +174,7 @@ public sealed partial class ProjectsPage : Page
             return Task.CompletedTask;
         });
         menu.Items.Add(new MenuFlyoutSeparator());
-        Add("删除", "", async () =>
+        Add("删除…", "", async () =>
         {
             if (!await Dialogs.ConfirmAsync("删除画布？", $"「{project.Title}」及其中的图片、视频会移到回收站，可以从回收站恢复。", "删除", destructive: true)) return;
             ProjectStore.Delete(project.Id);

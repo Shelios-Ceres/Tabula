@@ -449,6 +449,25 @@ public class CoreTests
     }
 
     [Fact]
+    public void ProjectStore_info_counts_pending_nodes_excluding_groups_and_filters_by_title()
+    {
+        var doc = new CanvasDocument { Title = "角色设定 · 第一幕" };
+        doc.Nodes.Add(new CanvasNode { Kind = NodeKind.Group, Title = "分组" });
+        doc.Nodes.Add(new CanvasNode { Kind = NodeKind.Image, Title = "完成图", Status = NodeStatus.Idle, Content = "图片-001.png" });
+        doc.Nodes.Add(new CanvasNode { Kind = NodeKind.Image, Title = "生成中", Status = NodeStatus.Loading });
+        doc.Nodes.Add(new CanvasNode { Kind = NodeKind.Image, Title = "待续查", Status = NodeStatus.Idle, TaskId = "task-1" });
+
+        var info = ProjectStore.InfoOf(doc);
+        Assert.Equal(3, info.NodeCount);
+        Assert.Equal(2, info.PendingCount);
+
+        var other = new ProjectInfo("p2", "海港分镜", DateTimeOffset.Now, 1, 0, null);
+        Assert.Equal(2, ProjectStore.Filter([info, other], "  ").Count);
+        Assert.Single(ProjectStore.Filter([info, other], "角色"));
+        Assert.Empty(ProjectStore.Filter([info, other], "不存在"));
+    }
+
+    [Fact]
     public async Task Finalising_replaces_the_library_file_named_after_the_old_picture_and_leaves_the_old_one_when_it_cannot()
     {
         var (id, dir, source) = LibrarySandbox();

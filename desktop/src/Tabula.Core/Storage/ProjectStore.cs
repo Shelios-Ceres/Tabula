@@ -9,7 +9,7 @@ using Microsoft.VisualBasic.FileIO;
 
 namespace Tabula.Core.Storage;
 
-public sealed record ProjectInfo(string Id, string Title, DateTimeOffset UpdatedAt, int NodeCount, int ConnectionCount, string? Cover);
+public sealed record ProjectInfo(string Id, string Title, DateTimeOffset UpdatedAt, int NodeCount, int ConnectionCount, string? Cover, int PendingCount = 0);
 
 /// <summary>Each canvas is a folder: project.json, an assets folder holding generated and imported media, and its own library folder.</summary>
 public static class ProjectStore
@@ -34,9 +34,25 @@ public static class ProjectStore
         return Directory.EnumerateDirectories(ProjectsDir)
             .Select(dir => TryLoad(Path.GetFileName(dir)))
             .OfType<CanvasDocument>()
-            .Select(doc => new ProjectInfo(doc.Id, doc.Title, doc.UpdatedAt, doc.Nodes.Count, doc.Connections.Count, Cover(doc)))
+            .Select(InfoOf)
             .OrderByDescending(info => info.UpdatedAt)
             .ToList();
+    }
+
+    public static ProjectInfo InfoOf(CanvasDocument doc) => new(
+        doc.Id,
+        doc.Title,
+        doc.UpdatedAt,
+        doc.Nodes.Count(n => n.Kind != NodeKind.Group),
+        doc.Connections.Count,
+        Cover(doc),
+        doc.Nodes.Count(n => n.Status == NodeStatus.Loading || !string.IsNullOrWhiteSpace(n.TaskId)));
+
+    public static List<ProjectInfo> Filter(IEnumerable<ProjectInfo> projects, string? query)
+    {
+        var q = query?.Trim();
+        if (string.IsNullOrEmpty(q)) return projects.ToList();
+        return projects.Where(p => p.Title.Contains(q, StringComparison.OrdinalIgnoreCase)).ToList();
     }
 
     public static CanvasDocument Create(string title = "未命名画布")
