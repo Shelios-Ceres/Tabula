@@ -19,38 +19,29 @@
 - 补充时写成明确、可执行的规则，避免只写模糊描述。
 - 新规则应放到最相关的章节；找不到合适章节时放到“项目注意事项”。
 
-## 桌面客户端规范
+## 桌面客户端核心红线
 
 - `desktop/` 是 WinUI 3 原生客户端（.NET 10、Windows App SDK、Win2D），也是项目唯一的客户端；网页版及只为它服务的 canvas-agent、canvas-proxy、网页节点插件和部署配置已移除，需要参考旧实现时查 git 历史，不要再加回网页端代码。
 - 分层固定：`Tabula.Core` 只放画布模型、规则、存储与模型家族，不引用 WinUI；`Tabula.Providers` 只放服务商 HTTP 适配；`Tabula.Agents` 只放 ACP 客户端与画布 MCP 工具；界面在 `Tabula.App` 的 `Pages/`（页面）与 `Board/`（画布引擎、节点、生成面板、生成调度）。画布相关命名空间用 `Board`，不要再建名为 `Canvas` 的命名空间，避免遮住 WinUI 的 `Canvas` 类型。
-- 服务商一律使用各家原生协议（OpenAI Image/Responses、Gemini Interactions/Veo、方舟 Seedream/Seedance/Chat、xAI、DashScope），不要改走 OpenAI 兼容接口；修改适配前先阅读该服务商最新官方 API 参考，并在 `tests/Tabula.Tests/ProviderTests.cs` 补请求与响应解析用例。
-- 本机 Agent 接入放在 `Tabula.Agents`（不引用 WinUI）：与 Agent 对话一律走 ACP（Agent Client Protocol v1，stdio 子进程，`AcpClient`），不要为单个 Agent 写私有适配；客户端不声明 fs / terminal 能力，Agent 用自己的工具。画布能力只通过 `CanvasTools` 里的 MCP 工具提供，由 `CanvasMcpServer` 走按画布随机命名的管道，并以「客户端 exe + `--mcp-bridge`」作为 stdio MCP 声明交给 Agent；客户端外的 Agent 用不带管道名的 `--mcp-bridge` 连到按数据目录固定的共享管道（`SharedCanvasHost`，作用于当前打开的画布），管道一律 `PipeOptions.CurrentUserOnly`；新增或修改工具时在 `AgentTests.cs` 补用例，所有文档读写经 `ICanvasHost.OnUiAsync` 回到 UI 线程，一次 `canvas_apply_ops` 只记一步撤销。
-- 画布上的操作统一登记在 `Core/Canvas/CanvasCommands.cs` 的命令表（编号、名称、图标、快捷键、作用范围、可见规则），处理函数在 `Board/CanvasCommands.cs`；节点右键菜单、选区旁边的命令栏（`Board/CommandBar.cs`，由 `CanvasView` 放在选区上方、放不下放下方；各状态放哪些命令由 `CanvasCommands.Bar` 决定，末尾的 ⋯ 打开完整的节点菜单，和右键、菜单键是同一个）和操作说明都从它生成，新增或改名操作时只改这一处，并在 `CommandTests.cs` 补可见规则和命令栏布局用例；顶部不画命令栏：新建和导入走画布菜单，撤销 / 重做在标题胶囊里；指令栏（下一条）放在命令栏之外，两者互不遮挡，命令栏放不下时让到选区另一侧、不放到指令栏下面。Ctrl+K 命令面板（`Board/CommandPalette.cs`）列出 `CanvasCommands.Palette` 的结果（当前选区允许的命令，再加画布级命令和命令表 `Go` 组里的去处：资料库、助手、额度、小地图、全屏、操作说明、设置、返回画布列表，后者由 `CanvasPage.RunCommandAsync` 执行），名称与菜单一致，新增命令不要另在面板里登记。删除节点由 `CanvasView.NodesDeleted` 通知页面，页面显示几秒的撤销提示条，是否仍有效按 `CanvasHistory.Version` 判断。空白处左键拖动框选，按住右键拖动平移（超过 `DragGesture.Threshold` 才算拖动，否则仍是右键菜单），Space / 中键 / 滚轮 / 触控板照旧平移。名称按表里的叫法（创建副本、复制、局部编辑…、停止、只留这张…），打开对话框的名称带「…」；每个命令作用于整个选区，只对单个节点有意义的命令设为 `Single`，多选时自动隐藏；折叠的一批按封面处理。
-- 画布底部中间的指令栏（`Board/ComposerPanel`）统一使用分离式独立玻璃胶囊（所有单行胶囊统一 36 DIP 高、18 DIP 全药丸圆角、13px 字号、通透 `GlassCapsule` 材质无内嵌色块，胶囊间留缝透出画布，`Board/WrapPanel` 自动换行），按「生成后 / 任务状态」与「生成前」清晰分为两种视图：单击已有内容的单张图片 / 文本 / 媒体，或选中生成中 / 失败节点时，显示**信息框**（通过 `Composer.SourcesOf` 穿透配方与 `SourceId` 展示全部上游原参考缩略图胶囊，点击可定位该参考节点；显示只读可复制的原提示词、真实生成模型与规格/状态 `Composer.OriginOf`，以及 `沿用设置` / `以此图生图` / `停止` / `重试`；本地导入图展示简洁规格与 `以此图生图`），此时画布卡片不贴「参考 N」；选中空节点、配方、多选含参考节点，或点击「以此图生图 / 沿用设置」及按 `/` / `Enter` 时，显示**生成参数框**（参考芯片自动换行不裁切、提示词框、分段输出模式 `图片 / 文本 / 音频 / 助手`、模型、参数、提示词库、说明、存为配方、预计花费与主按钮胶囊）。R6 将本机 Agent 的对话输入整合进指令栏的「助手」模式：切换到「助手」模式（或打开右上角助手按钮）时，右侧 `AgentPanel` 仅作为对话记录抽屉（无独立输入框，含 Agent 选择、新对话、关闭、快捷示例与外部连接状态），下方指令栏保持同一输入框（Enter 发送、Shift+Enter 换行、独立草稿不覆盖画布提示词、自动携带当前选区、主按钮为发送/停止）。它是 Agent 工具 `canvas_generate` 的界面形式，规则都在 Core 的 `Composer`（模式、参考、来源、版本条、放置、沿用、存为配方），界面不另写，也不要再给节点旁加提示词框。选中的图片和文本就是参考（`Composer.References`：图钉固定的排在前面，芯片上的 × 只是这次不用、节点仍保持选中，选中的分组借出里面的图片和文本，折叠的一批只算封面），进入生成参数框时在节点上显示「参考 N」；选区决定生成模式（`Composer.StateOf`：有生成中的节点是「停止」，失败或已停止的是「重试」，选中一个配方就绑定它并「运行配方」，选中一个空节点就填入它，其余是新的生成）。新生成建一个空节点、从每个参考连线、再交给 `CanvasGenerator.GenerateAsync` 跑，位置规则与 `canvas_generate` 共用 `CanvasGraph.PlaceGeneration`，不要另写第二条生成路径；一次多张的结果仍叠成一摞；第一张参考图的涂抹标注、点选和对话记录跟着新节点走。没有绑定节点时的提示词、输出类型、模型和参数是画布的草稿（`CanvasDocument.Draft`），图钉在 `CanvasDocument.Pins`，二者随画布保存、不进撤销。小地图和指令栏左右重叠时抬到指令栏上方（`CanvasView.ComposerMoved`、`CanvasPage.PlaceMap`）；提示词框里按 Esc 回到画布，没有选区时同时收起用 / 或 Enter 调出的指令栏（`CanvasView.LeaveComposer`）。Enter 和 Ctrl+Enter 生成，Shift+Enter 换行（输入法正在组字时 Enter 只确认候选词）；选中的文本节点按 Enter 仍是编辑，其余情况和 / 调出指令栏。界面里把 `config` 节点一律叫「配方」，Agent 工具里仍是 `config`；新增相关命令只改命令表。
-- 双击图片或触发单图工具（查看大图 / 局部编辑 / 裁剪 / 拆分 / 多角度 / 本地放大 / 反推提示词）统一打开全屏图片视图（R5，`Board/PictureView.cs`），取代旧预览弹窗和 6 个独立工具对话框：左侧版本条（`Composer.PictureStrip`：上游「来源」、同批「这一批」与下游「新版本」，随生成实时更新，点击切换）、中间 Win2D 缩放平移大图（局部编辑涂抹/红笔标注/点选/框选、裁剪框与拆分网格均直接在大图上交互绘制；SVG 用 `SvgImageSource` 且隐藏像素工具页签）、右侧工具页签（`改图 / 局部编辑 / 裁剪 / 拆分 / 多角度 / 本地放大 / 反推`，工具结果直接落到画布源图右侧并出现在左侧「新版本」）、底部收尾操作栏（读同一张命令表 `CanvasCommands`，提供只留这张、设为定稿、加入资料库、和这一批对比及 `⋯ 更多`）。
-- 模型能力在 `desktop/src/Tabula.Core/Models/ModelFamilies.cs` 按家族声明，不按完整型号精确匹配。OpenAI 的调用方式一律经 `ModelFamilies.OpenAIApi` 取：只有官方写明可作 Responses 图像工具模型的家族（`ResponsesTool`）才显示和发送 Responses 模式。
-- SVG 图片节点没有像素：裁剪、拆分、多角度、本地放大、反推提示词和局部编辑都对 SVG 隐藏，显示用 `SvgImageSource`，作为参考图时经 `ImageTools.RasterizeSvgAsync` 转成 PNG；新增针对图片像素的工具时同样要排除 SVG（`Media.IsSvg`）。
-- 画布里的媒体文件一律经 `ProjectStore.SaveAsset` / `ImportAsset` 按画布和种类编号（`图片-001.png`、`视频-002.mp4`、蒙版用 `蒙版-001.png`、标注层用 `标注-001.png`），节点标题在用户改名前跟随编号（`ProjectStore.TitleFromAsset`）；不要再用 GUID 或原文件名命名。
-- 视频生成暂不在 main：完整实现（服务商视频接口、视频家族、指令栏视频参数、视频任务轮询与续查）保存在 `video-models` 分支。需要时先把该分支更新到最新 main 再合并回来，不要在 main 上零散地加回视频生成代码；main 上视频节点只负责导入、播放和作为素材。
-- 一次生成多张的输出用 `Stacks` 叠成一摞（`NodeKeys.Stack` / `StackOpen`）：默认折叠，折叠时只显示第一个成员（带叠摞厚边与 `完成/总数` 角标），对它的移动、删除、编组都作用于整摞（`CanvasView.WithStacks`）；展开时（R4）在底层绘制柔和虚线圆角框并在框左上角上方显示通透 `GlassCapsule` 顶栏（`Stacks.OpenBatches` / `Stacks.BatchHeader`：`第 N 轮` 或批名 · `N 张` · 进度 / 失败数 · 模型 + `收起` + 条件显示的 `只留这张 / 只留选中的`，卡片角不再贴「收起」；收起时保留批内选中的卡作新封面，`只留选中的` 经 `Picks.KeepSelected` 一步撤销、不删文件）；新增针对选中节点的批量操作时要考虑折叠的摞。
-- 界面整体走 Windows 11 原生风格（Fluent），设计变量统一在 `App.xaml`：强调色跟随系统，圆角在 `App.xaml` 统一加大（控件 `ControlCornerRadius` 8、浮层 `OverlayCornerRadius` 16，节点卡片 14、分组 18；玻璃工具栏一律是胶囊形，工具栏按钮圆角 16；玻璃面板圆角取 `GlassSettings.Radius`，内容按圆角自动内缩，面板里的控件由 `LiquidGlass` 改成圆角 16 的玻璃样式 `Wells`），`CanvasBackgroundBrush` 半透明以透出窗口亚克力，`CardBrush` / `CardStrokeBrush` 为节点卡片，页面内容区用 `SectionCard`；按钮用 `ToolbarButton`（无底色，悬停才有填充）、`ActionButton`、`AccentActionButton`，页面标题用 `PageTitle`。不要在页面里另写颜色或圆角。
-- 配色要多彩：按节点种类使用 `App.xaml` 里各主题都定义的 `Kind*Brush`（图片蓝、视频紫、音频橙、文本绿、配方品红、分组青），XAML 用 `ThemeResource`，代码和 Win2D 通过 `Palette.Kind` 读取（随 `ActualThemeChanged` 重读）；节点图标块、工具栏图标、连线渐变、小地图和画布封面都用这套颜色，不要另起色板。
-- 动效统一走 `Motion`（合成层上的淡入淡出加轻微缩放，Fluent 减速曲线）：元素显隐用 `Motion.ShowHide`，新出现的元素用 `Motion.Appear`，视口移动用 `CanvasView.Glide`，节点位置过渡用 `CanvasView.Move`（逐帧改真实坐标，连线和阴影跟着走）；不要在组件里另写 Storyboard。`OpacityTransition` 等过渡属性不能用在设置了 `RenderTransformOrigin` 的元素上（会抛异常）；`Canvas.SetZIndex` 只接受有限范围，不要传 `int.MaxValue`。`Motion.ShowHide` 不要和投影的 `Translation`（Z 位移）加在同一个元素上，否则点击范围会和画出来的位置错开：外层做显隐动画，里层圆角胶囊挂 `ThemeShadow` 和 Translation（参考 `CanvasView.FloatingBar` 和指令栏）；选液态玻璃时这些玻璃的投影由着色器画，不再挂 `ThemeShadow`。
-- 画布上的浮动表面有三种材质，在「设置 › 外观」里选（`AppSettings.GlassMaterial`，由 `Skin` 应用）：磨砂（默认）、液态、亚克力。磨砂和亚克力都是 `App.xaml` 的 `GlassBrush`（工具栏，`GlassCapsule`）/ `GlassThickBrush`（文字较多的面板和全屏预览，`FloatingPanel`）/ `GlassStrokeBrush`，`Skin` 在运行时改这几个共享画刷的颜色（磨砂：约 34 % 白或石板色填充、白色细边；亚克力：原来的清透值），不要在页面里另写材质。液态玻璃（`Board/Glass`）和它的 `liquid-glass.json` 参数、调参面板（Ctrl+Shift+L，设置里在选了液态时有入口）保持原样，选液态等于 `GlassSettings.Enabled` 打开，调参面板里关掉它会退回亚克力。画布顶部和底部的渐隐带（`CanvasView.DrawFade`）对三种材质都生效，参数用液态玻璃设置里的渐隐项。窗口背景是 `DesktopAcrylicBackdrop`，页面背景保持透明让它透出来。投影用 `ThemeShadow` 挂在圆角那一层并指定接收者；画布节点阴影统一在 Win2D 底层模糊绘制，不要给每个节点加 XAML 阴影。亚克力在窗口失焦时会切到半透明回退色，属正常行为。
-- 画布底色（青 / 蓝 / 暖 / 灰，`Core/Settings/Appearance.cs` 的 `CanvasGrounds`）同样由 `Skin` 改 `CanvasBackgroundBrush` 的颜色，Win2D 绘制从同一个画刷读色；窗口主题和界面缩放存在 `GlassSettings`（`Theme`、`UiScale`），由 `Skin.ApplyTheme` 对所有页面生效。画布页的外框分三块：左上标题胶囊（菜单、主页、标题与存盘状态、撤销 / 重做、生成中）、右上胶囊（资料库、助手、今日花费、命令、设置）、右下状态栏（节点数、缩放菜单、小地图、大纲、全屏、帮助）；左侧停靠区同一时间只放资料库或大纲（`Board/OutlinePanel.cs`，规则在 `Core/Canvas/Outline.cs`），右侧停靠区同一时间只放助手或液态玻璃调参面板，小地图在状态栏上方。
-- 液态玻璃（选了「液态」材质时）的全部参数（开关、界面缩放、折射、圆角、材质、自适应、顶部渐隐、面板加厚、主题）在 `Board/Glass/GlassSettings.cs`，存数据目录的 `liquid-glass.json`，与 `settings.json` 分开；调参面板是 `GlassTuningPanel`（缩放栏按钮或 Ctrl+Shift+L）。界面缩放经 `GlassScale` 实现，新的玻璃面板要跟着缩放时用 `GlassScale.Wrap`，并按 `GlassSettings.UiScale` 调整宽度和边距。排查玻璃卡顿用环境变量 `TABULA_GLASS_TRACE=<文件>` 打开计时日志。
 - App 项目目标框架是 `net10.0-windows10.0.22621.0`（ComputeSharp.D2D1.WinUI 3.2.0 需要 22621 SDK；最低运行版本仍是 `TargetPlatformMinVersion` 10.0.17763），并开启 `AllowUnsafeBlocks`。着色器写成 `Board/Glass/` 里的 `ID2D1PixelShader` 结构体，编译期由 ComputeSharp 生成；HLSL 里不要在采样之外提前 `return`（FXC 会报 X4000），只保留一个出口。
 - 颜色用 `ThemeResource`，Win2D 绘制颜色随 `ActualTheme` 切换，不硬编码浅色或深色。
 - 只有图标的按钮必须设置 `AutomationProperties.Name`（与 ToolTip 一致），保证读屏和 UI 自动化能找到。
 - C# 内插原始字符串里的 JSON 只要出现连续的 `}}`（如 `...}}"""`），开头必须用 `$$$` 并把插值写成 `{{{x}}}`；`$$` 会编译失败（CS9007）。写完测试要实际编译一次。
 - WinUI 3 的 `RoutedEventArgs` 没有 `Handled`，需要拦截事件时使用具体参数类型（如 `PointerRoutedEventArgs`）。
 - 代码里创建多行 `TextBox` 时，对象初始化器中先写 `AcceptsReturn = true` 再写 `Text`；顺序反了时单行模式会把第一个换行之后的内容直接丢掉。
-- 余额查询走各家原生账务接口，在对应 Provider 的 `BalanceAsync` 实现，凭据用 `ModelChannel.BillingKey` / `BillingId`，和生成用的 API Key 分开，不要拿 API Key 查账；新增或修改时在 `ProviderTests.cs` 补请求、签名格式与金额解析用例。解析生成响应时把服务商返回的 usage 用 `AiProvider.Count` 记入本机账本（Gemini 的图片 / 音频输出 token 单独计）；Google 估算单价和生图预计花费用的各家官方单价（方舟 / 千问 / xAI 按张、Gemini 每档图片 token、OpenAI 尺寸单价表）都在 `Core/Models/Prices.cs` 维护，官方价格变动时按价格页更新并改测试；没有官方单价的组合只按上次同样设置的实际用量估算，不要用第三方测得的数字。
-- 资料库按画布存放（`ProjectStore.LibraryDir(画布 ID)`，即 `projects/<画布 ID>/library`），`LibraryStore`、资料库面板和 Agent 的 `library_*` 工具都传当前画布 ID；不要再加全局共享的资料库目录。画布上删除节点不删文件，只有资料库面板「画布文件」页里删除才把文件移到回收站（`ProjectStore.Recycle`，连同用到它的节点；回收成功后用 `CanvasView.ForgetAssets` 一次性整理撤销记录，每条快照只去掉当时正显示这些文件的节点，不要按节点 ID 跨快照删除，否则重新生成过的节点会在撤销时消失）；离开画布时 `ProjectStore.PruneMasks` 只清理没被引用的蒙版和标注层（`ProjectStore.IsMark`），不要再按引用清理图片、视频、音频。批次的名字是摞所在节点（ID 等于摞 ID）的标题，展开或单独列出时用 `Stacks.OwnTitle` 显示它自己的编号。
-- 等待动画是数据目录 `loaders/` 里的网页，由 `Board/Loaders.cs` 选取、`NodeView` 用 WebView2 播放；客户端自带的原创动画放在 `App/Assets/Loaders`，只在数据目录没有 `loaders/` 时复制一次。第三方动画（如 Painting Loaders）没有开源许可，只能放在用户本机，不要提交进仓库或打包进客户端；要随客户端分发的只能是我们自己原创的动画。
-- 本地 AI 模型（ONNX 等）按许可证分两类：代码和权重都是 MIT / Apache / BSD 等允许商用再分发的，可以随客户端分发；权重限非商用、仅限研究、没写许可证或训练数据条款不明的（如 InsightFace、部分 DWPose 权重），只能由用户自己下载到数据目录 `tools/<名称>`，客户端检测到文件才启用对应功能，不要提交进仓库、写进安装包或在代码里自动下载，并在安装说明和界面上注明许可证限制。本项目是 MIT 许可，允许他人商用，所以不能因为作者自用是非商用就把这类模型随项目分发；调用它们的代码照常用 MIT。
 - 测试实例的界面自动化只用 UI Automation 的 Invoke / SelectionItem / Value，或用 `--mcp-bridge` 走测试实例自己的管道；不要用鼠标坐标点击，测试窗口不在前台时会点到用户的其他窗口。UI Automation 驱动不了的键盘和鼠标操作（Enter / Esc / 输入法、拖动、框选、右键平移等）可以用 computer use 在测试实例上实测（用户 2026-11-19 同意）：每次操作前截图确认前台窗口就是测试实例（标题栏和进程路径），只操作测试实例，不碰用户自己的客户端和其他窗口。
 - 本机验证会在 `%LocalAppData%\InfiniteCanvas` 写入画布和设置；用户正在使用客户端时，不要关闭它或改动它的数据：把编译输出指到临时目录（`-p:BaseOutputPath=...`），并设置环境变量 `TABULA_DATA` 让测试实例使用独立数据目录。结束测试实例只能按自己启动时拿到的 PID，不要按进程名、映像名或窗口标题结束进程（`taskkill /IM`、`/FI "WINDOWTITLE …"`、`Stop-Process -Name`），用户的客户端和测试实例同名同标题，会被一起关掉。测试结束后删除测试数据，并且只用本机模拟接口和测试 Key，不用真实账号。
+
+## 按模块按需查阅
+
+改动下列模块或审查 PR 前，必须先读对应的 `docs/rules/` 规范文档（各分卷从本文档无损拆出，与本文件具备同等约束效力）：
+
+| 涉及模块 / 场景 | 必读规范文档 |
+| :--- | :--- |
+| 画布命令表 / `CommandBar` / `Ctrl+K` / `ComposerPanel` / 助手底栏 / `PictureView` / `Stacks` 批次 | [canvas-ui.md](docs/rules/canvas-ui.md) |
+| Fluent 风格 / `Kind*Brush` / `Motion` / 磨砂·液态·亚克力玻璃 / `Skin` / 外框与大纲停靠区 / `GlassSettings` | [glass-theme-and-motion.md](docs/rules/glass-theme-and-motion.md) |
+| 服务商原生协议 / ACP 与 MCP 管道 / `ModelFamilies` / SVG / 媒体编号 / 视频分支 / 余额与 `Prices.cs` / 资料库 / `Loaders` / ONNX 许可 | [agents-providers-and-storage.md](docs/rules/agents-providers-and-storage.md) |
+| 审查 PR（需求价值与实现质量分判）、建议关闭或合并 `main` | [pr-review.md](docs/rules/pr-review.md) |
 
 ## 文档规范
 
@@ -72,15 +63,6 @@
 - 将当前未提交的代码全部提交到 Git。
 - 提交完成后，给当前提交打最新版本号对应的 tag，例如 `v0.0.5`。
 - 发版本流程中不要执行编译、测试或构建，除非用户明确要求。
-
-## PR 审查与处理
-
-- 审查 PR 时必须把“需求价值”和“实现质量”分开判断，分别给出结论；实现差不等于需求不需要，需求有价值也不等于当前代码可以合并。
-- 需求价值需要单独结合项目方向、用户场景、现有能力和后续规划判断；无法从项目上下文确定是否需要时，必须询问用户，不得仅凭代码质量、作者或改动规模推断需求不需要。
-- 实现质量重点检查正确性、安全性、改动范围、重复代码、无关文件、现有结构复用、可维护性、测试与文档以及与最新 `main` 的冲突。改动几十个文件、疑似 AI 批量生成、重复代码多只能作为重点复核或拒绝当前实现的信号，不能单独作为放弃需求的依据。
-- 对“需求有价值但实现不合格”的 PR，优先考虑要求作者修改、提取可用思路后自行重做，或把需求保留到 issue/todo；不要直接把需求一起否定。
-- 建议关闭 PR 前，必须先向用户分别说明需求价值、实现质量、可保留的思路和建议处理方式，并取得用户明确确认；批量关闭时也要让用户能看清每个 PR 的需求是否仍需保留。
-- 可以先在独立分支审查、修复、测试和准备提交；任何合并进 `main` 的操作都必须先说明修复内容、测试结果、风险与冲突，并取得用户明确同意。需要 force-push PR 作者分支时也必须提前说明影响并取得同意。
 
 ## 项目注意事项
 

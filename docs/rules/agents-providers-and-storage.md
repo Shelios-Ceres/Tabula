@@ -1,0 +1,14 @@
+# 服务商适配、Agent/MCP、模型能力、账务、资料库与素材许可规则
+
+> 从根目录 `AGENTS.md` 拆出的后端接入与资源管理细则；修改服务商协议、ACP/MCP、模型家族、SVG、媒体文件命名、视频分支、账务估价、资料库、等待动画或本地 AI 模型时必须先读本文件。
+
+- 服务商一律使用各家原生协议（OpenAI Image/Responses、Gemini Interactions/Veo、方舟 Seedream/Seedance/Chat、xAI、DashScope），不要改走 OpenAI 兼容接口；修改适配前先阅读该服务商最新官方 API 参考，并在 `tests/Tabula.Tests/ProviderTests.cs` 补请求与响应解析用例。
+- 本机 Agent 接入放在 `Tabula.Agents`（不引用 WinUI）：与 Agent 对话一律走 ACP（Agent Client Protocol v1，stdio 子进程，`AcpClient`），不要为单个 Agent 写私有适配；客户端不声明 fs / terminal 能力，Agent 用自己的工具。画布能力只通过 `CanvasTools` 里的 MCP 工具提供，由 `CanvasMcpServer` 走按画布随机命名的管道，并以「客户端 exe + `--mcp-bridge`」作为 stdio MCP 声明交给 Agent；客户端外的 Agent 用不带管道名的 `--mcp-bridge` 连到按数据目录固定的共享管道（`SharedCanvasHost`，作用于当前打开的画布），管道一律 `PipeOptions.CurrentUserOnly`；新增或修改工具时在 `AgentTests.cs` 补用例，所有文档读写经 `ICanvasHost.OnUiAsync` 回到 UI 线程，一次 `canvas_apply_ops` 只记一步撤销。
+- 模型能力在 `desktop/src/Tabula.Core/Models/ModelFamilies.cs` 按家族声明，不按完整型号精确匹配。OpenAI 的调用方式一律经 `ModelFamilies.OpenAIApi` 取：只有官方写明可作 Responses 图像工具模型的家族（`ResponsesTool`）才显示和发送 Responses 模式。
+- SVG 图片节点没有像素：裁剪、拆分、多角度、本地放大、反推提示词和局部编辑都对 SVG 隐藏，显示用 `SvgImageSource`，作为参考图时经 `ImageTools.RasterizeSvgAsync` 转成 PNG；新增针对图片像素的工具时同样要排除 SVG（`Media.IsSvg`）。
+- 画布里的媒体文件一律经 `ProjectStore.SaveAsset` / `ImportAsset` 按画布和种类编号（`图片-001.png`、`视频-002.mp4`、蒙版用 `蒙版-001.png`、标注层用 `标注-001.png`），节点标题在用户改名前跟随编号（`ProjectStore.TitleFromAsset`）；不要再用 GUID 或原文件名命名。
+- 视频生成暂不在 main：完整实现（服务商视频接口、视频家族、指令栏视频参数、视频任务轮询与续查）保存在 `video-models` 分支。需要时先把该分支更新到最新 main 再合并回来，不要在 main 上零散地加回视频生成代码；main 上视频节点只负责导入、播放和作为素材。
+- 余额查询走各家原生账务接口，在对应 Provider 的 `BalanceAsync` 实现，凭据用 `ModelChannel.BillingKey` / `BillingId`，和生成用的 API Key 分开，不要拿 API Key 查账；新增或修改时在 `ProviderTests.cs` 补请求、签名格式与金额解析用例。解析生成响应时把服务商返回的 usage 用 `AiProvider.Count` 记入本机账本（Gemini 的图片 / 音频输出 token 单独计）；Google 估算单价和生图预计花费用的各家官方单价（方舟 / 千问 / xAI 按张、Gemini 每档图片 token、OpenAI 尺寸单价表）都在 `Core/Models/Prices.cs` 维护，官方价格变动时按价格页更新并改测试；没有官方单价的组合只按上次同样设置的实际用量估算，不要用第三方测得的数字。
+- 资料库按画布存放（`ProjectStore.LibraryDir(画布 ID)`，即 `projects/<画布 ID>/library`），`LibraryStore`、资料库面板和 Agent 的 `library_*` 工具都传当前画布 ID；不要再加全局共享的资料库目录。画布上删除节点不删文件，只有资料库面板「画布文件」页里删除才把文件移到回收站（`ProjectStore.Recycle`，连同用到它的节点；回收成功后用 `CanvasView.ForgetAssets` 一次性整理撤销记录，每条快照只去掉当时正显示这些文件的节点，不要按节点 ID 跨快照删除，否则重新生成过的节点会在撤销时消失）；离开画布时 `ProjectStore.PruneMasks` 只清理没被引用的蒙版和标注层（`ProjectStore.IsMark`），不要再按引用清理图片、视频、音频。批次的名字是摞所在节点（ID 等于摞 ID）的标题，展开或单独列出时用 `Stacks.OwnTitle` 显示它自己的编号。
+- 等待动画是数据目录 `loaders/` 里的网页，由 `Board/Loaders.cs` 选取、`NodeView` 用 WebView2 播放；客户端自带的原创动画放在 `App/Assets/Loaders`，只在数据目录没有 `loaders/` 时复制一次。第三方动画（如 Painting Loaders）没有开源许可，只能放在用户本机，不要提交进仓库或打包进客户端；要随客户端分发的只能是我们自己原创的动画。
+- 本地 AI 模型（ONNX 等）按许可证分两类：代码和权重都是 MIT / Apache / BSD 等允许商用再分发的，可以随客户端分发；权重限非商用、仅限研究、没写许可证或训练数据条款不明的（如 InsightFace、部分 DWPose 权重），只能由用户自己下载到数据目录 `tools/<名称>`，客户端检测到文件才启用对应功能，不要提交进仓库、写进安装包或在代码里自动下载，并在安装说明和界面上注明许可证限制。本项目是 MIT 许可，允许他人商用，所以不能因为作者自用是非商用就把这类模型随项目分发；调用它们的代码照常用 MIT。

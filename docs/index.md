@@ -24,6 +24,13 @@
 - [TODO](/docs/progress/todo)
 - [WinUI 3 Desktop Client Plan](/docs/progress/desktop-client-plan)
 
+## Module Engineering Rules (On-Demand)
+
+- [Canvas UI, Commands, Composer, PictureView & Batches](rules/canvas-ui.md)
+- [Fluent Style, Palette, Motion, Glass Material & Shell](rules/glass-theme-and-motion.md)
+- [Providers, Agent/MCP, Models, Billing, Library & Asset Licenses](rules/agents-providers-and-storage.md)
+- [PR Review & Handling](rules/pr-review.md)
+
 ## Notes
 
 - Tabula is a native Windows desktop client in `desktop/`; the former web client and its companion tools have been removed.
